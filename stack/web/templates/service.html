@@ -1,0 +1,124 @@
+{% macro chip(vin) %}<span class="dot c{{ colors.get(vin, 0) }}"></span>{% endmacro %}
+{% macro hidden_vin() %}<input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin if not car.garage else '' }}">{% endmacro %}
+{% extends "base.html" %}
+{% block title %}Service · Car Command{% endblock %}
+{% block body %}
+{# What is due, what was done, the tires: each a group of rows that open in place; adding
+   one opens a form beneath its group's last row. #}
+<div class="pbar"><h1>Service</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span></div>
+{% set open = items|rejectattr('done')|list %}{% set done = items|selectattr('done')|list %}
+{% set spent = done|map(attribute='cost')|select|sum %}{% set last = done|selectattr('done_on')|sort(attribute='done_on', reverse=true)|first %}
+{% set overdue = open|selectattr('status', 'equalto', 'overdue')|list %}
+<div class="tiles t3">
+  <div class="tile"><span class="l">Due</span><span class="v">{{ open|length }}</span><span class="d">{% if overdue %}{{ overdue|length }} overdue{% else %}&nbsp;{% endif %}</span></div>
+  <div class="tile"><span class="l">Last done</span><span class="v small-v">{% if last %}{{ last.what }}{% else %}–{% endif %}</span><span class="d">{% if last %}{{ last.done_on.strftime('%b %-d, %Y') }}{% else %}&nbsp;{% endif %}</span></div>
+  <div class="tile"><span class="l">Spent</span><span class="v">{{ cur }}{{ spent|num }}</span><span class="d">{{ done|length }} job{{ 's' if done|length != 1 }}</span></div>
+</div>
+<div class="groups svc">
+<section class="group">
+  <h2 class="sec">Due</h2>
+  <div class="group-b">
+    {% for it in open %}
+    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(it.vin) }}{% endif %}{{ it.what }}{% if it.status == 'overdue' %}<span class="badge due">Overdue</span>{% elif it.status == 'soon' %}<span class="badge">Soon</span>{% endif %}<span class="set-s">{% if it.due_date %}{{ it.due_date.strftime('%b %-d, %Y') }}{% endif %}{% if it.due_miles %}{% if it.due_date %} or {% endif %}{{ it.due_miles|dist }} {{ u.dist }}{% if odos.get(it.vin) %}, {{ (it.due_miles - odos[it.vin])|dist }} {{ u.dist }} to go{% endif %}{% endif %}</span></span></summary>
+      <div class="set-p">
+        {% if it.every_months or it.every_miles %}<div class="set-row"><span class="set-l">Repeats</span><span class="set-v">every {% if it.every_months %}{{ it.every_months }} months{% endif %}{% if it.every_months and it.every_miles %} or {% endif %}{% if it.every_miles %}{{ it.every_miles|dist }} {{ u.dist }}{% endif %}</span></div>{% endif %}
+        {% if it.notes %}<div class="set-row"><span class="set-l">Notes</span><span class="set-v">{{ it.notes }}</span></div>{% endif %}
+        <div class="acts"><form method="post" action="{{ root }}/service/{{ it.id }}/delete">{{ hidden_vin() }}<button type="submit" class="btn sm danger">Remove</button></form><form method="post" action="{{ root }}/service/{{ it.id }}/done">{{ hidden_vin() }}<button type="submit" class="btn sm primary">Done</button></form></div>
+      </div>
+    </details>
+    {% else %}<div class="empty">Nothing due</div>{% endfor %}
+  </div>
+</section>
+<section class="group">
+  <h2 class="sec">History{% if done %}<span class="sp"></span><span class="sec-n">{{ cur }}{{ spent|num }}</span>{% endif %}</h2>
+  <div class="group-b">
+    {% for it in done %}
+    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(it.vin) }}{% endif %}{{ it.what }}<span class="set-s">{% if it.done_on %}{{ it.done_on.strftime('%b %-d, %Y') }}{% endif %}{% if it.odometer %} · {{ it.odometer|dist }} {{ u.dist }}{% endif %}{% if it.files %} · {{ it.files|length }} file{{ 's' if it.files|length != 1 }}{% endif %}</span></span><span class="set-v">{% if it.cost %}{{ cur }}{{ it.cost|num(2) }}{% endif %}</span></summary>
+      <div class="set-p">
+        {% if it.notes %}<div class="set-row"><span class="set-l">Notes</span><span class="set-v">{{ it.notes }}</span></div>{% endif %}
+        {% for f in it.files or [] %}<div class="set-row"><span class="set-l"><a href="{{ root }}/service/files/{{ f.id }}" data-no-prefetch target="_blank" rel="noopener">{{ f.filename }}</a><span class="set-s">{{ f.size_text }}</span></span><span class="set-c"><button type="submit" form="unfile-{{ f.id }}" class="btn sm">Remove</button></span></div>{% endfor %}
+        <form method="post" action="{{ root }}/service/{{ it.id }}/files?csrf_token={{ csrf }}" enctype="multipart/form-data" class="set-row"><input type="hidden" name="vin" value="{{ car.vin if not car.garage else '' }}"><label class="set-l" for="att-{{ it.id }}">Attach</label><span class="set-c"><input id="att-{{ it.id }}" type="file" name="files" multiple accept="image/*,.pdf,.heic"><button type="submit" class="btn sm">Add</button></span></form>
+        <div class="acts"><form method="post" action="{{ root }}/service/{{ it.id }}/delete">{{ hidden_vin() }}<button type="submit" class="btn sm danger">Remove</button></form></div>
+      </div>
+    </details>
+    {% else %}<div class="empty">No service logged</div>{% endfor %}
+    <details class="set-x add"><summary class="set-row"><span class="set-l">Log service or a reminder</span></summary>
+      <form method="post" action="{{ root }}/service" class="set-p"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+        {% if car.garage %}<div class="set-row"><label class="set-l" for="svc-car">Car</label><span class="set-c"><select id="svc-car" class="sel" name="vin">{% for v in vehicles %}<option value="{{ v.vin }}">{{ v.name }}</option>{% endfor %}</select></span></div>{% else %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}
+        <div class="set-row"><span class="set-l">Kind</span><span class="set-c"><span class="segmented" role="radiogroup" aria-label="Kind"><label><input type="radio" name="kind" value="done" checked><span>Done</span></label><label><input type="radio" name="kind" value="due"><span>Reminder</span></label></span></span></div>
+        <div class="set-row"><label class="set-l" for="svc-what">What</label><span class="set-c"><input id="svc-what" class="field" name="what" placeholder="Tire rotation" required maxlength="80"></span></div>
+        <div class="svc-done">
+          <div class="set-row"><label class="set-l" for="svc-on">Date</label><span class="set-c"><input id="svc-on" class="field" name="done_on" type="date" value="{{ tread_today }}"></span></div>
+          <div class="set-row"><label class="set-l" for="svc-odo">Odometer</label><span class="set-c"><span class="num w6"><input id="svc-odo" name="odometer" type="number" inputmode="numeric" step="1" min="0"><span class="u">{{ u.dist }}</span></span></span></div>
+          <div class="set-row"><label class="set-l" for="svc-cost">Cost</label><span class="set-c"><span class="num w6"><span class="u">{{ cur }}</span><input id="svc-cost" name="cost" type="number" inputmode="decimal" step="0.01" min="0"></span></span></div>
+        </div>
+        <div class="svc-due">
+          <div class="set-row"><label class="set-l" for="svc-due">Due by</label><span class="set-c"><input id="svc-due" class="field" name="due_date" type="date"></span></div>
+          <div class="set-row"><label class="set-l" for="svc-duemi">or at</label><span class="set-c"><span class="num w6"><input id="svc-duemi" name="due_miles" type="number" inputmode="numeric" step="100" min="0"><span class="u">{{ u.dist }}</span></span></span></div>
+          <div class="set-row"><span class="set-l">Repeat every</span><span class="set-c"><span class="num w4"><input name="every_months" type="number" inputmode="numeric" min="1" max="120" step="1" aria-label="Repeat every, months" placeholder="–"><span class="u">months</span></span><span class="num w6"><input name="every_miles" type="number" inputmode="numeric" min="100" step="100" aria-label="or every, {{ u.dist }}" placeholder="–"><span class="u">{{ u.dist }}</span></span></span></div>
+        </div>
+        <div class="set-row stack"><label class="set-l" for="svc-notes">Notes</label><input id="svc-notes" class="field wide" name="notes" maxlength="1000"></div>
+        <div class="acts"><button type="submit" class="btn primary">Save</button></div>
+      </form>
+    </details>
+  </div>
+  {% for it in done %}{% for f in it.files or [] %}<form id="unfile-{{ f.id }}" method="post" action="{{ root }}/service/files/{{ f.id }}/delete" hidden>{{ hidden_vin() }}</form>{% endfor %}{% endfor %}
+</section>
+<section class="group">
+  <h2 class="sec">Tire sets</h2>
+  <div class="group-b">
+    {% for t in tire_sets %}
+    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(t.vin) }}{% endif %}{{ t.name }}<span class="set-s">{{ t.fitted_on.strftime('%b %-d, %Y') }} → {% if t.removed_on %}{{ t.removed_on.strftime('%b %-d, %Y') }}{% else %}now{% endif %}{% if t.wh_per_mi %} · {{ t.wh_per_mi|econ }} {{ u.econ }}{% endif %}</span></span><span class="set-v"><b>{{ t.miles|dist }}</b> {{ u.dist }}</span></summary>
+      <div class="set-p">
+        <div class="set-row"><span class="set-l">Drives on them</span><span class="set-v">{{ t.drives }}</span></div>
+        {% if t.fitted_odometer %}<div class="set-row"><span class="set-l">Fitted at</span><span class="set-v">{{ t.fitted_odometer|dist }} {{ u.dist }}</span></div>{% endif %}
+        {% if t.notes %}<div class="set-row"><span class="set-l">Notes</span><span class="set-v">{{ t.notes }}</span></div>{% endif %}
+        <div class="acts"><form method="post" action="{{ root }}/service/tires/{{ t.id }}/delete">{{ hidden_vin() }}<button type="submit" class="btn sm danger">Remove</button></form></div>
+      </div>
+    </details>
+    {% else %}<div class="empty">No tire set logged</div>{% endfor %}
+    {% if not car.garage %}<details class="set-x add"><summary class="set-row"><span class="set-l">Add a tire set</span></summary>
+      <form method="post" action="{{ root }}/service/tires" class="set-p"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}">
+        <div class="set-row stack"><label class="set-l" for="ts-name">Set</label><input id="ts-name" class="field wide" name="name" maxlength="80" placeholder="Michelin Pilot Sport EV 21in" required></div>
+        <div class="set-row"><label class="set-l" for="ts-on">Fitted</label><span class="set-c"><input id="ts-on" class="field" type="date" name="fitted_on" value="{{ tread_today }}" required></span></div>
+        <div class="set-row"><label class="set-l" for="ts-odo">at</label><span class="set-c"><span class="num w6"><input id="ts-odo" type="number" inputmode="numeric" step="1" min="0" name="odometer" placeholder="{{ car.odometer_mi|dist if car.odometer_mi else '' }}"><span class="u">{{ u.dist }}</span></span></span></div>
+        <div class="set-row"><label class="set-l" for="ts-off">Removed</label><span class="set-c"><input id="ts-off" class="field" type="date" name="removed_on"></span></div>
+        <div class="set-row stack"><label class="set-l" for="ts-notes">Notes</label><input id="ts-notes" class="field wide" name="notes" maxlength="500"></div>
+        <div class="acts"><button type="submit" class="btn primary">Add</button></div>
+      </form>
+    </details>{% endif %}
+  </div>
+</section>
+<section class="group">
+  <h2 class="sec">Tread</h2>
+  <div class="group-b">
+    {% for t in tread %}
+    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(t.vin) }}{% endif %}{{ t.measured_on.strftime('%b %-d, %Y') }}{% if t.odometer %}<span class="set-s">{{ t.odometer|dist }} {{ u.dist }}</span>{% endif %}</span><span class="set-v tread4"><span>{{ t.front_left|tread }}</span><span>{{ t.front_right|tread }}</span><span>{{ t.rear_left|tread }}</span><span>{{ t.rear_right|tread }}</span></span></summary>
+      <div class="set-p">
+        {% if t.notes %}<div class="set-row"><span class="set-l">Notes</span><span class="set-v">{{ t.notes }}</span></div>{% endif %}
+        <div class="acts"><form method="post" action="{{ root }}/service/tread/{{ t.id }}/delete">{{ hidden_vin() }}<button type="submit" class="btn sm danger">Remove</button></form></div>
+      </div>
+    </details>
+    {% else %}<div class="empty">No tread measured</div>{% endfor %}
+    {% if not car.garage %}<details class="set-x add"><summary class="set-row"><span class="set-l">Record tread</span></summary>
+      <form method="post" action="{{ root }}/service/tread" class="set-p"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}">
+        <div class="set-row"><label class="set-l" for="tr-on">Measured</label><span class="set-c"><input id="tr-on" class="field" type="date" name="measured_on" value="{{ tread_today }}"></span></div>
+        <div class="set-row"><label class="set-l" for="tr-odo">at</label><span class="set-c"><span class="num w6"><input id="tr-odo" type="number" inputmode="numeric" step="1" min="0" name="odometer" placeholder="{{ car.odometer_mi|dist if car.odometer_mi else '' }}"><span class="u">{{ u.dist }}</span></span></span></div>
+        <div class="set-row"><span class="set-l">In</span><span class="set-c"><span class="segmented" role="radiogroup" aria-label="Measured in"><label><input type="radio" name="unit" value="32nds"{% if u.dist == 'mi' %} checked{% endif %}><span>32nds</span></label><label><input type="radio" name="unit" value="mm"{% if u.dist != 'mi' %} checked{% endif %}><span>mm</span></label></span></span></div>
+        {# laid out like the car: front pair over rear pair #}
+        <div class="treadgrid" role="group" aria-label="Tread depth, each tire">
+          <span class="cap">Front</span><span></span>
+          <label><span>Left</span><span class="num w4"><input type="number" inputmode="decimal" step="0.5" min="0" max="30" name="front_left"></span></label>
+          <label><span>Right</span><span class="num w4"><input type="number" inputmode="decimal" step="0.5" min="0" max="30" name="front_right"></span></label>
+          <span class="cap">Rear</span><span></span>
+          <label><span>Left</span><span class="num w4"><input type="number" inputmode="decimal" step="0.5" min="0" max="30" name="rear_left"></span></label>
+          <label><span>Right</span><span class="num w4"><input type="number" inputmode="decimal" step="0.5" min="0" max="30" name="rear_right"></span></label>
+        </div>
+        <div class="set-row stack"><label class="set-l" for="tr-notes">Notes</label><input id="tr-notes" class="field wide" name="notes" maxlength="500" placeholder="Rotated"></div>
+        <div class="acts"><button type="submit" class="btn primary">Record</button></div>
+      </form>
+    </details>{% endif %}
+  </div>
+</section>
+</div>
+{% endblock %}

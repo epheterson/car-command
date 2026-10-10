@@ -1,0 +1,65 @@
+# The repository's labels, kept by .github/workflows/labels.yml: a push to main that changes
+# this file makes the labels match it (new ones made, changed ones updated; ones not listed
+# are left alone). Issue templates set bug and enhancement; Dependabot sets dependencies.
+- name: bug
+  color: d73a4a
+  description: Something shows or does the wrong thing
+- name: enhancement
+  color: a2eeef
+  description: A new feature or a better way to do one
+- name: good first issue
+  color: 7057ff
+  description: Small and self-contained; a good way in
+- name: help wanted
+  color: "008672"
+  description: Open for anyone to take
+- name: question
+  color: d876e3
+  description: Better asked in Discussions; kept here when it turns out to be a bug or a gap
+- name: security
+  color: b60205
+  description: A hardening change. Vulnerabilities are reported privately (SECURITY.md)
+- name: dependencies
+  color: "0366d6"
+  description: A dependency update
+- name: documentation
+  color: "0075ca"
+  description: The README or docs/
+- name: duplicate
+  color: cfd3d7
+  description: Already open elsewhere
+- name: wontfix
+  color: ffffff
+  description: Not going to change, with the reason in the thread
+
+- name: "source: tesla"
+  color: c5def5
+  description: Tesla Fleet API and Fleet Telemetry, connected directly
+- name: "source: lucid"
+  color: c5def5
+  description: Lucid, through the CarConnectivity connector
+- name: "source: teslafi"
+  color: c5def5
+  description: TeslaFi export import and feed
+- name: "source: teslamate"
+  color: c5def5
+  description: TeslaMate import and live feed
+- name: "source: carconnectivity"
+  color: c5def5
+  description: CarConnectivity and its other connectors
+
+- name: "area: costs"
+  color: fef2c0
+  description: Rate plans, charge costs, petrol comparison
+- name: "area: places"
+  color: fef2c0
+  description: Places, stops and geocoding
+- name: "area: maps"
+  color: fef2c0
+  description: Map backgrounds, routes and the local maps add-on
+- name: "area: ui"
+  color: fef2c0
+  description: Pages, layout, themes, phone and desktop
+- name: "area: install"
+  color: fef2c0
+  description: Setup, the one container, compose, upgrades and backups

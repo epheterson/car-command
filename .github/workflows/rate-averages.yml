@@ -1,0 +1,63 @@
+# Rebuilds rates/averages.json (average household electricity and petrol prices by region
+# and month) and commits it to the rates-data branch, where every install's "Update now"
+# downloads it from. Monthly, after EIA's monthly release; also by hand from the Actions tab.
+#
+# The EIA_API_KEY secret is optional: without it (a fork, or before one is set) the builder
+# uses EIA's DEMO_KEY, which is rate limited but enough for the six requests a run makes.
+name: rate averages
+
+on:
+  schedule:
+    - cron: "23 7 9 * *" # 07:23 UTC on the 9th of each month
+  workflow_dispatch:
+
+# Read-only by default; the one job that pushes to rates-data asks for write itself.
+permissions:
+  contents: read
+
+concurrency:
+  group: rate-averages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # The builder waits out a rate limit (about half an hour at most) and then fails,
+    # writing nothing; a failed build never reaches the commit step.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Build the file
+        env:
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+        run: python scripts/build-rate-averages.py --out "$RUNNER_TEMP/averages.json"
+      - name: Commit it to rates-data
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin rates-data >/dev/null; then
+            git fetch --depth 1 origin rates-data
+            git worktree add "$RUNNER_TEMP/data" FETCH_HEAD
+            git -C "$RUNNER_TEMP/data" switch -c rates-data
+          else
+            git worktree add --detach "$RUNNER_TEMP/data"
+            git -C "$RUNNER_TEMP/data" switch --orphan rates-data
+          fi
+          cd "$RUNNER_TEMP/data"
+          # The file carries the day it was built, so compare without it: a month with no
+          # new figures is not a new commit.
+          if [ -f rates/averages.json ] && [ "$(jq -S 'del(.built)' rates/averages.json)" = "$(jq -S 'del(.built)' "$RUNNER_TEMP/averages.json")" ]; then
+            echo "no new figures"
+            exit 0
+          fi
+          mkdir -p rates
+          cp "$RUNNER_TEMP/averages.json" rates/averages.json
+          git add rates/averages.json
+          git commit -q -m "Rate averages $(date -u +%Y-%m-%d)"
+          git push origin HEAD:rates-data

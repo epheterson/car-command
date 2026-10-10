@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% block title %}Drives · Car Command{% endblock %}
+{% macro drow(d, grouped) %}{% set r = as_drive(d) %}{% set rp = day_row(r, cur) %}{{ parts.row(root ~ '/drives/' ~ d.id ~ q, d.start_date|local('%-I:%M %p') if grouped else d.start_date|when, rp.title, rp.pills + (['by hand'] if d.get('by_hand') else []) + ([d.tag] if d.get('tag') else []), rp.big, rp.sub, '', colors.get(d.vin, 0) if car.garage else none, none, [d.get('from_ref'), d.get('to_ref')], 'drive') }}{% endmacro %}
+{% block body %}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}{% set raw = (flt or {}).get('raw', {}) %}
+{% set nflt = [raw.get('at'), raw.get('dest'), raw.get('min'), raw.get('q')]|select|list|length %}
+<div class="pbar">
+  <h1>Drives</h1>{% if hidden %}<span class="muted">hidden</span>{% endif %}<span class="sp"></span>
+  {% if window.get('custom') %}<span class="muted">{{ window.label }}</span> <a class="aside" href="{{ root }}/drives{{ q }}">By month</a>
+  {% else %}<nav class="stepper" aria-label="Month"><a href="{{ root }}/drives?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/drives?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav>{% endif %}
+</div>
+<nav class="segs2" aria-label="Order">{% for k, dr, lbl in [("start", "desc", "Newest"), ("start", "asc", "Oldest"), ("miles", "desc", "Farthest"), ("time", "desc", "Longest"), ("wh", "desc", "Least efficient")] %}<a href="{{ root }}/drives{{ sort_base }}sort={{ k }}&amp;dir={{ dr }}"{% if sort == k and (desc == (dr == 'desc')) %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}<a class="aside" href="{{ root }}/drives.csv{{ q }}" data-no-prefetch>CSV</a>{% if hidden %}<a href="{{ root }}/drives{{ q }}">Back to the list</a>{% else %}<a href="{{ root }}/drives?show=hidden{{ dq }}">Hidden</a>{% endif %}</nav>
+<details class="fsheet"{% if nflt %} open{% endif %}><summary>Filter{% if nflt %} · {{ nflt }} on{% endif %}</summary>
+<form method="get" action="{{ root }}/drives" class="row range">{% if q %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}
+  <label>From <input type="date" name="from" value="{{ window.from.isoformat() if window.get('from') else '' }}"></label>
+  <label>To <input type="date" name="to" value="{{ window.to.isoformat() if window.get('to') else '' }}"></label>
+  {% set f = flt or {} %}{% set raw = f.get('raw', {}) %}
+  <label>Leaving <select name="at"><option value="">anywhere</option>{% for p in named_places or [] %}<option value="{{ p.name }}" {% if raw.get('at') == p.name %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
+  <label>Arriving <select name="dest"><option value="">anywhere</option>{% for p in named_places or [] %}<option value="{{ p.name }}" {% if raw.get('dest') == p.name %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
+  <label class="check"><input type="checkbox" name="both" {% if raw.get('both') == 'on' %}checked{% endif %}> both ways</label>
+  <label>Longer than, {{ u.dist }} <input type="number" name="min" min="0" step="0.1" value="{{ raw.get('min', '') }}" style="min-width:5em"></label>
+  <label>Tag or note <input name="q" value="{{ raw.get('q', '') }}" placeholder="e.g. Commute" style="min-width:9em"></label>
+  <button type="submit" class="quiet">Show</button>
+</form>
+</details>
+{% if drives %}
+  {% if days %}{% for day in days %}<section class="tday">{% if day.date %}<h2 class="day-h"><a href="{{ root }}/day?date={{ day.date.isoformat() }}{{ dq }}">{{ day.date.strftime('%A, %B %-d') }}</a><span>{{ day.miles|dist }} {{ u.dist }}</span></h2>{% endif %}<div class="rows">{% for d in day.rows %}{{ drow(d, true) }}{% endfor %}</div></section>{% endfor %}
+  {% else %}<div class="rows">{% for d in drives %}{{ drow(d, false) }}{% endfor %}</div>{% endif %}
+{% else %}<p class="muted">No drives in {{ window.label }}.</p>{% endif %}
+{% if said %}<p class="said">{{ said }}</p>{% endif %}
+<details class="byhand"><summary class="muted">Add a drive by hand</summary>
+<form method="post" action="{{ root }}/drives/manual" class="row"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <label>Car <select name="vin">{% for v in vehicles %}<option value="{{ v.vin }}" {% if v.vin == car.vin %}selected{% endif %}>{{ v.name }}</option>{% endfor %}</select></label>
+  <label>Started <input type="datetime-local" name="start" required max="{{ now_local.strftime('%Y-%m-%dT%H:%M') if now_local else '' }}"></label>
+  <label>Ended <input type="datetime-local" name="end" required max="{{ now_local.strftime('%Y-%m-%dT%H:%M') if now_local else '' }}"></label>
+  <label>From <select name="from_place"><option value="">a named place</option>{% for p in named_places or [] %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}</select></label>
+  <label>To <select name="to_place"><option value="">a named place</option>{% for p in named_places or [] %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}</select></label>
+  <label>{{ u.distname|capitalize }} <input type="number" name="miles" min="0.1" max="2000" step="0.1" required style="min-width:6em"></label>
+  <label>Battery from <input type="number" name="level_start" min="0" max="100" step="1" placeholder="%" style="min-width:5em"></label>
+  <label>to <input type="number" name="level_end" min="0" max="100" step="1" placeholder="%" style="min-width:5em"></label>
+  <label>Note <input name="note" maxlength="200" placeholder="why it was not logged"></label>
+  <button type="submit" class="quiet">Add</button>
+</form>
+<p class="muted small">Counts like any drive; marked “by hand”.</p>
+</details>
+{% endblock %}

@@ -1,0 +1,43 @@
+{
+  "about": "The other-brand connectors the connector container may install, each wheel pinned by sha256. Edit package/version/type/connector_id here, then run make connector-lock, which writes requirements and copies this file into stack/cc and stack/web.",
+  "python": "3.12",
+  "connectors": {
+    "audi": {"package": "carconnectivity-connector-audi", "version": "0.3.2", "type": "audi", "requirements": [
+      {"name": "carconnectivity-connector-audi", "version": "0.3.2", "file": "carconnectivity_connector_audi-0.3.2-py3-none-any.whl", "sha256": "7eab844229301d9a7ed3ec19f2798e936a37a73a0b05932b273a935e5b859348"},
+      {"name": "oauthlib", "version": "3.3.1", "file": "oauthlib-3.3.1-py3-none-any.whl", "sha256": "88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1"},
+      {"name": "PyJWT", "version": "2.15.1", "file": "pyjwt-2.15.1-py3-none-any.whl", "sha256": "42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193"}
+    ]},
+    "cupra": {"package": "carconnectivity-connector-seatcupra", "version": "0.6.4", "type": "seatcupra", "connector_id": "cupra", "requirements": [
+      {"name": "carconnectivity-connector-seatcupra", "version": "0.6.4", "file": "carconnectivity_connector_seatcupra-0.6.4-py3-none-any.whl", "sha256": "f2d5f2b606de5f9cc1bfbb0e2b0b0268ac9277ce80bd45b6cdd71b327b368b4a"},
+      {"name": "oauthlib", "version": "3.3.1", "file": "oauthlib-3.3.1-py3-none-any.whl", "sha256": "88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1"},
+      {"name": "PyJWT", "version": "2.13.0", "file": "pyjwt-2.13.0-py3-none-any.whl", "sha256": "66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728"}
+    ]},
+    "seat": {"package": "carconnectivity-connector-seatcupra", "version": "0.6.4", "type": "seatcupra", "connector_id": "seat", "requirements": [
+      {"name": "carconnectivity-connector-seatcupra", "version": "0.6.4", "file": "carconnectivity_connector_seatcupra-0.6.4-py3-none-any.whl", "sha256": "f2d5f2b606de5f9cc1bfbb0e2b0b0268ac9277ce80bd45b6cdd71b327b368b4a"},
+      {"name": "oauthlib", "version": "3.3.1", "file": "oauthlib-3.3.1-py3-none-any.whl", "sha256": "88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1"},
+      {"name": "PyJWT", "version": "2.13.0", "file": "pyjwt-2.13.0-py3-none-any.whl", "sha256": "66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728"}
+    ]},
+    "skoda": {"package": "carconnectivity-connector-skoda", "version": "0.13.1", "type": "skoda", "requirements": [
+      {"name": "carconnectivity-connector-skoda", "version": "0.13.1", "file": "carconnectivity_connector_skoda-0.13.1-py3-none-any.whl", "sha256": "8d347a9e5013a557cb1bf6dc010911a34eb9d23fd0e2acb8d5f213e6993bd5b3"}
+    ]},
+    "tronity": {"package": "carconnectivity-connector-tronity", "version": "0.7.3", "type": "tronity", "requirements": [
+      {"name": "carconnectivity-connector-tronity", "version": "0.7.3", "file": "carconnectivity_connector_tronity-0.7.3-py3-none-any.whl", "sha256": "1d80392322bff836be5a1a0f2c3a485f66fea43bb7907936275b2187f1559a09"},
+      {"name": "oauthlib", "version": "3.3.1", "file": "oauthlib-3.3.1-py3-none-any.whl", "sha256": "88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1"},
+      {"name": "PyJWT", "version": "2.15.1", "file": "pyjwt-2.15.1-py3-none-any.whl", "sha256": "42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193"}
+    ]},
+    "volkswagen": {"package": "carconnectivity-connector-volkswagen", "version": "0.10.6", "type": "volkswagen", "requirements": [
+      {"name": "carconnectivity-connector-volkswagen", "version": "0.10.6", "file": "carconnectivity_connector_volkswagen-0.10.6-py3-none-any.whl", "sha256": "94bed03e7c52f082f7a9bc7fe42f6f0bdb8bc2f056e313773959d8d5dd40873c"},
+      {"name": "oauthlib", "version": "3.3.1", "file": "oauthlib-3.3.1-py3-none-any.whl", "sha256": "88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1"},
+      {"name": "PyJWT", "version": "2.15.1", "file": "pyjwt-2.15.1-py3-none-any.whl", "sha256": "42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193"}
+    ]},
+    "volkswagen_na": {"package": "carconnectivity-connector-volkswagen-na", "version": "0.2.0", "type": "volkswagen_na", "requirements": [
+      {"name": "carconnectivity-connector-volkswagen-na", "version": "0.2.0", "file": "carconnectivity_connector_volkswagen_na-0.2.0-py3-none-any.whl", "sha256": "872cda973fe67078910a418b03bd9fd0458a912f1eaef91a107da4e22182797c"},
+      {"name": "oauthlib", "version": "3.3.1", "file": "oauthlib-3.3.1-py3-none-any.whl", "sha256": "88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1"},
+      {"name": "pkce", "version": "1.0.3", "file": "pkce-1.0.3-py3-none-any.whl", "sha256": "55927e24c7d403b2491ebe182b95d9dcb1807643243d47e3879fbda5aad4471d"},
+      {"name": "PyJWT", "version": "2.15.1", "file": "pyjwt-2.15.1-py3-none-any.whl", "sha256": "42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193"}
+    ]},
+    "vw_eu_data_act": {"package": "carconnectivity-connector-vw-eu-data-act", "version": "0.3.1", "type": "vw_eu_data_act", "requirements": [
+      {"name": "carconnectivity-connector-vw-eu-data-act", "version": "0.3.1", "file": "carconnectivity_connector_vw_eu_data_act-0.3.1-py3-none-any.whl", "sha256": "01c0083acda33fb96c8583a8c752ce2e961d64f4143c502dd978add1fd03510d"}
+    ]}
+  }
+}

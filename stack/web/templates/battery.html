@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% import "_info.html" as i %}
+{% block title %}Battery · Car Command{% endblock %}
+{% block body %}
+<div class="pbar"><h1>Battery</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span></div>
+{% for b in blocks %}{% set c = b.car %}
+<section class="daycar">
+{% if car.garage %}<h2 class="daycar-h"><span class="dot c{{ colors.get(c.vin, 0) }}"></span>{{ c.name }}</h2>{% endif %}
+<div class="tiles pair">
+  {% if c.get('soc') is not none %}<div class="tile"><span class="l">Now</span><span class="v">{{ c.soc|num }}<small>%</small></span><span class="d">{% if c.get('range_mi') %}{{ c.range_mi|dist }} {{ u.dist }}{% endif %}</span></div>{% endif %}
+  {% if c.get('range_full_mi') %}<div class="tile"><span class="l">Range at 100%</span><span class="v">{{ c.range_full_mi|dist }}<small>{{ u.dist }}</small></span></div>{% endif %}
+  {# the pack as Settings › Cars and sources has it: one figure, one provenance (carspage.pack) #}
+  {% set pk = (packs or {}).get(c.vin) %}{% if pk and pk.kwh %}<div class="tile"><span class="l">Pack</span><span class="v">{{ pk.kwh|num(1) }}<small>kWh</small></span><span class="d">usable, {{ pk.text }}{% if c.get('pack_energy_kwh') is not none %} · {{ c.pack_energy_kwh|num(1) }} kWh in it now{% endif %}</span></div>{% endif %}
+  {% if c.get('battery_f') is not none %}<div class="tile"><span class="l">Pack temperature</span><span class="v">{{ c.battery_f|temp }}<small>{{ u.temp }}</small></span></div>{% endif %}
+  {% if c.get('battery_warning') is true %}<div class="tile"><span class="l">Health</span><span class="v warn">Warning</span></div>{% endif %}
+</div>
+<h2 class="sec">Last 30 days</h2>
+{{ parts.chart('bat-' ~ c.vin, b.chart) }}
+{% if b.full %}<h2 class="sec">Range at 100%, 90 days</h2>{{ parts.chart('full-' ~ c.vin, b.full) }}{% endif %}
+{% if b.tires %}<h2 class="sec">Tire pressure, 30 days {% call i.info('One scale') %}All four share one scale.{% endcall %}</h2><div class="four">{% for w in ['fl', 'fr', 'rl', 'rr'] %}{% if b.tires.get(w) %}<div><h3>{{ {'fl': 'Front left', 'fr': 'Front right', 'rl': 'Rear left', 'rr': 'Rear right'}[w] }}</h3>{{ b.tires[w]|safe }}</div>{% endif %}{% endfor %}</div>{% endif %}
+
+</section>
+{% endfor %}
+{% endblock %}

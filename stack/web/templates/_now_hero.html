@@ -1,0 +1,38 @@
+{# The car's card on Now. The page includes it and the live stream sends it again when it changes, so the two cannot drift. #}
+{% import "_parts.html" as parts %}
+<section class="hero" data-live="{{ car.vin }}">
+  {% set sw = state_word(car.status) %}
+  {% if ident %}<div class="hero-id">{{ parts.carpic(ident, root) }}<span class="idline" title="{{ ident.line }}">{{ ident.short or ident.line }}</span></div>{% endif %}
+  <div class="cc-hd"><span class="state {{ sw[1] }}" style="margin-left:0"><i></i>{{ sw[0] }}{% if car.get('charging_power_kw') %} · {{ car.charging_power_kw|num(1) }} kW{% endif %}</span>{{ parts.guard_dot(car) }}</div>
+  <div class="cc-bat"><span class="cc-pct">{% if car.get('soc') is not none %}{{ car.soc|num }}<small>%</small>{% else %}—{% endif %}</span><span class="cc-rng">{% if car.get('range_mi') is not none %}{{ car.range_mi|dist }}<small>{{ u.dist }}</small>{% else %}—{% endif %}</span>{% if car.get('range_full_mi') %}<span class="muted small">{{ car.range_full_mi|dist }} {{ u.dist }} at 100%</span>{% endif %}</div>
+  {{ parts.gauge(car.get('soc'), car.get('charge_target')) }}
+  {% set t = today or {} %}<div class="pills">{% if t.drives %}{{ parts.pill(t.drives ~ (' drive' if t.drives == 1 else ' drives') ~ ' today · ' ~ (t.miles|dist) ~ ' ' ~ u.dist, 'drv') }}{% endif %}{% if sw[1] == 'driving' %}{{ parts.pill('driving now', 'drv') }}{% elif not t.drives %}{{ parts.pill('no drives today', 'none') }}{% endif %}{% if t.kwh and t.kwh >= 1 %}{{ parts.pill('charged ' ~ (t.kwh|num) ~ ' kWh today', 'chg') }}{% endif %}{% if sw[1] == 'charging' %}{{ parts.pill('charging now', 'chg') }}{% elif not (t.kwh and t.kwh >= 1) %}{{ parts.pill('no charge today', 'none') }}{% endif %}</div>
+  {% if route %}<p class="navto">to <b>{{ route.name }}</b>{% if route.get('minutes') is not none %}, {{ route.minutes }} min{% endif %}</p>{% endif %}
+  {# Never raw coordinates: a named place, the street, a spot to name, or on the road while driving (the route says where to) #}
+  <p class="where">{% if sw[1] == 'driving' %}{% if not route %}<span class="muted">On the road</span>{% endif %}{% elif car.place %}<b>{{ place_refs(car.place, [{'name': car.place, 'lat': car.lat, 'lon': car.lon, 'new': false}] if car.get('lat') is not none else []) }}</b>{% if car.address %} <span class="muted">{{ car.address }}</span>{% endif %}{% elif car.address %}{{ place_refs(car.address, [{'name': car.address, 'lat': car.lat, 'lon': car.lon, 'new': true}] if car.get('lat') is not none else []) }}{% elif car.lat %}<span class="muted">{{ place_refs('Unnamed spot', [{'name': 'Unnamed spot', 'lat': car.lat, 'lon': car.lon, 'new': true}]) }}</span>{% endif %}</p>
+  {% if due %}<p class="due-line">{% for it in due %}<span class="tag{% if it.status == 'overdue' %} due{% endif %}">{{ it.what }} {{ 'overdue' if it.status == 'overdue' else 'due soon' }}</span> {% endfor %}<a class="muted small" href="{{ root }}/service{{ q }}">Service</a></p>{% endif %}
+  {# Only what is out of the ordinary says anything here; the rest of the car's facts fold
+     into Details, two columns of label and value. #}
+  {% set odd = [] %}
+  {% if car.live and car.doors_open %}{% set _ = odd.append('A door is open') %}{% elif car.live and car.locked is false %}{% set _ = odd.append('Unlocked') %}{% endif %}
+  {% if car.tires_psi and car.tire_warning %}{% set _ = odd.append('A tire is low') %}{% endif %}
+  {% if car.live and car.sentry is true %}{% set _ = odd.append(guard_name(car.get('make')) ~ (' reacting to something' if car.sentry_threat is true else ' watching')) %}{% endif %}
+  {% if car.battery_warning is true %}{% set _ = odd.append('Battery health warning') %}{% endif %}
+  {% if car.live and car.update_available is true %}{% set _ = odd.append('Software update waiting') %}{% endif %}
+  {% if odd %}<p class="odd">{% for o in odd %}<span class="warn">{{ o }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
+  <details class="morefacts"><summary>Details</summary>
+  <dl class="facts2">
+    {% if car.live %}<dt>Doors</dt><dd>{{ 'Locked' if car.locked else 'Unlocked' }}{% if car.doors_open %}, one open{% endif %}</dd>{% else %}<dt>Last seen</dt><dd>{{ car.updated_age }}</dd>{% endif %}
+    {% if car.live and car.get('outside_f') is not none %}<dt>Outside</dt><dd>{{ car.outside_f|temp }}{{ u.temp }}{% if car.get('inside_f') is not none %}, inside {{ car.inside_f|temp }}{{ u.temp }}{% endif %}</dd>{% endif %}
+    {% if not car.live and car.get('meters') and car.meters.get('outside_f') is not none %}<dt>Outside</dt><dd>{{ car.meters.outside_f|temp }}{{ u.temp }}{% if car.meters.get('inside_f') is not none %}, inside {{ car.meters.inside_f|temp }}{{ u.temp }}{% endif %}</dd>{% endif %}
+    {% if car.tires_psi %}<dt>Tires</dt><dd{% if car.tire_warning %} class="warn"{% endif %}>{{ car.tires_psi.front_left|num(1) }} · {{ car.tires_psi.front_right|num(1) }} / {{ car.tires_psi.rear_left|num(1) }} · {{ car.tires_psi.rear_right|num(1) }} psi</dd>{% endif %}
+    {% if tread_last %}<dt>Tread</dt><dd>{{ tread_last.front_left|tread }} · {{ tread_last.front_right|tread }} / {{ tread_last.rear_left|tread }} · {{ tread_last.rear_right|tread }}, {{ tread_last.measured_on.strftime('%b %-d') }}</dd>{% endif %}
+    {% if car.live and car.sentry is true %}<dt>{{ guard_name(car.get('make')) }}</dt><dd>On</dd>{% endif %}
+    {% if car.live and car.pack_capacity_kwh %}<dt>Pack</dt><dd>{{ car.pack_energy_kwh|num(1) }} of {{ car.pack_capacity_kwh|num(1) }} kWh</dd>{% endif %}
+    {% if car.live and car.get('battery_f') is not none %}<dt>Pack temperature</dt><dd>{{ car.battery_f|temp }}{{ u.temp }}</dd>{% endif %}
+    {% if car.odometer_mi %}<dt>Odometer</dt><dd>{{ car.odometer_mi|dist }} {{ u.dist }}</dd>{% endif %}
+    {% if car.get('meters') and car.meters.get('fsd') is not none %}<dt>FSD</dt><dd>{{ car.meters.fsd|dist }} of {{ car.meters.trip|dist }} {{ u.dist }} since reset{% if car.meters.share %}, {{ (car.meters.share * 100)|num }}%{% endif %}</dd>{% endif %}
+    {% if car.software %}<dt>Software</dt><dd>{{ car.software }}</dd>{% endif %}
+  </dl>
+  </details>
+</section>

@@ -1,0 +1,9 @@
+{% extends "gate.html" %}
+{% block title %}{{ status }} · Car Command{% endblock %}
+{% block body %}
+<h1>{{ headline }}</h1>
+<p class="lede">{{ detail }}</p>
+{% if action and action.post %}<form method="post" action="{{ action.href }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">{% for k, v in action.fields.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}<button type="submit" class="btn primary">{{ action.label }}</button></form>
+{% elif action %}<p><a class="btn primary" href="{{ action.href }}">{{ action.label }}</a></p>{% endif %}
+<p class="muted small"><a href="{{ root }}/">Back to Now</a></p>
+{% endblock %}

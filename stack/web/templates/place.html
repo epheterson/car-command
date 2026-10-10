@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% import "_price.html" as pr %}
+{% block title %}{{ p.name or "Add a place" }} · Places · Car Command{% endblock %}
+{% block head %}
+{% include "_maphead.html" %}
+<script src="{{ root }}/static/placecard.js?v={{ js_v }}" defer></script>
+{% endblock %}
+{% block body %}
+{# One place, or a new one: a map to drag its pin on and a slider for its size, both drawn as
+   they change; then its name and icon, address (suggestions from the local maps add-on only),
+   price; Save. Below: its stays, Merge… (picked on the Places map) and Remove (confirmed here,
+   no browser dialog).
+   The map box has its size before the map draws, so nothing below it moves. #}
+{% set eff = resolve_place_icon(p.name, p.icon) %}
+{% set looked = (p.address|short_address) if p.address else (p.street or '') %}
+<p class="crumb"><a href="{{ root }}/places">&larr; Places</a></p>
+<div class="pbar pd-head">
+  <h1>{% if eff %}<span class="pd-ic">{{ ic.place_icon(eff) }}</span>{% endif %}{{ p.name or "Add a place" }}</h1>
+  {% if not new %}<span class="muted">{% if p.city %}{{ p.city }} · {% endif %}{{ (p.visits or 0)|num }} visit{{ 's' if (p.visits or 0) != 1 }}{% if p.home %} · home{% endif %}</span>{% endif %}{% if not new %}<span class="sp"></span><button type="button" class="btn sm" data-pd-edit>Edit</button>{% endif %}
+</div>
+{% if request and request.query_params.get('saved') %}<p class="notice ok pd-said" role="status">Saved</p>{% endif %}
+{% if request and request.query_params.get('merged') %}<p class="notice ok pd-said" role="status">Merged into this place.</p>{% endif %}
+{% if nav and p.auto %}<form method="post" action="{{ root }}/places/{{ p.id }}/use-name" class="pd-said pd-nav"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="pick" value="0"><input type="hidden" name="back" value="/places/{{ p.id }}">
+  <span><b>{{ nav.name }}</b> <span class="muted small">{{ nav.source }}{% if nav.n > 1 %}, {{ nav.n }} drives{% endif %}{% if nav.alternates %}; also {{ nav.alternates|join(', ') }}{% endif %}</span></span> <button type="submit">Use this name</button></form>{% endif %}
+<div class="pdetail">
+  <div class="pd-mapcol">
+    <div id="pd-map" class="pd-map" role="application" aria-label="Map of {{ p.name or 'the new place' }}: drag the pin to move it"
+      data-lat="{{ p.latitude if p.latitude is not none else '' }}" data-lon="{{ p.longitude if p.longitude is not none else '' }}" data-r="{{ p.radius_m or 150 }}"
+      data-pts='{{ (st.points if st else [])|tojson }}' data-parts='{{ (p.parts or [])|tojson }}'{% if not new %} data-around="{{ root }}/places/{{ p.id }}/around"{% endif %}></div>
+  </div>
+  {% if not new %}<div class="group-b pd-read" data-pd-read>
+    <div class="set-row"><span class="set-l">Address</span><span class="set-v">{{ p.user_address or looked or '–' }}</span></div>
+    <div class="set-row"><span class="set-l">Price</span><span class="set-v">{{ p.price_text or 'Not set' }}</span></div>
+    <div class="set-row"><span class="set-l">Size</span><span class="set-v">{{ (p.radius_m or 150)|round|int }} m</span></div>
+  </div>{% endif %}
+  <form id="pd-form" class="pd-form picker-body"{% if not new %} hidden{% endif %} method="post" action="{{ root }}{{ '/places/new' if new else '/places/' ~ p.id ~ '/edit' }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="hidden" name="{{ 'lat' if new else 'latitude' }}" value="{{ p.latitude if p.latitude is not none else '' }}" data-pd-lat>
+    <input type="hidden" name="{{ 'lon' if new else 'longitude' }}" value="{{ p.longitude if p.longitude is not none else '' }}" data-pd-lon>
+    {% if not new %}{# set by the page only when the owner drags the pin or moves the slider: a Save of anything else moves nothing #}<input type="hidden" name="moved" value="" data-pd-moved><input type="hidden" name="resized" value="" data-pd-resized>{% endif %}
+    {% if new %}<input type="hidden" name="back" value="">{% endif %}
+    <input type="text" name="name" value="{{ p.name }}" maxlength="60" autocomplete="off" enterkeyhint="done" placeholder="{{ 'Name, or blank to use the address' if new else 'Name' }}" aria-label="Name" data-auto-icon{% if new %} autofocus{% endif %}>
+    {{ ic.icon_row(p.name, p.icon) }}
+    <div class="picker-addr addr-edit">
+      <div class="pa-top"><label class="pp-l" for="pd-addr">Address</label><button type="button" class="linkish pa-reset" data-reset-to="{{ looked }}"{% if not (p.user_address and looked and p.user_address != looked) %} hidden{% endif %}>Use the looked-up address</button></div>
+      <div class="sugg">
+        <input id="pd-addr" type="text" name="address" value="{{ p.user_address or looked }}" maxlength="200" autocomplete="off" enterkeyhint="done" placeholder="{{ looked or 'Street address' }}"{% if maps_on %} data-suggest{% if new %} data-suggest-moves{% endif %} role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="pd-addr-list"{% endif %}>
+        {% if maps_on %}<ul id="pd-addr-list" class="sugg-list" role="listbox" hidden></ul>{% endif %}
+      </div>
+      <input type="hidden" name="address_lookup" value="{{ looked }}">
+      {% if maps_on %}{% if not new %}<button type="button" class="linkish pd-movehere" hidden>Move the place to this address</button>{% endif %}
+      {% endif %}
+    </div>
+    <div class="pd-radius">
+      <label class="pp-l" for="pd-r">Size</label>
+      <input id="pd-r" type="range" name="radius_m" min="{{ RADIUS_MIN|int }}" max="{{ RADIUS_MAX|int }}" step="1" value="{{ (p.radius_m or 150)|round|int }}" aria-label="Size, metres">
+      {# typed metres, kept with the slider both ways; no name (the slider carries the size) and no min/max, so a size from before the range (1500 m) shows as it is and never blocks a Save #}
+      <span class="pd-rn"><input id="pd-r-n" type="number" step="1" inputmode="numeric" value="{{ (p.radius_m or 150)|round|int }}" aria-label="Size in metres, {{ RADIUS_MIN|int }} to {{ RADIUS_MAX|int }}" data-min="{{ RADIUS_MIN|int }}" data-max="{{ RADIUS_MAX|int }}"> m</span>
+    </div>
+    {{ pr.price_line(p.price, home=p.home, full=true, cur=cur) }}
+    <div class="picker-acts"><a class="btn" href="{{ root }}/places{{ '' if new else '/' ~ p.id }}">Cancel</a><button type="submit" class="btn primary picker-save"{% if new and p.latitude is none %} disabled{% endif %}>{{ 'Add' if new else 'Save' }}</button></div>
+  </form>
+</div>
+{% if not new %}
+{% if st %}<section class="group pd-stays">
+  <h2 class="sec">Visits</h2>
+  <p class="group-b pd-vis">{{ p.visits|num }} visit{{ 's' if p.visits != 1 }}{% if st.by_car|length > 1 %}: {% for v, n in st.by_car|dictsort(by='value', reverse=true) %}{{ names.get(v, v) }} {{ n|num }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if st.median %} · usually {{ st.median|duration }}{% endif %}{% if st.usual %} · {{ st.usual }}{% endif %}.</p>
+</section>{% endif %}
+<section class="group pd-more">
+  <h2 class="sec">More</h2>
+  <div class="group-b">
+    {% if choices %}<a class="set-row set-nav" href="{{ root }}/places?merge={{ p.id }}"><span class="set-l">Merge with…</span>{% if choices[0].m < 1000 %}<span class="set-v">{{ choices[0].name }}, {{ choices[0].far }}</span>{% endif %}</a>{% endif %}
+    <form method="post" action="{{ root }}/places/{{ p.id }}/delete" class="pd-remove set-row">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <button type="button" class="btn danger pd-askremove" aria-expanded="false" aria-controls="pd-confirm">Remove this place</button>
+      <div id="pd-confirm" class="pd-confirm" hidden>
+        <span>Remove {{ p.name }}{% if p.parts %} and {{ p.parts|length }} merged{% endif %}? Drives and charges stay.</span>
+        <button type="submit" class="btn primary danger-fill">Remove</button><button type="button" class="btn pd-keep">Keep it</button>
+      </div>
+    </form>
+  </div>
+</section>
+{% endif %}
+<script>
+(function () {
+  // A place opens as what it is; Edit (or moving its pin or ring) opens the form in its place.
+  var form = document.getElementById("pd-form"), read = document.querySelector("[data-pd-read]");
+  function editing() { if (form.hidden) { form.hidden = false; if (read) read.hidden = true; if (edit) edit.hidden = true; } }
+  var edit = document.querySelector("[data-pd-edit]");
+  if (edit) edit.addEventListener("click", function () { editing(); form.querySelector('input[name="name"]').focus(); });
+  // The confirm for Remove opens in place; Keep it closes it again.
+  var ask = document.querySelector(".pd-askremove"), box = document.getElementById("pd-confirm");
+  if (ask && box) {
+    ask.addEventListener("click", function () { box.hidden = false; ask.hidden = true; ask.setAttribute("aria-expanded", "true"); box.querySelector("button[type=submit]").focus(); });
+    box.querySelector(".pd-keep").addEventListener("click", function () { box.hidden = true; ask.hidden = false; ask.setAttribute("aria-expanded", "false"); ask.focus(); });
+  }
+  // The size: the slider and the typed metres move together (shell.js's CCSize, which sets
+  // "resized" only on a real change); the ring follows, and settles the view once let go.
+  var moved = document.querySelector("[data-pd-moved]"), resized = document.querySelector("[data-pd-resized]");
+  var el = document.getElementById("pd-map"), size = +el.dataset.r, drawSize = null;
+  document.addEventListener("DOMContentLoaded", function () {
+    if (window.CCSize) CCSize.bind(document.getElementById("pd-r"), document.getElementById("pd-r-n"), resized, function (m, done) { size = m; editing(); if (drawSize) drawSize(m, done); });
+  });
+  var lat = parseFloat(el.dataset.lat), lon = parseFloat(el.dataset.lon);
+  var latIn = document.querySelector("[data-pd-lat]"), lonIn = document.querySelector("[data-pd-lon]");
+  var save = document.querySelector("#pd-form .picker-save");
+  // The map, and what hangs on it, starts at once, like the fields above;
+  // nothing waits for the brand's arrival.
+  (function () {
+  if (!window.CCMap || !window.L) return;
+  var map = CCMap.base(el, { scrollWheelZoom: false });
+  var colour = getComputedStyle(document.documentElement).getPropertyValue("--ink").trim() || "#1B1A21", circle = null, pin = null, parts = [];
+  JSON.parse(el.dataset.parts || "[]").forEach(function (c) {
+    parts.push(L.latLng(c.latitude, c.longitude).toBounds(c.radius_m * 2));
+    L.circle([c.latitude, c.longitude], { radius: c.radius_m, color: colour, weight: 1.5, dashArray: "4 5", fillOpacity: 0.06, interactive: false }).addTo(map);
+  });
+  JSON.parse(el.dataset.pts || "[]").forEach(function (p) { L.circleMarker(p, { radius: 3, stroke: false, fillColor: CCMap.palette[3], fillOpacity: 0.8, interactive: false }).addTo(map); });
+  function place(at, fit, byOwner) {
+    if (!circle) {
+      circle = L.circle(at, { radius: size || 150, color: colour, weight: 2, fillOpacity: 0.12, interactive: false }).addTo(map);
+      pin = L.marker(at, { draggable: true, keyboard: true, title: "Drag to move the place", alt: "The place's pin", icon: L.divIcon({ className: "pd-pin", iconSize: [22, 22] }) }).addTo(map);
+      pin.on("drag", function (e) { circle.setLatLng(e.latlng); });
+      pin.on("dragend", function () { set(pin.getLatLng(), true); });
+    } else {
+      circle.setLatLng(at); pin.setLatLng(at);
+    }
+    set(L.latLng(at), byOwner);
+    if (fit) fitRing();
+  }
+  // The view is the ring with room around it, centred on the pin, plus any place merged
+  // into it (dashed) that is close by. A merged place kilometres away is left out of the
+  // view: fitting it too zoomed out until the ring hid under the pin. From centres and
+  // radii, which need no view yet.
+  function fitRing() {
+    var c = circle.getLatLng(), b = c.toBounds(circle.getRadius() * 2.6);
+    parts.forEach(function (p) { if (c.distanceTo(p.getCenter()) <= NEAR_PART_M) b.extend(p); });
+    map.fitBounds(b, { padding: [24, 24], maxZoom: 18 });
+  }
+  var NEAR_PART_M = 1500;
+  // The car's own drives in and out, under the ring: with no street background they show
+  // where it really comes and goes. Asked once the map has drawn; the page never waits.
+  if (el.dataset.around) {
+    fetch(el.dataset.around, { credentials: "same-origin" })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (d) {
+        ((d && d.traces) || []).forEach(function (t) { L.polyline(t, { color: CCMap.palette[1], weight: 2, opacity: 0.55, interactive: false }).addTo(map); });
+        if (circle) circle.bringToFront();
+      })
+      .catch(function () {});
+  }
+  // `byOwner`: the owner put the pin here (a drag, a picked address), so Save moves the place
+  function set(ll, byOwner) {
+    latIn.value = ll.lat.toFixed(6); lonIn.value = ll.lng.toFixed(6);
+    if (byOwner && moved) { moved.value = "1"; editing(); }
+    if (save) save.disabled = false;
+  }
+  if (isFinite(lat) && isFinite(lon)) place([lat, lon], true); else map.setView([20, 0], 2);
+  drawSize = function (m, done) { if (!circle) return; circle.setRadius(m); if (done) fitRing(); };
+  // A picked address suggestion: on a new place it puts the pin there; on a place that
+  // exists it offers to, since fixing an address's spelling should not move Home.
+  var move = document.querySelector(".pd-movehere"), picked = null;
+  document.addEventListener("cc:suggestion", function (e) {
+    var at = [e.detail.lat, e.detail.lon];
+    if (e.target.hasAttribute("data-suggest-moves")) { place(at, true, true); return; }
+    picked = at;
+    if (move) move.hidden = false;
+  });
+  if (move) move.addEventListener("click", function () { if (picked) place(picked, true, true); move.hidden = true; });
+  window.CCPlaceMap = { center: function () { var c = circle ? circle.getLatLng() : map.getCenter(); return { lat: c.lat, lon: c.lng }; } };
+  })();
+})();
+</script>
+{% endblock %}

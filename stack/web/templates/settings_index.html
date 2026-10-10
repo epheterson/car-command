@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Settings · Car Command{% endblock %}
+{% block body %}
+<div class="pbar"><h1>Settings</h1></div>
+<div class="groups">
+  {% for g in groups %}
+  <section class="group">
+    <h2 class="sec">{{ g.title }}</h2>
+    <div class="group-b">{% for r in g.rows %}
+      <a class="set-row set-nav" href="{{ root }}/settings/{{ r.key }}{{ q }}"><span class="set-l">{{ r.label }}</span>{% if r.value %}<span class="set-v">{{ r.value }}</span>{% endif %}</a>{% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+  <div class="muted small ver"><a href="https://github.com/epheterson/car-command/releases">Car Command {{ version }}</a></div>
+</div>
+{% endblock %}

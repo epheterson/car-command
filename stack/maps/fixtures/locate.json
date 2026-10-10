@@ -1,0 +1,5 @@
+[{"input_lat": 39.801, "input_lon": -89.65, "edges": [
+  {"distance": 6.0, "edge": {"classification": {"classification": "service_other", "use": "parking_aisle", "link": false}}, "edge_info": {"way_id": 111, "names": []}},
+  {"distance": 9.0, "edge": {"classification": {"classification": "service_other", "use": "driveway", "link": false}}, "edge_info": {"way_id": 112, "names": ["Bravo Market Drive"]}},
+  {"distance": 21.0, "edge": {"classification": {"classification": "residential", "use": "road", "link": false}}, "edge_info": {"way_id": 113, "names": ["Evergreen Terrace"]}}
+]}]

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% block title %}Charges · Car Command{% endblock %}
+{% macro crow(c, grouped) %}{% set r = as_charge(c) %}{% set rp = day_row(r, cur) %}{{ parts.row(root ~ '/charges/' ~ c.id ~ q, c.session_start_date|local('%-I:%M %p') if grouped else c.session_start_date|when, rp.title, rp.pills + (['by hand'] if c.get('by_hand') else []), rp.big, rp.sub, '', colors.get(c.vin, 0) if car.garage else none, none, [c.get('where_ref')], 'charge', c.get('mix')) }}{% endmacro %}
+{% block body %}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}{% set raw = flt or {} %}
+{% set nflt = [raw.get('place'), raw.get('kind'), raw.get('min')]|select|list|length %}
+<div class="pbar">
+  <h1>Charges</h1>{% if hidden %}<span class="muted">hidden</span>{% endif %}<span class="sp"></span>
+  {% if window.get('custom') %}<span class="muted">{{ window.label }}</span> <a class="aside" href="{{ root }}/charges{{ q }}">By month</a>
+  {% else %}<nav class="stepper" aria-label="Month"><a href="{{ root }}/charges?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/charges?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav>{% endif %}
+</div>
+<nav class="segs2" aria-label="Order">{% for k, dr, lbl in [("start", "desc", "Newest"), ("start", "asc", "Oldest"), ("kwh", "desc", "Most energy"), ("gained", "desc", "Most gained"), ("cost", "desc", "Priciest")] %}<a href="{{ root }}/charges{{ sort_base }}sort={{ k }}&amp;dir={{ dr }}"{% if sort == k and (desc == (dr == 'desc')) %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}<a class="aside" href="{{ root }}/charges.csv{{ q }}" data-no-prefetch>CSV</a>{% if hidden %}<a href="{{ root }}/charges{{ q }}">Back to the list</a>{% else %}<a href="{{ root }}/charges?show=hidden{{ dq }}">Hidden</a>{% endif %}</nav>
+<details class="fsheet"{% if nflt %} open{% endif %}><summary>Filter{% if nflt %} · {{ nflt }} on{% endif %}</summary>
+<form method="get" action="{{ root }}/charges" class="row range">{% if q %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}
+  <label>From <input type="date" name="from" value="{{ window.from.isoformat() if window.get('from') else '' }}"></label>
+  <label>To <input type="date" name="to" value="{{ window.to.isoformat() if window.get('to') else '' }}"></label>
+  {% set raw = flt or {} %}
+  <label>At <select name="place"><option value="">anywhere</option>{% for p in named_places or [] %}<option value="{{ p.name }}" {% if raw.get('place') == p.name %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
+  <label>Kind <select name="kind"><option value="">any</option><option value="home" {% if raw.get('kind') == 'home' %}selected{% endif %}>home</option><option value="away" {% if raw.get('kind') == 'away' %}selected{% endif %}>away, AC</option><option value="fast" {% if raw.get('kind') == 'fast' %}selected{% endif %}>fast, DC</option></select></label>
+  <label>At least, kWh <input type="number" name="min" min="0" step="0.1" value="{{ raw.get('min', '') }}" style="min-width:5em"></label>
+  <button type="submit" class="quiet">Show</button>
+</form>
+</details>
+{% if charges %}
+  {% if days %}{% for day in days %}<section class="tday">{% if day.date %}<h2 class="day-h"><a href="{{ root }}/day?date={{ day.date.isoformat() }}{{ dq }}">{{ day.date.strftime('%A, %B %-d') }}</a><span>{{ day.kwh|num(1) }} kWh</span></h2>{% endif %}<div class="rows">{% for c in day.rows %}{{ crow(c, true) }}{% endfor %}</div></section>{% endfor %}
+  {% else %}<div class="rows">{% for c in charges %}{{ crow(c, false) }}{% endfor %}</div>{% endif %}
+{% else %}<p class="muted">No charges in {{ window.label }}.</p>{% endif %}
+{% if said %}<p class="said">{{ said }}</p>{% endif %}
+<details class="byhand"><summary class="muted">Add a charge by hand</summary>
+<form method="post" action="{{ root }}/charges/manual" class="row"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <label>Car <select name="vin">{% for v in vehicles %}<option value="{{ v.vin }}" {% if v.vin == car.vin %}selected{% endif %}>{{ v.name }}</option>{% endfor %}</select></label>
+  <label>Started <input type="datetime-local" name="start" required max="{{ now_local.strftime('%Y-%m-%dT%H:%M') if now_local else '' }}"></label>
+  <label>Ended <input type="datetime-local" name="end" required max="{{ now_local.strftime('%Y-%m-%dT%H:%M') if now_local else '' }}"></label>
+  <label>Where <select name="place"><option value="">a named place, or nowhere</option>{% for p in named_places or [] %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}</select></label>
+  <label>kWh added <input type="number" name="kwh" min="0.1" max="500" step="0.1" required style="min-width:6em"></label>
+  <label>Type <select name="type"><option value="AC">AC</option><option value="DC">DC (fast)</option></select></label>
+  <label>Cost <input type="number" name="cost" min="0" step="0.01" placeholder="{{ cur }} if known" style="min-width:6em"></label>
+  <label>Battery from <input type="number" name="level_start" min="0" max="100" step="1" placeholder="%" style="min-width:5em"></label>
+  <label>to <input type="number" name="level_end" min="0" max="100" step="1" placeholder="%" style="min-width:5em"></label>
+  <label>Note <input name="note" maxlength="200" placeholder="why it was not logged"></label>
+  <button type="submit" class="quiet">Add</button>
+</form>
+<p class="muted small">Counts like any charge; marked “by hand”.</p>
+</details>
+{% endblock %}

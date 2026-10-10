@@ -1,0 +1,108 @@
+{# The shared parts. A page imports them: {% import "_parts.html" as parts %}. #}
+{% from "_icons.html" import icon as _ic %}
+
+{% macro pill(text, kind="") -%}<span class="pill{% if kind %} {{ kind }}{% endif %}">{{ text }}</span>{%- endmacro %}
+
+{% macro gauge(soc, limit) -%}{% set g = gauge_of(soc, limit) %}
+<div class="gauge" role="img" aria-label="Battery {{ g.fill|round|int }}%{% if g.limit %}, limit {{ g.limit|round|int }}%{% endif %}"><i style="width:{{ g.fill }}%"></i>{% if g.limit %}<b style="left:{{ g.limit }}%"></b>{% endif %}</div>
+{% if g.limit %}<div class="gauge-l"><span></span><span>limit {{ g.limit|round|int }}%</span></div>{% endif %}
+{%- endmacro %}
+
+{% macro strip(segments, ticks) -%}
+<div class="strip"><div class="strip-bar" role="img" aria-label="What the car did over the last 24 hours">{% for s in segments %}<span class="seg {{ s.label }}" style="width:{{ '%.3f'|format(s.width * 100) }}%" title="{{ s.label }} {{ s.start|local('%-I:%M %p') }} to {{ s.end|local('%-I:%M %p') }}"></span>{% endfor %}</div>
+{% if ticks %}<div class="strip-ax">{% for t in ticks %}<span style="left:{{ t.left }}%">{{ t.label }}</span>{% endfor %}</div>{% endif %}</div>
+{%- endmacro %}
+
+{# `kind` ("drive", "charge") tells the two apart at a glance: a tinted bolt chip for a charge (solid when it was a fast one), the route sparkline (or the route icon) in a quiet chip for a drive #}
+{% macro row(href, time, title, pills, big, sub, thumb="", dot=none, extra=none, refs=none, kind="", mix=none) -%}{% set fast = kind == 'charge' and 'fast' in pills %}
+<a class="row-b{% if kind %} k-{{ kind }}{% endif %}" href="{{ href }}"><span class="row-t">{{ time|replace(' AM', '\u00a0AM')|replace(' PM', '\u00a0PM') }}</span>{% if kind %}<span class="row-thumb{% if fast %} fast{% endif %}"{% if fast %} title="Fast charge"{% endif %}>{% if thumb %}{{ thumb|safe }}{% else %}{{ _ic('charge' if kind == 'charge' else 'drive') }}{% endif %}</span>{% elif thumb %}<span class="row-thumb">{{ thumb|safe }}</span>{% endif %}
+<span class="row-m"><span class="row-title">{% if dot is not none %}<span class="dot c{{ dot }}"></span>{% endif %}{{ place_refs(title, refs, true) }}</span><span class="row-s">{% for p in pills if p %}<span>{{ p }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>{% if extra %}<span class="row-x">{% for x in extra %}<span>{{ x }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}{% if mix %}<span class="mixbar" role="img" aria-label="{{ mix.label }}" style="{{ mix.grad }}"></span>{% if mix.note %}<span class="mixnote">{{ mix.note }}</span>{% endif %}{% endif %}</span>
+<span class="row-n"><b>{{ big }}</b>{% if sub %}<span>{{ sub }}</span>{% endif %}</span></a>
+{%- endmacro %}
+
+{# A parked line ("Parked 18 min at Elm Street"): its place opens the naming card (`refs`, as
+   placespage.ref gives them); a name that is not in the text is just left as text. #}
+{% macro gap_row(text, dot=none, refs=none) -%}
+<div class="row-gap">{% if dot is not none %}<span class="dot c{{ dot }}"></span>{% endif %}{{ place_refs(text, refs) }}</div>
+{%- endmacro %}
+
+{# The car's paint as a small swatch beside its year, make and model (identity.describe gives `ident`). #}
+{% macro carpic(ident, root) -%}
+{% if ident.paint %}<span class="paintsw" style="--paint:{{ ident.paint.hex }}" title="{{ ident.paint.name }}"></span>{% endif %}
+{%- endmacro %}
+
+{# Sentry or Halo Secure on: a small red dot beside the car's name, on its card only #}
+{% macro guard_dot(c) -%}{% if c.get('sentry') is true %}{% set g = guard_name(c.get('make')) ~ ' on' %}<span class="guard" role="img" title="{{ g }}" aria-label="{{ g }}"></span>{% endif %}{%- endmacro %}
+{% macro car_card(c, root, colors, u, today, ticks) -%}{% set sw = state_word(c.get('status')) %}{% set t = today or {} %}{% set soc = c.get('soc') %}{% set rng = c.get('range_mi') %}
+<a class="cc" href="{{ root }}/?vin={{ c.vin }}" data-live="{{ c.vin }}">
+  <span class="cc-hd"><span class="dot c{{ colors.get(c.vin, 0) }}"></span><span class="cc-nm">{{ c.name }}</span>{{ guard_dot(c) }}<span class="state {{ sw[1] }}"><i></i>{{ sw[0] }}</span></span>
+  {% if c.get('ident') %}<span class="cc-id">{{ carpic(c.ident, root) }}<span class="idline" title="{{ c.ident.line }}">{{ c.ident.short or c.ident.line }}</span></span>{% endif %}
+  <span class="cc-where">{% if c.get('route') %}to {{ c.route.name }}{% if c.route.minutes is not none %}, {{ c.route.minutes }} min{% endif %}{% elif sw[1] == 'driving' %}On the road{% elif c.get('place') and c.get('lat') is not none %}{{ place_refs(c.place, [{'name': c.place, 'lat': c.lat, 'lon': c.lon, 'new': false}], true) }}{% else %}{{ (c.get('place') or c.get('address') or '—')|places }}{% endif %}{% if c.get('updated_age') %} · {{ 'live ' if c.get('live') else '' }}{{ c.updated_age }}{% endif %}</span>
+  <span class="cc-bat"><span class="cc-pct">{% if soc is not none %}{{ soc|num }}<small>%</small>{% else %}—{% endif %}</span><span class="cc-rng">{% if rng is not none %}{{ rng|dist }}<small>{{ u.dist }}</small>{% else %}—{% endif %}</span></span>
+  {{ gauge(soc, c.get('charge_target')) }}
+  <span class="pills">{% if t.drives %}{{ pill(t.drives ~ (' drive' if t.drives == 1 else ' drives') ~ ' · ' ~ (t.miles|dist) ~ ' ' ~ u.dist, 'drv') }}{% endif %}{% if sw[1] == 'driving' %}{{ pill('driving now', 'drv') }}{% elif not t.drives %}{{ pill('no drives', 'none') }}{% endif %}{% if t.kwh and t.kwh >= 1 %}{{ pill('charged ' ~ (t.kwh|num) ~ ' kWh', 'chg') }}{% endif %}{% if sw[1] == 'charging' %}{{ pill('charging now', 'chg') }}{% elif not (t.kwh and t.kwh >= 1) %}{{ pill('no charge', 'none') }}{% endif %}</span>
+  {% if c.get('ribbon') %}{{ strip(c.ribbon, ticks) }}{% endif %}
+  {% if c.get('last_drive') %}<span class="cc-last"><span class="row-t">{{ c.last_drive.start_date|when }}</span><span class="cc-last-m">{{ c.last_drive.from|short_place|places }} → {{ c.last_drive.to|short_place|places }}</span><b>{{ c.last_drive.miles|dist(1) }} {{ u.dist }}</b></span>{% endif %}
+</a>
+{%- endmacro %}
+
+{# `big`: what the headline says at rest (a drive's 86→85%), when the last reading would read as the record's own figure #}
+{% macro chart(id, data, now_text="", big=none) -%}{% set pts = data.primary.points %}
+{% if not pts %}<p class="muted small chart-none">No {{ data.primary.label|lower }} readings logged in this window.</p>{% else %}
+<div class="chartbox" id="{{ id }}">
+  <div class="chart-top">
+    <span class="chart-now"><span class="chart-big">{% if big is not none %}{{ big }}{% else %}{{ pts[-1][1]|num }}{{ data.primary.unit }}{% endif %}</span>{% if now_text %}<span class="muted">{{ now_text }}</span>{% endif %}</span>
+    {% if data.extras %}<div class="chart-segs" role="radiogroup" aria-label="Second line"><span class="muted small">Also show</span><button type="button" role="radio" aria-checked="true" data-extra="" class="on">Nothing</button>{% for x in data.extras %}<button type="button" role="radio" aria-checked="false" data-extra="{{ x.key }}">{{ x.label }}</button>{% endfor %}</div>{% endif %}
+  </div>
+  <div class="chart-area"><svg class="chart-svg" role="img" aria-label="{{ data.primary.label }} over time, with what the car was doing underneath"></svg><div class="chart-hov" role="status" aria-live="polite"></div></div>
+  {% if data.lane %}<div class="chart-key"><span><i class="k-asleep"></i>Asleep</span><span><i class="k-parked"></i>Parked, awake</span><span><i class="k-driving"></i>Driving</span><span><i class="k-charging"></i>Charging</span></div>{% endif %}
+  <script type="application/json" class="chart-data">{{ data|tojson }}</script>
+</div>{% endif %}
+{%- endmacro %}
+
+{% macro bars(g, unit, names, colors, cls="") -%}
+<figure class="mbars{% if cls %} {{ cls }}{% endif %}"><svg viewBox="0 0 {{ g.w }} {{ g.h }}" role="img" aria-label="Distance a month for twelve months">
+  {% for t in g.grid %}<line class="mg" x1="{{ g.L }}" x2="{{ g.w - g.R }}" y1="{{ t.y }}" y2="{{ t.y }}"/><text class="mt" x="{{ g.L - 6 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.value|num }}{% if loop.last and not g.short %} {{ unit }}{% endif %}</text>{% endfor %}
+  {# Each month is one shape: the cars' segments are square and flush, and one clip rounds the
+     top of the whole stack, running past the axis so the bottom stays flat. #}
+  {% set cid = 'mbs' if g.short else 'mbw' %}
+  {# A month in progress adds a lighter extension up to where its pace would take it; the
+     round cap moves to the extension's top and what it has so far stays square under it. #}
+  {% set pb = g.bars|selectattr('proj')|first %}
+  {% for b in g.bars %}{% set cap = b.proj.y if b.proj else b.top %}{% if cap < g.base %}<clipPath id="{{ cid }}{{ loop.index }}"><rect x="{{ b.x }}" y="{{ cap }}" width="{{ b.w }}" height="{{ g.base - cap + 4 }}" rx="3"/></clipPath>
+  <g clip-path="url(#{{ cid }}{{ loop.index }})">{% if b.proj %}<rect class="mp" x="{{ b.x }}" y="{{ b.proj.y }}" width="{{ b.w }}" height="{{ b.proj.h }}"/>{% endif %}{% for s in b.segs if s.h > 0 %}<rect class="mb c{{ colors.get(s.vin, 0) }}{% if b.focus %} on{% endif %}" x="{{ b.x }}" y="{{ s.y }}" width="{{ b.w }}" height="{{ s.h }}"/>{% endfor %}</g>{% endif %}
+  <text class="mt{% if b.focus %} on{% endif %}" x="{{ b.x + b.w / 2 }}" y="{{ g.h - 6 }}" text-anchor="middle">{{ b.label }}</text>{% if b.focus %}<text class="mv" x="{{ b.x + b.w / 2 }}" y="{{ (b.proj.y if b.proj else (b.segs|selectattr('h')|map(attribute='y')|min) if (b.segs|selectattr('h')|list) else g.base) - 6 }}" text-anchor="middle">{{ b.value|num }}</text>{% endif %}{% endfor %}
+  {% if g.avg.value is not none %}<line class="ma" x1="{{ g.L }}" x2="{{ g.w - g.R }}" y1="{{ g.avg.y }}" y2="{{ g.avg.y }}" stroke-dasharray="5 4"/>{% endif %}
+</svg>
+<figcaption>{% for l in g.legend %}<span><i class="c{{ colors.get(l.vin, 0) }}"></i>{{ names.get(l.vin, l.vin) }} {{ l.total|num }} {{ unit }}</span>{% endfor %}{% if pb %}<span class="muted"><i class="mp"></i>on pace for ~{{ pb.proj.value|num }} {{ unit }}</span>{% endif %}{% if g.avg.value is not none %}<span class="muted">┄ 12-month average, {{ g.avg.value|num }} {{ unit }}</span>{% endif %}</figcaption></figure>
+{%- endmacro %}
+
+{# Which source writes a car's history: the choices side by side, Switch only once another is
+   picked, and the comparison with the stream a quiet link beside them. #}
+{% macro writer_choice(vin, choices, root, csrf, back=none, compare=true) -%}
+<form method="post" action="{{ root }}/settings/sources/writer" class="segpick" data-wait="Handing the history over…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ vin }}">{% if back %}<input type="hidden" name="back" value="{{ back }}">{% endif %}
+  <span class="segmented" role="radiogroup" aria-label="History from">{% for o in choices %}<label><input type="radio" name="kind" value="{{ o.kind }}"{% if o.current %} checked data-current{% endif %}>{{ o.name }}</label>{% endfor %}</span>
+  <button type="submit" class="btn sm switch">Switch</button>
+  {% if compare and choices|selectattr('kind', 'equalto', 'tesla')|list %}<a class="small quietlink" href="{{ root }}/settings/sources/tesla/compare?vin={{ vin }}">Compare</a>{% endif %}
+</form>
+{%- endmacro %}
+
+
+{# Where a home charge's energy came from: the sun, the Powerwall, the grid. Neutral inks (gold is the
+   car battery's). On a row just the bar and the sun's share; with `detail`, each part's kWh and cost,
+   ≈ where it rests on an estimate. `mix` is energypage.mix_bar's. #}
+{% macro mix_bar(mix, detail=false, cur="") -%}
+<span class="mixbar" role="img" aria-label="{{ mix.label }}" style="{{ mix.grad }}"></span>
+{%- if detail %}<span class="mixkey">{% for p in mix.parts %}<span class="mk {{ p.key }}"><i></i><b>{{ p.label }}</b> {{ p.kwh|num(1) }} kWh{% if p.cost is not none %} · {{ '≈' if p.approx }}{{ cur }}{{ p.cost|num(2) }}{% endif %}</span>{% endfor %}</span>
+{%- elif mix.note %}<span class="mixnote">{{ mix.note }}</span>{% endif %}
+{%- endmacro %}
+
+{# The Powerwall on Now: battery level (neutral ink, with a fill bar) and where the energy moves.
+   `pw` is energypage.row's; nothing is drawn without a fresh reading. #}
+{% macro pw_row(pw) -%}
+{% if pw %}<section class="pwrow" aria-label="Powerwall" title="{{ pw.source_label }}, {{ pw.age_s }} s ago">
+  <span class="pw-nm">Powerwall</span>
+  {% if pw.soc is not none %}<span class="pw-soc"><b>{{ pw.soc|num }}<small>%</small></b><span class="pwbar"><i style="width:{{ '%.0f'|format(pw.fill) }}%"></i></span></span>{% endif %}
+  <span class="pw-parts">{% for p in pw.parts %}<span class="pw-p{{ ' idle' if p.idle }}" title="{{ p.title }}"><span class="pw-l">{{ p.label }}</span> <b>{{ p.arrow }}{{ p.kw }}</b></span>{% endfor %}</span>
+</section>{% endif %}
+{%- endmacro %}

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 69.57 46.02" width="69.57" height="46.02" role="img" aria-label="Car Command">
+<title>Car Command</title>
+<defs>
+<mask id="cc-under" maskUnits="userSpaceOnUse" x="-5" y="-5" width="80" height="56">
+<rect x="-5" y="-5" width="80" height="56" fill="#fff"/>
+<path d="M 61.27 44.72 C 60.43 44.72 60.42 43.55 60.27 42.72 C 60.04 41.42 59.84 40.12 59.52 38.84 C 59.23 37.68 58.32 36.76 57.15 36.47 C 55 35.93 52.97 35.01 50.9 34.22 C 48.2 33.18 45.42 32.22 42.52 32.22 C 40.45 32.22 38.35 32.5 36.52 33.47 L 30.9 36.41 C 29.72 37.03 28.47 37.53 27.15 37.72 C 24.84 38.04 22.55 38.49 20.27 38.97 C 19.27 39.18 18.22 39.62 17.9 40.6 C 17.59 41.54 17.26 42.49 17.09 43.47 C 17 43.98 17.04 44.72 16.52 44.72 L 16.52 47.5 L 61.27 47.5 Z" fill="#000" transform="translate(58 0)"><animateTransform attributeName="transform" type="translate" values="58 0;-0.55 0;0 0" keyTimes="0;0.84;1" calcMode="spline" keySplines="0.15 0.6 0.3 1;0.4 0 0.4 1" begin="1.9s" dur="1.5s" fill="freeze"/></path>
+</mask>
+</defs>
+<g fill="none" stroke="#F0C24A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M 10.76 44.72 A 0.6 0.6 0 0 1 10.18 44 L 13.33 29.13 A 0.6 0.6 0 0 0 13.15 28.56 L 2.3 18.79 A 0.6 0.6 0 0 1 2.64 17.75 L 17.16 16.21 A 0.6 0.6 0 0 0 17.64 15.86 L 23.58 2.53 A 0.6 0.6 0 0 1 24.68 2.53 L 30.62 15.86 A 0.6 0.6 0 0 0 31.1 16.21"/>
+<g><animateTransform attributeName="transform" type="rotate" values="0 31.1 16.21;-7.968 31.1 16.21" begin="1.1s" dur="0.5s" calcMode="spline" keyTimes="0;1" keySplines="0.45 0 0.55 1" fill="freeze"/><path d="M 31.1 16.21 L 45.96 18.29"/><g><animateTransform attributeName="transform" type="rotate" values="0 45.96 18.29;-128.623 45.96 18.29" begin="1.15s" dur="0.6s" calcMode="spline" keyTimes="0;1" keySplines="0.45 0 0.55 1" fill="freeze"/><path d="M 45.96 18.29 L 34.86 28.79"/></g></g>
+<path d="M 61.38 16.21 L 68.27 16.21" pathLength="1" stroke-dasharray="1 1.04" stroke-dashoffset="1.02"><animate attributeName="stroke-dashoffset" values="1.02;0" begin="1.75s" dur="0.3s" calcMode="spline" keyTimes="0;1" keySplines="0.45 0 0.55 1" fill="freeze"/></path>
+<g mask="url(#cc-under)">
+<path d="M 37.5 44.72 L 34.86 28.79"><animateTransform attributeName="transform" type="rotate" values="0 37.5 44.72;102.39 37.5 44.72;99.41 37.5 44.72" keyTimes="0;0.85;1" calcMode="spline" keySplines="0.33 1 0.68 1;0.45 0 0.55 1" begin="1.1s" dur="0.6s" fill="freeze"/></path>
+<path d="M 10.76 44.72 L 24.13 36.16"><animateTransform attributeName="transform" type="rotate" values="0 10.76 44.72;32.6 10.76 44.72" begin="0.6s" dur="0.5s" calcMode="spline" keyTimes="0;1" keySplines="0.45 0 0.25 1" fill="freeze"/></path>
+<path d="M 37.5 44.72 L 24.13 36.16"><animateTransform attributeName="transform" type="rotate" values="0 37.5 44.72;-32.6 37.5 44.72" begin="0.6s" dur="0.5s" calcMode="spline" keyTimes="0;1" keySplines="0.45 0 0.25 1" fill="freeze"/></path>
+<path d="M 53.65 44.72 L 68.27 44.72" pathLength="1" stroke-dasharray="1 1.04" stroke-dashoffset="1.02"><animate attributeName="stroke-dashoffset" values="1.02;0" begin="1.75s" dur="0.35s" calcMode="spline" keyTimes="0;1" keySplines="0.45 0 0.55 1" fill="freeze"/></path>
+</g>
+<path d="M 61.27 44.72 C 60.43 44.72 60.42 43.55 60.27 42.72 C 60.04 41.42 59.84 40.12 59.52 38.84 C 59.23 37.68 58.32 36.76 57.15 36.47 C 55 35.93 52.97 35.01 50.9 34.22 C 48.2 33.18 45.42 32.22 42.52 32.22 C 40.45 32.22 38.35 32.5 36.52 33.47 L 30.9 36.41 C 29.72 37.03 28.47 37.53 27.15 37.72 C 24.84 38.04 22.55 38.49 20.27 38.97 C 19.27 39.18 18.22 39.62 17.9 40.6 C 17.59 41.54 17.26 42.49 17.09 43.47 C 17 43.98 17.04 44.72 16.52 44.72" transform="translate(58 0)"><animateTransform attributeName="transform" type="translate" values="58 0;-0.55 0;0 0" keyTimes="0;0.84;1" calcMode="spline" keySplines="0.15 0.6 0.3 1;0.4 0 0.4 1" begin="1.9s" dur="1.5s" fill="freeze"/></path>
+</g>
+</svg>

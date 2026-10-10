@@ -1,0 +1,88 @@
+{% extends "settings_base.html" %}
+{# Settings › Alerts: the channels set up in .env, then every alert kind in its group as a row
+   with a switch per channel, and the few settings an alert needs beside it. One form, one Save
+   bar. A channel's own switch is a shortcut for all of its rows and posts nothing itself. #}
+{% from "_info.html" import info %}
+{% import "_settings.html" as s %}
+{% set chans = channels or [] %}
+{% set names = {'discord': 'Discord', 'telegram': 'Telegram', 'email': 'Email', 'pushover': 'Pushover'} %}
+{% set kinds = alert_kinds or {} %}
+{% set groups = alert_groups or [('Alerts', kinds.keys()|list)] %}
+{% set r = routes or {} %}
+
+{# The extra a kind needs, as its own row beneath it #}
+{% macro extra(k) -%}
+{% if k == 'plug_reminder' %}
+<div class="set-row sub"><span class="set-l">Remind after</span><div class="set-c">{{ s.time('plug_reminder_at', st.plug_reminder_at, 'Plug-in reminder after') }}<span class="muted">below</span>{{ s.num('plug_reminder_below', s.n(st.plug_reminder_below), unit='%', step='1', min=1, max=100, w=4, label='Below this battery level') }}</div></div>
+{% elif k == 'daily_summary' %}
+<div class="set-row sub"><span class="set-l">Send after</span><div class="set-c">{{ s.time('summary_at', st.summary_at or '07:00', 'Daily summary after') }}</div></div>
+{% elif k == 'tire' %}
+<div class="set-row sub"><span class="set-l">Your own limits {% call info("Tire limits") %}Alerts when any tire leaves this range, in addition to the car's own warning. Blank is off.{% endcall %}</span><div class="set-c">{{ s.num('tire_low_psi', s.n(st.tire_low_psi), step='0.5', min=10, max=90, w=4, placeholder='off', label='Under, psi') }}<span class="muted">to</span>{{ s.num('tire_high_psi', s.n(st.tire_high_psi), unit='psi', step='0.5', min=10, max=90, w=4, placeholder='off', label='Over, psi') }}</div></div>
+{% endif %}
+{%- endmacro %}
+
+{% block section %}
+<form id="alerts" method="post" action="{{ root }}/settings/alerts{{ q }}" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
+{% if chans %}
+<input type="hidden" name="routes_shown" value="1">
+<section class="group">
+  <h2 class="sec">Channels {% call info("Adding a channel") %}Add a Discord webhook, Telegram bot, SMTP URL or Pushover keys in .env.{% endcall %}</h2>
+  <div class="group-b">
+    {% for c in chans %}
+    {% set n = namespace(v=0) %}{% for k in kinds %}{% if r.get(k) is none or c in r.get(k) %}{% set n.v = n.v + 1 %}{% endif %}{% endfor %}
+    <div class="set-row"><label class="set-l" for="chan-{{ c }}">{{ names.get(c, c) }}<span class="set-s" data-count="{{ c }}">{{ n.v }} of {{ kinds|length }} alerts</span></label>
+      <div class="set-c">{{ s.switch(none, n.v > 0, 'Every alert on ' ~ names.get(c, c), id='chan-' ~ c, chan=c) }}</div></div>
+    {% endfor %}
+  </div>
+</section>
+{% for title, keys in groups %}
+<section class="group">
+  <h2 class="sec">{{ title }}{% if chans|length > 1 %}<span class="al-cols" aria-hidden="true">{% for c in chans %}<span>{{ names.get(c, c) }}</span>{% endfor %}</span>{% endif %}</h2>
+  <div class="group-b">
+    {% for k in keys %}{% set label = kinds.get(k, k) %}
+    <div class="set-row{{ ' al-multi' if chans|length > 1 }}"><label class="set-l" for="route_{{ k }}_{{ chans[0] }}">{{ label }}</label>
+      <div class="set-c al">{% for c in chans %}{{ s.switch('route_' ~ k ~ '_' ~ c, (r.get(k) is none or c in r.get(k)), label ~ ' on ' ~ names.get(c, c), id='route_' ~ k ~ '_' ~ c) }}{% endfor %}</div></div>
+    {{ extra(k) }}
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% else %}
+<section class="group">
+  <div class="group-b"><div class="empty">No channel set up {% call info("Adding a channel") %}Add a Discord webhook, Telegram bot, SMTP URL or Pushover keys in .env.{% endcall %}</div></div>
+</section>
+<section class="group">
+  <h2 class="sec">Reminders</h2>
+  <div class="group-b">
+    <div class="set-row"><span class="set-l">Plug-in reminder</span></div>
+    {{ extra('plug_reminder') }}
+    <div class="set-row"><span class="set-l">Daily summary</span></div>
+    {{ extra('daily_summary') }}
+  </div>
+</section>
+{% endif %}
+{{ s.savebar() }}
+</form>
+<script>
+/* A channel's switch sets all of its rows; its rows set the switch and the count beside it. */
+(() => {
+  const f = document.getElementById("alerts");
+  const rows = (c) => [...f.querySelectorAll('input[name^="route_"]')].filter((i) => i.name.endsWith("_" + c));
+  const sync = (c) => {
+    const on = rows(c).filter((i) => i.checked).length;
+    f.querySelector('[data-chan="' + c + '"]').checked = on > 0;
+    const n = f.querySelector('[data-count="' + c + '"]');
+    n.textContent = n.textContent.replace(/^\d+/, on);
+  };
+  f.querySelectorAll("[data-chan]").forEach((m) => m.addEventListener("change", () => {
+    rows(m.dataset.chan).forEach((i) => { i.checked = m.checked; });
+    sync(m.dataset.chan);
+  }));
+  f.addEventListener("change", (e) => {
+    const m = /^route_.+_([a-z]+)$/.exec(e.target.name || "");
+    if (m) sync(m[1]);
+  });
+  f.addEventListener("reset", () => setTimeout(() => f.querySelectorAll("[data-chan]").forEach((m) => sync(m.dataset.chan)), 0));
+})();
+</script>
+{% endblock %}

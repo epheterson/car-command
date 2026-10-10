@@ -1,0 +1,23 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    },
+    "8443": {
+      "TCPForward": "tesla-telemetry:4443"
+    }
+  },
+  "Web": {
+    "${TS_CERT_DOMAIN}:443": {
+      "Handlers": {
+        "/.well-known/appspecific/com.tesla.3p.public-key.pem": {
+          "Proxy": "http://web:8000/.well-known/appspecific/com.tesla.3p.public-key.pem"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {
+    "${TS_CERT_DOMAIN}:443": true,
+    "${TS_CERT_DOMAIN}:8443": true
+  }
+}

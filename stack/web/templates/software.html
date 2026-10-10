@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% import "_info.html" as i %}
+{% block title %}Software · Car Command{% endblock %}
+{% block body %}
+{# Per car: what it runs, then one row a version (newest first, how long it ran); a missed
+   update is added from the group's last row. #}
+<div class="pbar"><h1>Software</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span></div>
+{% for b in blocks %}{% set now_row = b.rows[0] %}{% set long = b.rows|sort(attribute='days', reverse=true)|first %}
+<section class="daycar">
+  {% if car.garage %}<h2 class="daycar-h"><span class="dot c{{ colors.get(b.vin, 0) }}"></span>{{ b.name }}</h2>{% endif %}
+  <div class="tiles t3">
+    <div class="tile"><span class="l">Running</span><span class="v small-v">{{ now_row.version }}</span><span class="d">{{ now_row.days }} day{{ 's' if now_row.days != 1 }}</span></div>
+    <div class="tile"><span class="l">Versions</span><span class="v">{{ b.rows|length }}</span><span class="d">since {{ b.rows[-1].seen_at|local('%b %Y') }}</span></div>
+    <div class="tile"><span class="l">Longest</span><span class="v">{{ long.days }}<small>days</small></span><span class="d">{{ long.version }}</span></div>
+  </div>
+  <div class="group">
+    <div class="group-b">
+      {% for r in b.rows %}<div class="set-row"><span class="set-l">{{ r.version }}<span class="set-s">{{ r.seen_at|local('%b %-d, %Y') }}{% if r.odometer %} · {{ r.odometer|dist }} {{ u.dist }}{% endif %}{% if r.by_hand %} · by hand{% endif %}</span></span><span class="set-c">{% if r.by_hand %}<form method="post" action="{{ root }}/software/{{ r.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ b.vin }}"><button type="submit" class="btn sm danger">Remove</button></form>{% endif %}<span class="set-v">{{ r.days }} day{{ 's' if r.days != 1 }}{% if not r.until %} so far{% endif %}</span></span></div>{% endfor %}
+      {% if add_cars and loop.last %}<details class="set-x add"><summary class="set-row"><span class="set-l">Add a missed update {% call i.info('A missed update') %}One installed while nothing was logging.{% endcall %}</span></summary>
+        <form method="post" action="{{ root }}/software/add" class="set-p"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+          {% if add_cars|length > 1 %}<div class="set-row"><label class="set-l" for="sw-car">Car</label><span class="set-c"><select id="sw-car" class="sel" name="vin">{% for v in add_cars %}<option value="{{ v.vin }}">{{ v.name }}</option>{% endfor %}</select></span></div>{% else %}<input type="hidden" name="vin" value="{{ add_cars[0].vin }}">{% endif %}
+          <div class="set-row"><label class="set-l" for="sw-v">Version</label><span class="set-c"><input id="sw-v" class="field" name="version" maxlength="40" placeholder="2026.32.4" required></span></div>
+          <div class="set-row"><label class="set-l" for="sw-on">Arrived</label><span class="set-c"><input id="sw-on" class="field" type="date" name="seen_on" value="{{ today.isoformat() if today else '' }}" required></span></div>
+          <div class="acts"><button type="submit" class="btn primary">Add</button></div>
+        </form>
+      </details>{% endif %}
+    </div>
+  </div>
+</section>
+{% endfor %}
+{% if not blocks %}<div class="empty">No software versions recorded</div>{% endif %}
+{% endblock %}

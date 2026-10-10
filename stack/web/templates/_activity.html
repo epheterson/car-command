@@ -1,0 +1,43 @@
+{# The banners at the top of Now: one for each car out driving or charging, nothing at all when none is
+   (activity.py says what, app.activity_banners gathers). The page includes it and the live stream sends
+   it again; while the same cars do the same things only the words are swapped (data-fill, shell.js), so
+   the road keeps rolling. The car is the mark's own (ic._fold's car): it faces the garage, so the
+   roadside passes it left to right. Off the mark's road it would read as a bump in the line, so here the
+   body rides a hair above it on two wheels drawn in the same weight. Ink on paper, gold on night, like the mark. -#}
+<div class="acts" data-live="activity" data-sig="{{ act_sig }}">{% if acts %}
+<svg class="act-defs" width="0" height="0" aria-hidden="true" focusable="false"><defs>
+  <pattern id="act-near" width="400" height="64" patternUnits="userSpaceOnUse"><g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 34 49 V 39" stroke-width="1.6"/><path d="M 34 41 h 0" stroke-width="3"/>
+    <path d="M 118 49 V 37 M 118 42 l -5 -4 M 118 40 l 4 -3" stroke-width="1.6"/><circle cx="118" cy="29" r="8.5" stroke-width="1.6"/>
+    <path d="M 214 49 V 26" stroke-width="1.6"/><rect x="203" y="17" width="22" height="11" rx="2.5" stroke-width="1.6"/>
+    <path d="M 290 49 V 39" stroke-width="1.6"/><path d="M 290 41 h 0" stroke-width="3"/>
+    <path d="M 334 49 q 5 -9 10 0 q 4 -6 8 0" stroke-width="1.6"/>
+  </g></pattern>
+  <pattern id="act-far" width="640" height="64" patternUnits="userSpaceOnUse"><path d="M -10 49 Q 60 30 130 44 T 260 40 Q 330 26 400 45 T 520 38 Q 590 33 650 49" fill="none" stroke-width="1.4" stroke-linecap="round"/></pattern>
+  <pattern id="act-lane" width="40" height="8" patternUnits="userSpaceOnUse"><path d="M 4 4 h 12" stroke-width="1.6" stroke-linecap="round"/></pattern>
+</defs></svg>
+{% for a in acts %}{% set link = act_link %}
+<{{ 'a' if link else 'section' }} class="act {{ a.kind }}"{% if link %} href="{{ root }}/?vin={{ a.vin }}"{% endif %} aria-label="{{ a.name }} {{ a.kind }}">
+  <span class="act-scene" aria-hidden="true">
+    {% if a.kind == 'driving' %}<svg class="act-layer act-far" width="1920" height="64"><rect width="1920" height="64" fill="url(#act-far)"/></svg>
+    <svg class="act-layer act-near" width="1600" height="64"><rect width="1600" height="64" fill="url(#act-near)"/></svg>
+    <svg class="act-layer act-lanes" width="1600" height="8"><rect width="1600" height="8" fill="url(#act-lane)"/></svg>{% endif %}
+    <span class="act-road"></span>
+    <span class="act-car"><svg class="act-body" viewBox="14 28 50 20"><g class="act-wheels"><circle class="act-wheel" cx="24.2" cy="41.4" r="3.1" pathLength="12"/><circle class="act-wheel" cx="53.2" cy="41.4" r="3.1" pathLength="12"/></g><g transform="translate(0 -3.6)"><g class="act-shell"><path class="act-fill" d="M 61.27 44.72 C 60.43 44.72 60.42 43.55 60.27 42.72 C 60.04 41.42 59.84 40.12 59.52 38.84 C 59.23 37.68 58.32 36.76 57.15 36.47 C 55 35.93 52.97 35.01 50.9 34.22 C 48.2 33.18 45.42 32.22 42.52 32.22 C 40.45 32.22 38.35 32.5 36.52 33.47 L 30.9 36.41 C 29.72 37.03 28.47 37.53 27.15 37.72 C 24.84 38.04 22.55 38.49 20.27 38.97 C 19.27 39.18 18.22 39.62 17.9 40.6 C 17.59 41.54 17.26 42.49 17.09 43.47 C 17 43.98 17.04 44.72 16.52 44.72 Z"/><path class="act-line" d="M 61.27 44.72 C 60.43 44.72 60.42 43.55 60.27 42.72 C 60.04 41.42 59.84 40.12 59.52 38.84 C 59.23 37.68 58.32 36.76 57.15 36.47 C 55 35.93 52.97 35.01 50.9 34.22 C 48.2 33.18 45.42 32.22 42.52 32.22 C 40.45 32.22 38.35 32.5 36.52 33.47 L 30.9 36.41 C 29.72 37.03 28.47 37.53 27.15 37.72 C 24.84 38.04 22.55 38.49 20.27 38.97 C 19.27 39.18 18.22 39.62 17.9 40.6 C 17.59 41.54 17.26 42.49 17.09 43.47 C 17 43.98 17.04 44.72 16.52 44.72"/></g></g></svg>{% if a.kind == 'charging' %}<svg class="act-plug" viewBox="0 0 40 30"><path class="act-post" d="M 30 29 V 6 a 2 2 0 0 1 2 -2 h 4 a 2 2 0 0 1 2 2 V 29"/><path class="act-cord" d="M 31 16 C 18 16 14 26 2 25" pathLength="24"/></svg>{% endif %}</span>
+  </span>
+  <span class="act-t" data-fill><span class="dot c{{ colors.get(a.vin, 0) }}"></span><b>{{ a.name }}</b> {{ a.kind }}{% if a.kind == 'driving' and a.dest %} to <b>{{ a.dest }}</b>{% elif a.kind == 'charging' and a.place %} at <b>{{ a.place|short_place }}</b>{% endif %}</span>
+  {% set f = [] %}
+  {% if a.kind == 'driving' %}
+    {% if a.since %}{% set _ = f.append(a.since|duration) %}{% endif %}
+    {% if a.miles is not none %}{% set _ = f.append((a.miles|dist(1)) ~ ' ' ~ u.dist) %}{% endif %}
+    {% if a.wh_per_mi %}{% set _ = f.append(('≈' if a.estimate else '') ~ (a.wh_per_mi|econ) ~ ' ' ~ u.econ) %}{% endif %}
+    {% if a.minutes_left is not none %}{% set _ = f.append(a.minutes_left ~ ' min to go') %}{% endif %}
+  {% else %}
+    {% if a.kw %}{% set _ = f.append((a.kw|num(1)) ~ ' kW') %}{% endif %}
+    {% if a.level_from is not none and a.level_now is not none %}{% set _ = f.append((a.level_from|num) ~ '→' ~ (a.level_now|num) ~ '%') %}{% elif a.level_now is not none %}{% set _ = f.append((a.level_now|num) ~ '%') %}{% endif %}
+    {% if a.kwh_added %}{% set _ = f.append('+' ~ (a.kwh_added|num(1)) ~ ' kWh') %}{% endif %}
+    {% if a.since %}{% set _ = f.append(a.since|duration) %}{% endif %}
+  {% endif %}
+  <span class="act-f" data-fill>{{ f|join(' · ') }}</span>
+</{{ 'a' if link else 'section' }}>
+{% endfor %}{% endif %}</div>

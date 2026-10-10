@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% import "_info.html" as i %}
+{% block title %}Calendar · {{ window.label }} · Car Command{% endblock %}
+{% macro chip(vin) %}<span class="chip c{{ colors.get(vin, 0) }}">{{ names.get(vin, vin) }}</span>{% endmacro %}
+{% block head %}
+{% include "_maphead.html" %}
+{% endblock %}
+{% block body %}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}
+{# A month: the grid first, then its figures, its driving and charging, and the map. #}
+<div class="pbar"><h1>Calendar</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span><span class="sp"></span>
+  <nav class="segmented" aria-label="View"><a href="{{ root }}/calendar?month={{ window.ym }}{{ dq }}" aria-current="page">Month</a><a href="{{ root }}/calendar?year={{ window.ym[:4] }}{{ dq }}">Year</a></nav>
+  <nav class="stepper" aria-label="Month"><a href="{{ root }}/calendar?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/calendar?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav></div>
+<section class="cal">
+  <div class="cal-head">{% set daynames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}{% for i in range(7) %}<span>{{ daynames[(i + (week_start or 0)) % 7] }}</span>{% endfor %}</div>
+  {% for week in weeks %}<div class="cal-week">{% for c in week %}
+    <a class="cal-day{% if c.other %} other{% endif %}{% if c.drives or c.charges %} busy{% endif %}" href="{{ root }}/day?date={{ c.date.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}" style="--heat:{{ (c.miles / max_miles) if max_miles else 0 }}">
+      <span class="d">{{ c.date.day }}</span>
+      {% if car.garage %}{% for vin, k in c.cars.items() %}<span class="carline"><span class="dot c{{ colors.get(vin, 0) }}"></span>{{ names.get(vin, vin) }} {% if k.drives %}{{ k.miles|dist }} {{ u.dist }}{% endif %}{% if k.charges and k.kwh >= 1 %} ⚡{{ k.kwh|num }}{% endif %}</span>{% endfor %}
+      {% else %}{% if c.drives %}<span class="mi{% if c.miles >= 100 %} long{% endif %}">{{ c.miles|dist }} {{ u.dist }}</span><span class="sub">{{ c.drives }} drive{{ 's' if c.drives != 1 }}</span>{% endif %}
+      {% if c.charges and c.kwh >= 1 %}<span class="kwh">⚡ {{ c.kwh|num }} kWh</span>{% endif %}{% endif %}
+    </a>{% endfor %}</div>{% endfor %}
+</section>
+<div class="tiles">
+  <div class="tile"><span class="l">Driven</span><span class="v">{{ totals.miles|dist }}<small>{{ u.dist }}</small></span><span class="d">{% if month and month.get('days_driven') %}on {{ month.days_driven }} day{{ 's' if month.days_driven != 1 }}{% endif %}</span></div>
+  <div class="tile"><span class="l">Drives</span><span class="v">{{ totals.drives }}</span><span class="d">{% if month and month.get('best_day') %}longest day {{ month.best_day.miles|dist }} {{ u.dist }}{% endif %}</span></div>
+  <div class="tile"><span class="l">Charges</span><span class="v">{{ totals.charges }}</span><span class="d">{% if totals.charges %}{{ (totals.kwh / totals.charges)|num(1) }} kWh each{% endif %}</span></div>
+  <div class="tile"><span class="l">Charged</span><span class="v">{{ totals.kwh|num }}<small>kWh</small></span><span class="d">{% if month and month.get('cost') %}{{ est(month.get('avg_cost'), 'part priced at the regional average') }}{{ cur }}{{ month.cost|num(2) }}{% endif %}</span></div>
+</div>
+{% if month %}
+<div class="two">
+  <section>
+    <h2 class="sec">Driving</h2>
+    <div class="ovx"><table class="bins">
+      <tbody>
+        <tr><td>Drives</td><td class="r">{{ month.drives }} on {{ month.days_driven }} day{{ 's' if month.days_driven != 1 }}</td></tr>
+        <tr><td>Distance</td><td class="r">{{ month.miles|dist }} {{ u.dist }}</td></tr>
+        <tr><td>Behind the wheel</td><td class="r">{{ month.drive_h|num(1) }} h</td></tr>
+        {% if month.used_kwh %}<tr><td>Energy</td><td class="r">{{ month.used_kwh|num(1) }} kWh</td></tr>{% endif %}
+        {% if month.wh_per_mi %}<tr><td>Efficiency</td><td class="r">{{ month.wh_per_mi|econ }} {{ u.econ }}</td></tr>{% endif %}
+        {% if month.drive_cost %}<tr><td>Cost to drive</td><td class="r">{{ est(month.get('drive_cost_estimate'), 'at a home rate partly priced at the regional average') }}{{ cur }}{{ month.drive_cost|num(2) }}{% if month.miles > 1 %} · {{ cur }}{{ (month.drive_cost / month.miles)|num(3) }} a {{ u.dist }}{% endif %}</td></tr>{% endif %}
+        {% if month.fsd_miles %}<tr><td>On FSD</td><td class="r">{{ month.fsd_miles|dist }} {{ u.dist }}{% if month.miles %} · {{ (month.fsd_miles / month.miles * 100)|num }}%{% endif %}</td></tr>{% endif %}
+        {% if month.best_day %}<tr><td>Longest day</td><td class="r"><a href="{{ root }}/day?date={{ month.best_day.date.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ month.best_day.date.strftime('%b %-d') }}</a>, {{ month.best_day.miles|dist }} {{ u.dist }}</td></tr>{% endif %}
+      </tbody>
+    </table></div>
+  </section>
+  <section>
+    <h2 class="sec">Charging</h2>
+    <div class="ovx"><table class="bins">
+      <tbody>
+        <tr><td>Charges</td><td class="r">{{ month.charges }}</td></tr>
+        <tr><td>Added</td><td class="r">{{ month.added_kwh|num(1) }} kWh</td></tr>
+        {% if month.cost %}<tr><td>Cost</td><td class="r">{{ est(month.get('avg_cost'), 'part priced at the regional average') }}{{ cur }}{{ month.cost|num(2) }}</td></tr>{% endif %}
+        {% if month.cost and month.added_kwh > 1 %}<tr><td>Paid per kWh</td><td class="r">{{ est(month.get('avg_cost'), 'part priced at the regional average') }}{{ cur }}{{ (month.cost / month.added_kwh)|num(3) }}</td></tr>{% endif %}
+        {% if month.added_kwh and month.used_kwh %}<tr><td>Put in vs taken out</td><td class="r">{{ month.added_kwh|num(1) }} in, {{ month.used_kwh|num(1) }} out</td></tr>{% endif %}
+      </tbody>
+    </table></div>
+  </section>
+</div>
+{% endif %}
+{% if totals.drives %}
+<section class="group"><h2 class="sec">Where it went {% call i.info('The map') %}Drives as lines. Charges as circles sized by kWh, red where fast.{% endcall %}</h2><div id="map" class="map"></div></section>
+<script>
+// the map starts at once; it never waits for the brand's arrival
+(function () {
+  var map = CCMap.base("map");
+  fetch("{{ root }}/api/month-routes?month={{ window.ym }}&vin={{ car.vin }}").then(function (r) { return r.json(); }).then(function (routes) {
+    var all = [];
+    routes.forEach(function (r) { CCMap.route(map, r.pts, CCMap.palette[r.c], 3); all = all.concat(r.pts); });
+    var pins = {{ (charge_pins or [])|tojson }};
+    pins.forEach(function (p) {
+      CCMap.charge(map, p)
+        .bindPopup(CCMap.lines([CCMap.place(p.where, p.lat, p.lon), p.n + (p.n === 1 ? " charge, " : " charges, ") + Math.round(p.kwh) + " kWh"]))
+        .addTo(map);
+      all.push([p.lat, p.lon]);
+    });
+    if (all.length) { map.fitBounds(all, { padding: [20, 20] }); } else { map.setView([{{ center[0] }}, {{ center[1] }}], 10); }
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,35 @@
+{# Settings controls. {% import "_settings.html" as s %}.
+   Rows are plain markup: <div class="set-row"><label class="set-l">…</label><div class="set-c">…</div></div>. #}
+
+{# A number with its unit beside it, never in its label. w: 4, 5 (default) or 6 characters. #}
+{% macro num(name, value, unit="", pre="", w="", step="0.01", min=none, max=none, placeholder="", id=none, label=none) -%}
+<span class="num{{ ' w' ~ w if w }}">{% if pre %}<span class="u">{{ pre }}</span>{% endif %}<input type="number" inputmode="decimal" name="{{ name }}"{% if id %} id="{{ id }}"{% endif %} value="{{ '' if value is none else value }}" step="{{ step }}"{% if min is not none %} min="{{ min }}"{% endif %}{% if max is not none %} max="{{ max }}"{% endif %}{% if placeholder %} placeholder="{{ placeholder }}"{% endif %}{% if label %} aria-label="{{ label }}"{% endif %}>{% if unit %}<span class="u">{{ unit }}</span>{% endif %}</span>
+{%- endmacro %}
+
+{# One of a few, as a form value: options are (value, label) pairs. #}
+{% macro segmented(name, options, current, label, full=true) -%}
+<div class="segmented{{ ' full' if full }}" role="radiogroup" aria-label="{{ label }}">{% for v, l in options %}<label><input type="radio" name="{{ name }}" value="{{ v }}"{% if v == current %} checked{% endif %}><span>{{ l }}</span></label>{% endfor %}</div>
+{%- endmacro %}
+
+{# On or off. An unticked box posts nothing, so a page that needs to know sends a marker beside it. #}
+{% macro switch(name, on, label, id=none, chan=none) -%}
+<label class="switch"><input type="checkbox" role="switch"{% if name %} name="{{ name }}"{% endif %}{% if id %} id="{{ id }}"{% endif %} aria-label="{{ label }}"{% if on %} checked{% endif %}{% if chan %} data-chan="{{ chan }}"{% endif %}><span aria-hidden="true"></span></label>
+{%- endmacro %}
+
+{# A time of day, as compact as the value. #}
+{% macro time(name, value, label, id=none) -%}
+<input class="field time" type="time" name="{{ name }}"{% if id %} id="{{ id }}"{% endif %} value="{{ value or '' }}" aria-label="{{ label }}">
+{%- endmacro %}
+
+{# A figure without a needless ".0": 50.0 reads 50, 32.5 stays. #}
+{% macro n(v) -%}{{ '' if v is not defined or v is none or v == '' else '%g'|format(v|float) }}{%- endmacro %}
+
+{# Remove this row when the page is saved; tapped again, keep it. #}
+{% macro remove(name) -%}
+<label class="btn sm danger rm"><input type="checkbox" name="{{ name }}"><span class="off">Remove</span><span class="on">Removed on save</span></label>
+{%- endmacro %}
+
+{# The page's one Save, kept in reach at the foot of the screen. #}
+{% macro savebar(msg="Unsaved changes") -%}
+<div class="savebar" role="region" aria-label="Save changes"><span class="savebar-msg">{{ msg }}</span><button type="reset" class="btn">Revert</button><button type="submit" class="btn primary">Save</button></div>
+{%- endmacro %}

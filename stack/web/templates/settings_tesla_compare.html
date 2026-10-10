@@ -1,0 +1,72 @@
+{% extends "settings_base.html" %}
+{% import "_info.html" as i %}
+{% import "_parts.html" as parts %}
+{% macro num(v, fmt='%.1f') %}{{ fmt|format(v) if v is not none else '—' }}{% endmacro %}
+{% macro cell(a, b, shown) %}<span class="{{ 'off' if a != b }}">{{ shown }}</span>{% endmacro %}
+{% block section %}
+<form method="get" action="{{ root }}/settings/sources/tesla/compare" class="row"><input type="hidden" name="vin" value="{{ subject.vin }}">
+  <label class="small">{{ subject.name }} · last <select name="days" onchange="this.form.submit()">{% for d in (1, 3, 7, 14) %}<option value="{{ d }}"{% if d == days %} selected{% endif %}>{{ d }} day{{ 's' if d != 1 }}</option>{% endfor %}</select></label>
+  <noscript><button type="submit" class="quiet">Show</button></noscript>
+</form>
+{% if error %}<p class="warn" role="alert">The comparison failed: {{ error }}</p>{% endif %}
+{% if not result %}
+  {% if running %}<p class="muted" role="status" id="cmp-wait">Working it out; this page reloads itself.</p>
+  {% elif not error %}<p class="muted">No stream records for this car yet.</p>{% endif %}
+{% else %}{% set r = result %}{% set off = (r.drives|selectattr('off')|list|length) + (r.charges|selectattr('off')|list|length) %}
+<p class="verdict {{ 'off' if off else 'ok' }}">{% if off %}{{ off }} difference{{ 's' if off != 1 }}{% else %}Stream matches {{ writer_name }}{% endif %}</p>
+<div class="muted small">{{ r.lo|local('%b %-d') }} – {{ r.hi|local('%b %-d') }}{% if r.days < days %} · stream starts here{% endif %} · worked out {{ at|when }}{% if running %} · refreshing{% endif %}{% call i.info("How it is compared") %}What the stream would write for this window, beside what {{ writer_name }} stored. Nothing is written.{% endcall %}</div>
+<div class="cmp-sum">
+  <span></span><span class="h">Stream</span><span class="h">{{ writer_name }}</span>
+  <span>Drives</span><span>{{ r.stream.drives }}</span>{{ cell(r.stream.drives, r.stored.drives, r.stored.drives) }}
+  <span>{{ u.distname|capitalize }}</span><span>{{ r.stream.miles|dist(1) }}</span><span>{{ r.stored.miles|dist(1) }}</span>
+  <span>Charges</span><span>{{ r.stream.charges }}</span>{{ cell(r.stream.charges, r.stored.charges, r.stored.charges) }}
+  <span>kWh added</span><span>{{ num(r.stream.kwh_added) }}</span><span>{{ num(r.stored.kwh_added) }}</span>
+</div>
+
+<details class="more"><summary>Details</summary>
+<table class="cmp">
+  <thead><tr><th></th><th>Stream</th><th>Stored</th></tr></thead>
+  <tbody>
+    <tr><th>Drives</th><td>{{ r.stream.drives }}</td><td>{{ r.stored.drives }}</td></tr>
+    <tr><th>{{ u.distname|capitalize }}</th><td>{{ r.stream.miles|dist(1) }}</td><td>{{ r.stored.miles|dist(1) }}</td></tr>
+    <tr><th>kWh used{% if not r.kwh_per_rated_mi %}{% call i.info("Why none") %}Needs the car's measured kWh per rated mile, which comes from its charges here.{% endcall %}{% endif %}</th><td>{{ num(r.stream.kwh_used) if r.kwh_per_rated_mi else '—' }}</td><td>{{ num(r.stored.kwh_used) if r.kwh_per_rated_mi else '—' }}</td></tr>
+    <tr><th>Charges</th><td>{{ r.stream.charges }}</td><td>{{ r.stored.charges }}</td></tr>
+    <tr><th>kWh added</th><td>{{ num(r.stream.kwh_added) }}</td><td>{{ num(r.stored.kwh_added) }}</td></tr>
+    <tr><th>Hours asleep</th><td>{{ num(r.stream.asleep_h) }}</td><td>{{ num(r.stored.asleep_h) }}</td></tr>
+  </tbody>
+</table>
+
+<h2>Drives</h2>
+{% if r.drives %}<table class="cmp">
+  <thead><tr><th>Start</th><th>Stream</th><th>Stored</th><th></th></tr></thead>
+  <tbody>{% for p in r.drives %}<tr class="{{ 'warn' if p.off }}">
+    <td>{{ p.at|local }}</td>
+    <td>{% if p.stream %}{{ p.stream.miles|dist(1) }} {{ u.dist }}{% if p.stream.kwh is not none %}, {{ num(p.stream.kwh) }} kWh{% endif %}{% else %}missing{% endif %}</td>
+    <td>{% if p.stored %}{{ p.stored.miles|dist(1) }} {{ u.dist }}{% if p.stored.kwh is not none %}, {{ num(p.stored.kwh) }} kWh{% endif %}{% else %}missing{% endif %}</td>
+    <td class="small">{% if p.stream and p.stored %}{{ p.dt_s }} s apart{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table>{% else %}<p class="muted small">No drives.</p>{% endif %}
+
+<h2>Charges</h2>
+{% if r.charges %}<table class="cmp">
+  <thead><tr><th>Start</th><th>Stream</th><th>Stored</th><th></th></tr></thead>
+  <tbody>{% for p in r.charges %}<tr class="{{ 'warn' if p.off }}">
+    <td>{{ p.at|local }}</td>
+    <td>{% if p.stream %}{{ num(p.stream.kwh) }} kWh {{ p.stream.type or '' }}{% else %}missing{% endif %}</td>
+    <td>{% if p.stored %}{{ num(p.stored.kwh) }} kWh {{ p.stored.type or '' }}{% else %}missing{% endif %}</td>
+    <td class="small">{% if p.stream and p.stored %}{{ p.dt_s }} s apart{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table>{% else %}<p class="muted small">No charges.</p>{% endif %}
+
+<h2>The stream, day by day{% call i.info("The columns") %}Resent: records sent again after a break. Goodbyes: the car closing its connection, as it does going to sleep. Silences: no record for over 3 min driving or 30 min parked, with no goodbye.{% endcall %}</h2>
+<div class="ovx"><table class="cmp">
+  <thead><tr><th>Day</th><th>Records</th><th>Resent</th><th>Goodbyes</th><th>Reconnects</th><th>Silences</th><th>Longest silence</th></tr></thead>
+  <tbody>{% for d in r.gaps %}<tr class="{{ 'warn' if d.silences }}"><td>{{ d.day.strftime('%a %b %-d') }}</td><td>{{ d.records|num }}</td><td>{{ d.resent|num }}</td><td>{{ d.disconnects }}</td><td>{{ d.reconnects }}</td><td>{{ d.silences }}</td><td>{% if d.silences %}{{ d.longest_silence_min }} min{% endif %}</td></tr>{% endfor %}</tbody>
+</table></div>
+</details>
+{% endif %}
+
+{% if choices|length > 1 %}<div class="pack"><span class="l">History</span>{{ parts.writer_choice(subject.vin, choices, root, csrf, compare=false) }}</div>{% endif %}
+<p><a href="{{ root }}/settings/sources/tesla#step-history">← Connect Tesla</a> · <a href="{{ root }}/settings/cars">Cars and sources</a></p>
+{% if running and not result %}<script>setTimeout(() => location.reload(), 8000);</script>{% endif %}
+{% endblock %}

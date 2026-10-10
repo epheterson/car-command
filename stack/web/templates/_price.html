@@ -1,0 +1,20 @@
+{# What charging costs at a place, as one line of choices under its name: Not set · Free ·
+   Home plan · Paid…, where Paid… opens per kWh or per minute, the rate and an optional
+   session fee inline (CSS :has, no script). The Places page adds Average. A place named
+   Home with no price is priced on the home plan, so its blank choice says so instead of
+   offering the plan twice. Posts price_kind ("", free, home, average or paid), price_per,
+   price_rate and price_fee; placeprice.from_form reads them. #}
+{% macro price_line(price, home=false, full=false, cur='$') %}{% set kind = (price or {}).get('kind', '') %}{% set paid = kind in ('kwh', 'minute') %}<div class="pprice" role="group" aria-label="Price here">
+  <div class="pp-opts"><span class="pp-l">Price here</span>
+    <label class="pp"><input type="radio" name="price_kind" value=""{% if not kind or (home and kind == 'home') %} checked{% endif %}><span>{{ 'Home plan' if home else 'Not set' }}</span></label>
+    <label class="pp"><input type="radio" name="price_kind" value="free"{% if kind == 'free' %} checked{% endif %}><span>Free</span></label>
+    {% if not home %}<label class="pp"><input type="radio" name="price_kind" value="home"{% if kind == 'home' %} checked{% endif %}><span>Home plan</span></label>{% endif %}
+    {% if full %}<label class="pp"><input type="radio" name="price_kind" value="average"{% if kind == 'average' %} checked{% endif %}><span>Average</span></label>{% endif %}
+    <label class="pp"><input type="radio" name="price_kind" value="paid"{% if paid %} checked{% endif %}><span>Paid…</span></label>
+  </div>
+  <div class="pp-paid">
+    <input type="number" name="price_rate" step="any" min="0" value="{{ price.rate if paid else '' }}" placeholder="0.30" aria-label="Price, {{ cur }}">
+    <select name="price_per" aria-label="Charged per"><option value="kwh"{% if kind == 'kwh' %} selected{% endif %}>{{ cur }}/kWh</option><option value="minute"{% if kind == 'minute' %} selected{% endif %}>{{ cur }}/min</option></select>
+    <label class="pp-fee"><span class="pp-l">+ fee</span><input type="number" name="price_fee" step="any" min="0" value="{{ price.fee if paid and price.fee else '' }}" placeholder="none" aria-label="Session fee, {{ cur }}"></label>
+  </div>
+</div>{% endmacro %}

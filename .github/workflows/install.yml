@@ -1,0 +1,482 @@
+# The install path, exercised the way a stranger and an operator actually meet it.
+#
+# Every serious bug found on 2026-09-06 was in this path, and no unit test could see any
+# of them: a statement that succeeds on a database which has run before and fails on an
+# empty one stays invisible until something stands up an empty one. So CI does.
+#
+# Two ways in, and they fail differently:
+#   fresh    — nothing exists. make setup, compose up, choose a password, read every page.
+#   upgrade  — an install that already has data takes this build. The data has to survive.
+# The same two for the one container (stack/aio, the one-* jobs), plus its arm64 build and
+# the move of a compose install into it.
+name: install path
+
+on:
+  push:
+    paths:
+      - .github/workflows/install.yml
+      - .github/actions/**
+      - .github/scripts/**
+      - scripts/setup.sh
+      - scripts/backup.sh
+      - scripts/move-to-one-container.sh
+      - Makefile
+      - stack/**
+  # Every pull request, whatever it touches: these jobs are required checks on main, and a
+  # required check whose workflow never started holds the pull request forever.
+  pull_request:
+  workflow_dispatch:
+
+# Read-only: these jobs build and test, and never write to the repository.
+permissions:
+  contents: read
+
+jobs:
+  maps:
+    name: the local maps add-on
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Builds for arm64 too
+        run: docker buildx build --platform linux/arm64 stack/maps
+      - name: Build for this runner
+        run: docker build -t cc-maps:ci stack/maps
+      - name: Download, build and answer, on Monaco
+        run: bash .github/scripts/maps-e2e.sh
+      - name: Logs, if any of that failed
+        if: failure()
+        run: docker logs maps || true
+      - name: Down
+        if: always()
+        run: docker rm -f maps || true
+
+  catalogue:
+    name: the startup steps take turns on the catalogue
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      db:
+        image: postgres:18@sha256:fc973eb97c9fd04bfa1840e0f510719a584ccb3be8debfe6a4144637a9dfe8cf # postgres:18, as stack/docker-compose.yml
+        env:
+          POSTGRES_USER: carcommand
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: carcommand
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U carcommand" --health-interval 2s --health-retries 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install -r stack/web/requirements.txt psycopg2-binary
+      - name: The connector's grants and the site's schema step, forty first starts at once
+        env:
+          DATABASE_URL: postgresql://carcommand:ci-only@localhost:5432/carcommand
+        run: python .github/scripts/catalogue-race.py stack 40
+
+  fresh:
+    name: a fresh install
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up, the way the README says to
+        run: |
+          make setup
+          # A port nothing else on the runner uses, and a subnet clear of Docker's default.
+          printf 'CC_PORT=3055\nCC_SUBNET=192.168.63.0/24\n' >> stack/.env
+
+      - name: Bring up the database, the schema and the site
+        run: docker compose -f stack/docker-compose.yml up -d --build db web
+
+      - name: The schema step ran and reported its tables
+        run: |
+          docker compose -f stack/docker-compose.yml logs schema
+          docker compose -f stack/docker-compose.yml logs schema | grep -q "tables present" \
+            || { echo "::error::the schema container did not report a table count"; exit 1; }
+
+      - name: The connector is not running, and does not need to be
+        run: |
+          if docker ps --format '{{.Names}}' | grep -q -- '-cc$'; then
+            echo "::error::the connector started; an install with only imported history must not need it"
+            exit 1
+          fi
+
+      - uses: ./.github/actions/wait-for-site
+        with:
+          port: "3055"
+
+      - name: A stranger is asked to choose a password
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3055/)
+          [ "$code" = "303" ] || { echo "::error::expected a redirect to /setup, got $code"; exit 1; }
+          .github/scripts/setup-refused.sh 3055
+
+      - name: The log carries the setup code for the first password
+        run: |
+          docker compose -f stack/docker-compose.yml logs web 2>&1 | grep -q "setup code [A-Z2-7]\{4\}-" \
+            || { echo "::error::no setup code in the site's log"; exit 1; }
+
+      - name: Choosing one gets them in
+        run: .github/scripts/first-run.sh 3055
+
+      - name: Every page and every endpoint answers on an empty database
+        run: .github/scripts/check-pages.sh 3055
+
+      - name: No traceback anywhere in the logs
+        run: |
+          if docker compose -f stack/docker-compose.yml logs web 2>&1 | grep -q Traceback; then
+            docker compose -f stack/docker-compose.yml logs web
+            echo "::error::the site logged a traceback on a fresh install"
+            exit 1
+          fi
+
+      - name: Logs, if any of that failed
+        if: failure()
+        run: docker compose -f stack/docker-compose.yml logs
+
+      - name: Down
+        if: always()
+        run: docker compose -f stack/docker-compose.yml down -v
+
+  upgrade:
+    name: an existing install takes this build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Work out what is already shipping
+        id: base
+        env:
+          # Through the environment, not interpolated into the script: workflow inputs
+          # belong in variables even when, as here, they are a commit id from GitHub.
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # The newest tag if there is one, otherwise the commit this push replaced. That
+          # is the version a real operator would be upgrading from.
+          base=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if [ -z "$base" ]; then base="$BEFORE"; fi
+          case "$base" in "" | 0000000*) base=$(git rev-parse HEAD~1) ;; esac
+          # Only ever a commit-ish this repository already contains.
+          git rev-parse --verify --quiet "${base}^{commit}" >/dev/null \
+            || { echo "::error::cannot resolve a base to upgrade from"; exit 1; }
+          echo "ref=$(git rev-parse "${base}^{commit}")" >>"$GITHUB_OUTPUT"
+          echo "upgrading from ${base}: $(git log -1 --format=%s "$base")"
+
+      - name: Stand up the shipping version
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+        run: |
+          git worktree add /tmp/shipping "$BASE_REF"
+          cd /tmp/shipping
+          make setup
+          printf 'CC_PORT=3056\nCC_SUBNET=192.168.64.0/24\n' >>stack/.env
+          docker compose -f stack/docker-compose.yml up -d --build db web
+
+      - uses: ./.github/actions/wait-for-site
+        with:
+          port: "3056"
+
+      - name: Put data in it
+        run: |
+          .github/scripts/first-run.sh 3056
+          .github/scripts/write-a-place.sh 3056 "Before The Upgrade"
+
+      - name: Take this build, on the same volume and the same .env
+        run: |
+          # The operator's actual move: stop the old site, start the new one, keep the data.
+          cp /tmp/shipping/stack/.env stack/.env
+          docker compose -f /tmp/shipping/stack/docker-compose.yml stop web
+          docker compose -f stack/docker-compose.yml up -d --build db web
+
+      - uses: ./.github/actions/wait-for-site
+        with:
+          port: "3056"
+
+      - name: The password still works and the data is still there
+        run: |
+          # A migration that quietly dropped cc_auth would sign the operator out of their
+          # own install, and one that dropped cc_places would lose their names silently.
+          .github/scripts/sign-in.sh 3056
+          .github/scripts/check-pages.sh 3056
+          .github/scripts/expect-place.sh 3056 "Before The Upgrade"
+
+      - name: Logs, if any of that failed
+        if: failure()
+        run: docker compose -f stack/docker-compose.yml logs
+
+      - name: Down
+        if: always()
+        run: |
+          docker compose -f stack/docker-compose.yml down -v || true
+          docker compose -f /tmp/shipping/stack/docker-compose.yml down -v || true
+
+  one-fresh:
+    name: one container, a fresh install
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Build the image
+        run: docker build -f stack/aio/Dockerfile -t carcommand:ci stack
+
+      - name: Run it, the way the README says to
+        run: docker run -d --name carcommand --stop-timeout 30 -p 3057:3044 -v carcommand:/data carcommand:ci
+
+      - uses: ./.github/actions/wait-for-site
+        with:
+          port: "3057"
+          timeout: "180"
+
+      - name: The first start made its secrets, and only root can read them
+        run: |
+          docker exec carcommand stat -c '%a %U %n' /data/secrets /data/secrets/DB_PASSWORD /data/secrets/CC_SECRET_KEY
+          [ "$(docker exec carcommand stat -c '%a %U' /data/secrets)" = "700 root" ] || { echo "::error::/data/secrets is not root's alone"; exit 1; }
+          [ "$(docker exec carcommand stat -c '%a %U' /data/secrets/CC_SECRET_KEY)" = "600 root" ] || { echo "::error::the key file is not 0600 root"; exit 1; }
+          if docker exec -u 10001 carcommand cat /data/secrets/CC_SECRET_KEY >/dev/null 2>&1; then
+            echo "::error::the connector's user can read the key"
+            exit 1
+          fi
+
+      - name: The schema step ran and reported its tables
+        run: docker logs carcommand 2>&1 | grep -q "^schema .*tables present" || { echo "::error::no table count from the schema step"; exit 1; }
+
+      - name: A stranger is asked to choose a password
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3057/)
+          [ "$code" = "303" ] || { echo "::error::expected a redirect to /setup, got $code"; exit 1; }
+          .github/scripts/setup-refused.sh 3057
+
+      - name: The log carries the setup code for the first password
+        run: docker logs carcommand 2>&1 | grep -q "^web .*setup code [A-Z2-7]\{4\}-" || { echo "::error::no setup code in the container's log"; exit 1; }
+
+      - name: Choosing one gets them in
+        run: .github/scripts/first-run.sh 3057
+
+      - name: Every page answers on an empty database
+        run: .github/scripts/check-pages.sh 3057
+
+      - name: The demo car loads inside it
+        run: |
+          docker exec carcommand carcommand demo
+          .github/scripts/write-a-place.sh 3057 "Before The Restart"
+          .github/scripts/check-pages.sh 3057
+
+      - name: It says it is healthy
+        run: docker exec carcommand carcommand health && docker exec carcommand carcommand status
+
+      - name: CarConnectivity cannot reach the key, the passwords or the database's files
+        run: |
+          docker cp .github/scripts/one-container-separation.sh carcommand:/tmp/separation.sh
+          docker exec carcommand bash /tmp/separation.sh
+
+      - name: A restart keeps the data
+        run: docker restart carcommand
+
+      - uses: ./.github/actions/wait-for-site
+        with:
+          port: "3057"
+
+      - name: The password, the place and the drives are all still there
+        run: |
+          .github/scripts/sign-in.sh 3057
+          .github/scripts/expect-place.sh 3057 "Before The Restart"
+          n=$(curl -s -b "${RUNNER_TEMP}/cc-jar-3057" http://localhost:3057/api/drives | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+          [ "$n" -gt 0 ] || { echo "::error::no drives after the restart"; exit 1; }
+          echo "$n drives"
+
+      - name: A stop is clean, and Postgres says so
+        run: |
+          docker stop carcommand
+          [ "$(docker inspect -f '{{.State.ExitCode}}' carcommand)" = "0" ] || { echo "::error::the container did not exit 0"; exit 1; }
+          docker logs carcommand 2>&1 | grep -q "database system is shut down" || { echo "::error::Postgres was not shut down"; exit 1; }
+
+      - name: No catalogue race at the first start
+        run: |
+          # The connector's grants and the site's schema step share a lock (GRANTS_LOCK in stack/cc/plugin_role.py and stack/web/app.py).
+          if docker logs carcommand 2>&1 | grep -q "tuple concurrently updated"; then
+            echo "::error::two startup steps updated the catalogue at once"
+            exit 1
+          fi
+
+      - name: No traceback from the site
+        run: |
+          if docker logs carcommand 2>&1 | grep '^web' | grep -q Traceback; then
+            echo "::error::the site logged a traceback"
+            exit 1
+          fi
+
+      - name: Logs, if any of that failed
+        if: failure()
+        run: docker logs carcommand || true
+
+      - name: Down
+        if: always()
+        run: |
+          docker rm -f carcommand || true
+          docker volume rm carcommand || true
+
+  one-upgrade:
+    name: one container, an existing install takes this build
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Work out what is already shipping
+        id: base
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          if [ -z "$base" ]; then base="$BEFORE"; fi
+          case "$base" in "" | 0000000*) base=$(git rev-parse HEAD~1) ;; esac
+          git rev-parse --verify --quiet "${base}^{commit}" >/dev/null \
+            || { echo "::error::cannot resolve a base to upgrade from"; exit 1; }
+          ref=$(git rev-parse "${base}^{commit}")
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
+          # Until a shipping version has the image, there is nothing to upgrade from.
+          if git cat-file -e "$ref:stack/aio/Dockerfile" 2>/dev/null; then
+            echo "image=yes" >>"$GITHUB_OUTPUT"
+          else
+            echo "image=no" >>"$GITHUB_OUTPUT"
+            echo "::notice::${base} has no one-container image yet; this check starts with the next version"
+          fi
+
+      - name: Build and run the shipping image
+        if: steps.base.outputs.image == 'yes'
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+        run: |
+          git worktree add /tmp/shipping "$BASE_REF"
+          docker build -f /tmp/shipping/stack/aio/Dockerfile -t carcommand:shipping /tmp/shipping/stack
+          docker run -d --name carcommand --stop-timeout 30 -p 3058:3044 -v carcommand:/data carcommand:shipping
+
+      - if: steps.base.outputs.image == 'yes'
+        uses: ./.github/actions/wait-for-site
+        with:
+          port: "3058"
+          timeout: "180"
+
+      - name: Put data in it
+        if: steps.base.outputs.image == 'yes'
+        run: |
+          .github/scripts/first-run.sh 3058
+          docker exec carcommand carcommand demo
+          .github/scripts/write-a-place.sh 3058 "Before The Upgrade"
+
+      - name: Take this build, on the same volume
+        if: steps.base.outputs.image == 'yes'
+        run: |
+          docker build -f stack/aio/Dockerfile -t carcommand:ci stack
+          docker stop carcommand && docker rm carcommand
+          docker run -d --name carcommand --stop-timeout 30 -p 3058:3044 -v carcommand:/data carcommand:ci
+
+      - if: steps.base.outputs.image == 'yes'
+        uses: ./.github/actions/wait-for-site
+        with:
+          port: "3058"
+
+      - name: The password and the data are still there
+        if: steps.base.outputs.image == 'yes'
+        run: |
+          .github/scripts/sign-in.sh 3058
+          .github/scripts/check-pages.sh 3058
+          .github/scripts/expect-place.sh 3058 "Before The Upgrade"
+
+      - name: Logs, if any of that failed
+        if: failure()
+        run: docker logs carcommand || true
+
+      - name: Down
+        if: always()
+        run: |
+          docker rm -f carcommand || true
+          docker volume rm carcommand || true
+
+  one-arm64:
+    name: one container builds for arm64
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build for arm64
+        run: docker buildx build --platform linux/arm64 -f stack/aio/Dockerfile stack
+
+  one-move:
+    name: a compose install moves into one container
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: A compose install with something in it
+        run: |
+          make setup
+          printf 'CC_PORT=3059\nCC_SUBNET=192.168.65.0/24\n' >>stack/.env
+          docker compose -f stack/docker-compose.yml up -d --build db web
+
+      - uses: ./.github/actions/wait-for-site
+        with:
+          port: "3059"
+
+      - name: Put data in it
+        run: |
+          .github/scripts/first-run.sh 3059
+          .github/scripts/write-a-place.sh 3059 "Before The Move"
+
+      - name: Build the image and move into it
+        run: |
+          make one-container IMAGE=carcommand:ci
+          make one-container-move IMAGE=carcommand:ci VOLUME=carcommand-moved
+
+      - name: Start the one container on the moved volume
+        run: |
+          # The move took compose down, without its volume.
+          if docker ps -a --format '{{.Names}}' | grep -qE '^carcommand-(db|web|cc)$'; then
+            echo "::error::compose's containers are still there after the move"
+            exit 1
+          fi
+          # Found by its compose label: the volume's name follows COMPOSE_PROJECT_NAME.
+          [ -n "$(docker volume ls -q --filter label=com.docker.compose.volume=carcommand_pgdata)" ] || { echo "::error::the move removed compose's database volume"; exit 1; }
+          docker run -d --name carcommand --stop-timeout 30 -p 3060:3044 --env-file stack/secrets/one-container.env -v carcommand-moved:/data carcommand:ci
+
+      - uses: ./.github/actions/wait-for-site
+        with:
+          port: "3060"
+
+      - name: Same password, same data, same key
+        run: |
+          .github/scripts/sign-in.sh 3060
+          .github/scripts/expect-place.sh 3060 "Before The Move"
+          .github/scripts/check-pages.sh 3060
+          a=$(grep -E '^CC_SECRET_KEY=' stack/.env | cut -d= -f2- | tr -d '\n' | sha256sum)
+          b=$(docker exec carcommand cat /data/secrets/CC_SECRET_KEY | sha256sum)
+          [ "$a" = "$b" ] || { echo "::error::the key did not carry over; sealed sources would not open"; exit 1; }
+
+      - name: Logs, if any of that failed
+        if: failure()
+        run: |
+          docker logs carcommand || true
+          docker compose -f stack/docker-compose.yml logs || true
+
+      - name: Down
+        if: always()
+        run: |
+          docker rm -f carcommand || true
+          docker volume rm carcommand-moved || true
+          docker compose -f stack/docker-compose.yml down -v || true

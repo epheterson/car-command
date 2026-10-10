@@ -1,0 +1,19 @@
+{# The sign-in and first-run pages. They deliberately do not extend base.html: that header
+   lists the cars by name, and a stranger at the door has no business reading it. #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Car Command{% endblock %}</title>
+<link rel="stylesheet" href="{{ root }}/static/style.css?v={{ css_v }}">
+<link rel="icon" type="image/svg+xml" href="{{ root }}/static/favicon.svg?v=3">
+<link rel="icon" type="image/png" sizes="32x32" href="{{ root }}/static/favicon-32.png?v=3">
+</head>
+<body class="gate">
+<main class="gate-card">
+  {% import "_icons.html" as ic %}<p class="brand">{{ ic.brand_mark("arrive") }}Car Command</p>
+  {% block body %}{% endblock %}
+</main>
+</body>
+</html>

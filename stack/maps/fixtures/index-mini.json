@@ -1,0 +1,10 @@
+{"type": "FeatureCollection", "features": [
+ {"type": "Feature", "properties": {"id": "north-america", "name": "North America", "urls": {"pbf": "https://example.invalid/north-america.osm.pbf"}},
+  "geometry": {"type": "MultiPolygon", "coordinates": [[[[-100,30],[-80,30],[-80,50],[-100,50],[-100,30]]]]}},
+ {"type": "Feature", "properties": {"id": "us", "parent": "north-america", "name": "United States", "urls": {"pbf": "https://example.invalid/us.osm.pbf"}},
+  "geometry": {"type": "MultiPolygon", "coordinates": [[[[-125,25],[-66,25],[-66,49],[-125,49],[-125,25]]]]}},
+ {"type": "Feature", "properties": {"id": "us/illinois", "parent": "us", "name": "Illinois", "urls": {"pbf": "https://example.invalid/us/illinois.osm.pbf"}},
+  "geometry": {"type": "MultiPolygon", "coordinates": [[[[-92,37],[-87.5,37],[-87.5,42.5],[-92,42.5],[-92,37]]]]}},
+ {"type": "Feature", "properties": {"id": "us/illinois/springfield-area", "parent": "us/illinois", "name": "Springfield area", "urls": {"pbf": "https://example.invalid/us/illinois/springfield-area.osm.pbf"}},
+  "geometry": {"type": "MultiPolygon", "coordinates": [[[[-89.9,39.6],[-89.4,39.6],[-89.4,40.0],[-89.9,40.0],[-89.9,39.6]],[[-89.66,39.79],[-89.64,39.79],[-89.64,39.81],[-89.66,39.81],[-89.66,39.79]]]]}}
+]}

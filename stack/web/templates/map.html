@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% import "_info.html" as i %}
+{% block title %}Map · Car Command{% endblock %}
+{% block head %}
+{% include "_maphead.html" %}
+{% endblock %}
+{% block body %}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}
+<div class="pbar"><h1>Map</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span><span class="sp"></span>
+  <nav class="stepper" aria-label="Month"><a href="{{ root }}/map?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/map?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav></div>
+<div class="chips" role="group" aria-label="Show on the map">
+  {% if car.garage and vehicles|length > 1 %}{% for v in vehicles %}<button type="button" class="chip-t on" data-car="{{ v.vin }}" aria-pressed="true"><i class="c{{ colors.get(v.vin, 0) }}"></i>{{ v.name }}</button>{% endfor %}{% endif %}
+  <button type="button" class="chip-t on" data-layer="charges" aria-pressed="true"><i class="k-charge"></i>Charges</button>
+  <button type="button" class="chip-t" data-layer="cells" aria-pressed="false"><i class="k-cells"></i>Everywhere, all time</button>
+</div>
+<div id="map" class="map tall"></div>
+<div class="muted small map-note"><span id="map-note">{{ positions|num }} positions{% if since %} since {{ since|local('%b %Y') }}{% endif %}</span> {% call i.info('The map') %}The month's drives in each car's colour, and charges, red where fast. Everywhere: every 100 m cell the cars have reported from, all time.{% endcall %}</div>
+<script>
+// the map starts at once; it never waits for the brand's arrival
+(function () {
+  var map = CCMap.base("map", { preferCanvas: true, scrollWheelZoom: true });
+  map.setView([{{ center[0] }}, {{ center[1] }}], 9);
+  // what is switched on; sync() puts exactly those layers on the map
+  var on = { charges: true, cells: false, cars: {} }, routes = {}, charges = {}, cells = null, loading = false, all = [];
+  // the cells name each car by its place in the garage; its colour is looked up here, so a new one shows at once
+  var order = {{ (vehicles or [])|map(attribute='vin')|list|tojson }}, colours = {{ colors|tojson }};
+  function carOn(v) { return on.cars[v] !== false; }
+  function show(layer, yes) { if (yes) layer.addTo(map); else map.removeLayer(layer); }
+  function sync() {
+    Object.keys(routes).forEach(function (v) { show(routes[v], carOn(v)); });
+    Object.keys(charges).forEach(function (v) { show(charges[v], on.charges && carOn(v)); });
+    if (cells) Object.keys(cells).forEach(function (v) { show(cells[v], on.cells && carOn(v)); });
+  }
+  ({{ (pins or [])|tojson }}).forEach(function (p) {
+    var v = p.v || "car";
+    charges[v] = charges[v] || L.layerGroup();
+    CCMap.charge(map, p).bindPopup(CCMap.lines([CCMap.place(p.where, p.lat, p.lon), p.n + (p.n === 1 ? " charge, " : " charges, ") + Math.round(p.kwh) + " kWh"])).removeFrom(map).addTo(charges[v]);
+    all.push([p.lat, p.lon]);
+  });
+  sync();
+  fetch("{{ root }}/api/month-routes?month={{ window.ym }}&vin={{ car.vin }}").then(function (r) { return r.json(); }).then(function (list) {
+    list.forEach(function (s) {
+      routes[s.v] = routes[s.v] || L.layerGroup();
+      CCMap.route(map, s.pts, CCMap.palette[s.c]).removeFrom(map).addTo(routes[s.v]);
+      all = all.concat(s.pts);
+    });
+    sync();
+    if (all.length) map.fitBounds(all, { padding: [24, 24] });
+  }).catch(function () { if (all.length) map.fitBounds(all, { padding: [24, 24] }); });
+  function loadCells(done) {
+    // the mark pulls in while every place the cars have been is gathered (several seconds on a long history)
+    var note = document.getElementById("map-note"), tpl = document.getElementById("cc-wait");
+    if (tpl) { note.textContent = ""; var w = document.createElement("span"); w.className = "wait"; w.appendChild(tpl.content.cloneNode(true)); w.appendChild(document.createTextNode("Gathering every place the cars have been…")); note.appendChild(w); }
+    fetch("{{ root }}/api/driveprint{{ q }}").then(function (r) { return r.json(); }).then(function (list) {
+      var canvas = L.canvas({ padding: 0.5 }), max = 1;
+      cells = {};
+      list.forEach(function (c) { if (c[2] > max) max = c[2]; });
+      list.forEach(function (c) {
+        var v = order[c[3] || 0] || "car";
+        cells[v] = cells[v] || L.layerGroup();
+        L.circleMarker([c[0], c[1]], { renderer: canvas, radius: 2.2, stroke: false, fillColor: CCMap.palette[colours[v] || 0], fillOpacity: 0.25 + 0.7 * Math.min(1, Math.log(1 + c[2]) / Math.log(1 + max)) }).addTo(cells[v]);
+      });
+      document.getElementById("map-note").textContent = list.length.toLocaleString() + " cells, all time";
+      loading = false;
+      done();
+    }).catch(function () { loading = false; document.getElementById("map-note").textContent = "The cells did not load."; });
+  }
+  document.querySelectorAll(".chips .chip-t").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var now = !b.classList.contains("on");
+      b.classList.toggle("on", now);
+      b.setAttribute("aria-pressed", now ? "true" : "false");
+      if (b.dataset.car) on.cars[b.dataset.car] = now;
+      else on[b.dataset.layer] = now;
+      // one load however fast the chip is pressed; sync() then shows whatever is switched on by the time it lands
+      if (b.dataset.layer === "cells" && now && !cells) { if (!loading) { loading = true; loadCells(sync); } return; }
+      sync();
+    });
+  });
+})();
+</script>
+{% endblock %}

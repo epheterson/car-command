@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% block title %}{{ car.name }} · {{ state_word(car.status)[0] }} · Car Command{% endblock %}
+{% block head %}
+{% include "_maphead.html" %}
+{% endblock %}
+{% block body %}
+{% include "_activity.html" %}
+{% include "_now_hero.html" %}
+{{ parts.pw_row(pw) }}
+
+{% if car.lat and car.lon %}
+<section>
+  <h2>Where</h2>
+  <div id="map" class="map" role="img" aria-label="Map showing where {{ car.name }} is parked"></div>
+</section>
+{% endif %}
+
+<section>
+  <h2>Last 24 hours</h2>
+  {{ parts.strip(ribbon, ticks or []) }}
+  <p class="legend muted"><span class="key sleeping"></span>Asleep <span class="key idle"></span>Parked, awake <span class="key driving"></span>Driving <span class="key charging"></span>Charging</p>
+</section>
+
+<section>
+  <h2>Battery, last 7 days</h2>
+  {% if spark %}
+  <svg class="spark" viewBox="0 0 600 80" preserveAspectRatio="none" role="img" aria-label="Battery level over the last seven days">
+    <polyline points="{{ spark }}"/>
+  </svg>
+  {% else %}<p class="muted">Not enough history yet.</p>{% endif %}
+</section>
+
+<section class="two">
+  <div>
+    <h2>Recent drives <a class="more" href="{{ root }}/drives{{ q }}">all</a></h2>
+    {% if drives %}<div class="rows">{% for d in drives %}{{ parts.row(root ~ '/drives/' ~ d.id ~ q, d.start_date|when, (d.from|short_place) ~ ' → ' ~ (d.to|short_place), [d.duration|duration, ((d.wh_per_mi|econ) ~ ' ' ~ u.econ) if d.wh_per_mi else '', (('≈' if d.cost_estimate else '') ~ cur ~ '%.2f'|format(d.cost)) if d.cost else ''], ((d.miles|dist(1)) ~ ' ' ~ u.dist) if d.miles is not none else '—', ((d.level_start|num) ~ '→' ~ (d.level_end|num) ~ '%') if d.level_start is not none and d.level_end is not none else '', (thumbs or {}).get(d.id, ''), kind='drive') }}{% endfor %}</div>{% else %}<p class="muted">No drives yet.</p>{% endif %}
+  </div>
+  <div>
+    <h2>Recent charges <a class="more" href="{{ root }}/charges{{ q }}">all</a></h2>
+    {% if charges %}<div class="rows">{% for c in charges %}{{ parts.row(root ~ '/charges/' ~ c.id ~ q, c.session_start_date|when, c.where, [c.duration|duration, 'fast' if c.charging_type == 'DC' else '', (('≈' if c.cost_source == 'average' else '') ~ cur ~ '%.2f'|format(c.cost)) if c.cost else ''], ((c.kwh|num(1)) ~ ' kWh') if c.kwh is not none else '—', ((c.start_level|num) ~ '→' ~ (c.end_level|num) ~ '%') if c.start_level is not none and c.end_level is not none else '', kind='charge', mix=c.get('mix')) }}{% endfor %}</div>{% else %}<p class="muted">No charges yet.</p>{% endif %}
+  </div>
+</section>
+{% if car.lat and car.lon %}
+<script>
+  // the map starts at once; it never waits for the brand's arrival
+  (function () {
+    var map = CCMap.base("map", { zoomControl: false }).setView([{{ car.lat }}, {{ car.lon }}], 15);
+    var pin = L.circleMarker([{{ car.lat }}, {{ car.lon }}], { radius: 8, color: "#fff", weight: 3, fillColor: CCMap.palette[{{ colors.get(car.vin, 0) }}], fillOpacity: 1 }).addTo(map)
+      .bindTooltip(CCMap.lines([[{{ car.name|tojson }}, {{ (car.address or "")|tojson }}].filter(Boolean).join(" · ")]), { permanent: true, direction: "top", offset: [0, -10] });
+    // the live stream moves the pin with the car, and the map with it when the car leaves the view
+    document.addEventListener("cc:live", function (e) {
+      var c = e.detail;
+      if (c.vin !== {{ car.vin|tojson }} || c.lat == null || c.lon == null) return;
+      var at = L.latLng(c.lat, c.lon);
+      pin.setLatLng(at);
+      if (!map.getBounds().contains(at)) map.panTo(at);
+    });
+  })();
+</script>
+{% endif %}
+{% endblock %}

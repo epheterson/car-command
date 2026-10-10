@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% import "_info.html" as i %}
+{% block title %}Drive · {{ trip.start_date|local }} · Car Command{% endblock %}
+{% block head %}
+{% include "_maphead.html" %}
+{% endblock %}
+{% block body %}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}
+{# A drive: its map first, one line of what it was, then a tile each for the rest; tag, note
+   and hide fold into one row; the chart's battery axis is drawn from the readings. #}
+<div class="pbar">
+  <h1>{{ place_refs(trip.from, [trip.get('from_ref')]) }} → {{ place_refs(trip.to, [trip.get('to_ref')]) }}</h1><span class="pbar-ctx">{{ trip.start_date|local('%a %b %-d, %-I:%M %p') }}</span>
+  <span class="sp"></span><a class="btn sm" href="{{ root }}/day?date={{ trip.start_date|local('%Y-%m-%d') }}{{ dq }}">Day ›</a>
+</div>
+{% set has_map = pos and pos.start_position_latitude and pos.destination_position_latitude %}
+{% if has_map %}<div id="map" class="map drv-map" role="img" aria-label="Map of this drive"></div>{% endif %}
+{% set line = [] %}{% if trip.miles is not none %}{% set _ = line.append((trip.miles|dist(1)) ~ ' ' ~ u.dist) %}{% endif %}{% if trip.duration %}{% set _ = line.append(trip.duration|duration) %}{% elif not trip.destination_date %}{% set _ = line.append('in progress') %}{% endif %}{% if stats.wh_per_mi %}{% set _ = line.append((stats.wh_per_mi|econ) ~ ' ' ~ u.econ) %}{% endif %}
+<div class="drv-sum"><b>{{ line|join(' · ') }}{% if trip.cost %}{{ ' · ' if line }}{{ est(trip.cost_estimate, 'the home rate is partly the regional average') }}{{ cur }}{{ trip.cost|num(2) }}{% endif %}</b>{% if stats.wh_per_mi %}{% call i.info('How efficiency is worked out') %}{{ stats.kwh_basis }}{% endcall %}{% endif %}<span class="sp"></span>{% if lvl_start is not none and lvl_end is not none %}<span>{{ lvl_start|num }}→{{ lvl_end|num }}%</span>{% endif %}</div>
+{% if has_map %}{% if matched %}<div class="set-row drv-readings"><label class="set-l" for="show-readings">The car's own readings</label><label class="switch"><input type="checkbox" role="switch" id="show-readings"><span aria-hidden="true"></span></label></div>{% endif %}{% endif %}
+{% if navigated %}<p class="small navto">Navigated to <b>{{ navigated }}</b></p>{% endif %}
+<div class="tiles pair">
+  {% if stats.kwh or stats.rated_used is not none %}<div class="tile"><span class="l">Energy</span><span class="v">{% if stats.kwh %}{{ stats.kwh|num(1) }}<small>kWh</small>{% else %}{{ stats.rated_used|dist(1) }}<small>{{ u.dist }} rated</small>{% endif %}</span></div>{% endif %}
+  {% if stats.rated_efficiency %}<div class="tile"><span class="l">Of rated</span><span class="v">{{ (stats.rated_efficiency * 100)|num }}<small>%</small></span></div>{% endif %}
+  {% if stats.avg_mph %}<div class="tile"><span class="l">Average</span><span class="v">{{ stats.avg_mph|speed }}<small>{{ u.speed }}</small></span>{% call i.info('Average speed') %}Moving and stopped, start to end.{% endcall %}</div>{% endif %}
+  {% if stats.max_mph %}<div class="tile"><span class="l">Top speed</span><span class="v">{{ stats.max_mph|speed }}<small>{{ u.speed }}</small></span></div>{% endif %}
+  {% if stats.outside_start is defined or trip.temp_f is not none %}<div class="tile"><span class="l">Outside</span><span class="v">{% if stats.outside_start is defined %}{{ stats.outside_start|temp }}→{{ stats.outside_end|temp }}{% else %}{{ trip.temp_f|temp }}{% endif %}<small>{{ u.temp }}</small></span></div>{% endif %}
+  {% if stats.inside_start is defined %}<div class="tile"><span class="l">Cabin</span><span class="v">{{ stats.inside_start|temp }}→{{ stats.inside_end|temp }}<small>{{ u.temp }}</small></span></div>{% endif %}
+  {% if stats.climb_ft %}<div class="tile"><span class="l">Climb</span><span class="v">{{ stats.climb_ft|elev }}<small>{{ u.elev }}</small></span><span class="d">{{ stats.descent_ft|elev }} {{ u.elev }} down</span></div>{% endif %}
+  {% if stats.peak_draw_kw %}<div class="tile"><span class="l">Peak power</span><span class="v">{{ stats.peak_draw_kw|num }}<small>kW</small></span></div>{% endif %}
+  {% if trip.fsd_miles %}<div class="tile"><span class="l">On FSD</span><span class="v">{{ trip.fsd_miles|dist(1) }}<small>{{ u.dist }}</small></span></div>{% endif %}
+  {% if stats.cells_new %}<div class="tile"><span class="l">New ground</span><span class="v">{{ stats.cells_new|num }}<small>cells</small></span>{% call i.info('New ground') %}100 m squares new to this car, of {{ stats.cells_covered|num }} on this drive.{% endcall %}</div>{% endif %}
+</div>
+{{ parts.chart('drive-' ~ trip.id, chart, big=((lvl_start|num) ~ '→' ~ (lvl_end|num) ~ '%') if chart.primary.key == 'level' and lvl_start is not none and lvl_end is not none else none) }}
+<section class="group drv-more">
+  <div class="group-b">
+    <details class="set-x"{% if hidden %} open{% endif %}><summary class="set-row"><span class="set-l">Tag and note</span><span class="set-v">{{ trip.tag or ('Hidden' if hidden else '') }}</span></summary>
+      <div class="set-p">
+        <form method="post" action="{{ root }}/drives/{{ trip.id }}/tag" class="tagform"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input type="hidden" name="vin" value="{{ car.vin }}">
+          <div class="set-row"><label class="set-l" for="drv-tag">Tag</label><span class="set-c"><input id="drv-tag" class="field" name="tag" list="tags" value="{{ trip.tag or '' }}" placeholder="e.g. Work" maxlength="40"></span></div><datalist id="tags">{% for t in tags %}<option value="{{ t }}">{% endfor %}</datalist>
+          <div class="set-row stack"><label class="set-l" for="drv-note">Note</label><input id="drv-note" class="field wide" name="note" value="{{ trip.note or '' }}" maxlength="500"></div>
+          <div class="acts"><button type="submit" class="btn primary">Save</button></div>
+        </form>
+      </div>
+    </details>
+    <form method="post" action="{{ root }}/drives/{{ trip.id }}/{{ 'unhide' if hidden else 'hide' }}" class="set-row"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><span class="set-l">{% if hidden %}Hidden from every list and total{% else %}In every list and total{% endif %}</span><span class="set-c"><button type="submit" class="btn sm">{% if hidden %}Unhide{% else %}Hide{% endif %}</button></span></form>
+    {% if trip.get('by_hand') %}<form method="post" action="{{ root }}/drives/{{ trip.id }}/remove" class="set-row"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><span class="set-l">Entered by hand</span><span class="set-c"><button type="submit" class="btn sm danger">Remove</button></span></form>{% endif %}
+  </div>
+</section>
+<section>
+  <h2>Every reading <span class="more">{% if samples %}{{ fixes|num }} recorded{% if every > 1 %}, 1 in {{ every|num }} shown{% endif %}{% endif %}</span></h2>
+  {% if samples %}
+  <details class="readings">
+    <summary>Show the readings</summary>
+    <table class="readings">
+      <thead><tr><th>Time</th><th class="r">{{ u.speed }}</th><th class="r">kW</th><th class="r">Battery</th><th class="r">Rated {{ u.dist }}</th><th class="r">Odometer</th><th class="r">Elevation</th><th class="r">Outside</th><th class="r">Inside</th></tr></thead>
+      <tbody>
+      {% for s in samples %}
+        <tr>
+          <td>{{ s.at|local('%-I:%M:%S %p') }}</td>
+          <td class="r">{{ s.speed|speed }}</td>
+          <td class="r">{% if s.power_kw is not none %}{{ s.power_kw|num }}{% endif %}</td>
+          <td class="r">{% if s.level is not none %}{{ s.level|num }}%{% endif %}</td>
+          <td class="r">{{ s.rated|dist(1) }}</td>
+          <td class="r">{{ s.odometer|dist(1) }}</td>
+          <td class="r">{{ s.elevation|elev }}</td>
+          <td class="r">{% if s.outside is not none %}{{ s.outside|temp }}{{ u.temp }}{% endif %}</td>
+          <td class="r">{% if s.inside is not none %}{{ s.inside|temp }}{{ u.temp }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% else %}<div class="empty">No positions recorded inside this drive</div>{% endif %}
+</section>
+{% if has_map %}
+<script>
+  // the map starts at once; it never waits for the brand's arrival
+  (function () {
+    var a = [{{ pos.start_position_latitude }}, {{ pos.start_position_longitude }}], b = [{{ pos.destination_position_latitude }}, {{ pos.destination_position_longitude }}];
+    var map = CCMap.base("map", { zoomControl: false }), colour = CCMap.palette[{{ colors.get(car.vin, 0) }}];
+    var route = {{ route|tojson }};
+    if (route.length >= 2) { CCMap.route(map, route, colour, 4); } else { L.polyline([a, b], { color: colour, weight: 3, dashArray: "6 8" }).addTo(map); }
+    L.circleMarker(a, { radius: 7, color: colour, fillColor: "#fff", fillOpacity: 1, weight: 3 }).addTo(map).bindTooltip("Start");
+    L.circleMarker(b, { radius: 7, color: "#fff", fillColor: colour, fillOpacity: 1, weight: 3 }).addTo(map).bindTooltip("End");
+    map.fitBounds(route.length >= 2 ? route : [a, b], { padding: [30, 30] });
+    var readings = {{ (readings or [])|tojson }}, box = document.getElementById("show-readings");
+    if (box && readings.length) {
+      var own = L.layerGroup([L.polyline(readings, { color: colour, weight: 1.5, opacity: 0.7, dashArray: "3 5", interactive: false })].concat(
+        readings.map(function (p) { return L.circleMarker(p, { radius: 3, color: colour, weight: 1.5, fillColor: "#fff", fillOpacity: 1, interactive: false }); })));
+      box.addEventListener("change", function () { if (box.checked) own.addTo(map); else own.remove(); });
+    }
+  })();
+</script>
+{% endif %}
+{% endblock %}

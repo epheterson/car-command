@@ -1,0 +1,68 @@
+{% extends "settings_base.html" %}
+{# Settings › Maps: the local maps add-on's state, its regions, and what leaves this box. One form
+   and one Save bar for the switches and the add-on's own settings; Add, Remove and Try again are
+   their own small forms at the foot, which their controls name with form="…". #}
+{% from "_info.html" import info %}
+{% import "_settings.html" as s %}
+{% block section %}
+{% set waiting %}{% if wait_until_dt %}Waiting until {{ wait_until_dt|local }}{% endif %}{% endset %}
+<form id="maps" method="post" action="{{ root }}/settings/maps{{ q }}" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
+<section class="group">
+  <h2 class="sec">Local maps</h2>
+  <div class="group-b">
+    {% if not status %}
+    <div class="set-row"><span class="set-l">Local maps {% call info("Turning on local maps") %}Run <code>docker compose --profile maps up -d maps</code> on the host and set <code>MAPS_URL=http://maps:8090</code> in .env, then restart the site.{% endcall %}<span class="set-s">Turn on local maps for place names from this box</span></span><span class="set-v">Not running</span></div>
+    {% elif status.building == "failed" %}
+    <div class="set-row"><span class="set-l">Local maps<span class="set-s">{{ waiting or 'Version ' ~ status.version }}</span></span><div class="set-c"><span class="sstate"><span class="sdot bad" aria-hidden="true"></span>Build failed</span>{% if status.error %}{% call info("What failed") %}{{ status.error }}{% endcall %}{% endif %}<button type="submit" class="btn sm" form="maps-retry">Try again</button></div></div>
+    {% elif status.building in ("downloading", "building") %}
+    <div class="set-row"><span class="set-l">Local maps{% if waiting %}<span class="set-s">{{ waiting }}</span>{% endif %}</span><span class="set-v">building&hellip;</span></div>
+    {% elif status.version %}
+    <div class="set-row"><span class="set-l">Local maps{% if waiting %}<span class="set-s">{{ waiting }}</span>{% endif %}</span><span class="set-v"><span class="sstate"><span class="sdot ok" aria-hidden="true"></span>On</span> · version {{ status.version }} · {{ "%.1f"|format((status.disk_bytes or 0) / 1000000000) }} GB</span></div>
+    {% else %}
+    <div class="set-row"><span class="set-l">Local maps{% if waiting %}<span class="set-s">{{ waiting }}</span>{% endif %}</span><span class="set-v">Running, nothing built yet</span></div>
+    {% endif %}
+    {% if status %}
+    <input type="hidden" name="maps_service_shown" value="1"><input type="hidden" name="auto_was" value="{{ '1' if status.auto }}"><input type="hidden" name="refresh_was" value="{{ status.refresh or 'monthly' }}">
+    <div class="set-row"><label class="set-l" for="maps-auto">Download regions automatically<span class="set-s">The region around wherever the cars drive</span></label><div class="set-c">{{ s.switch('auto', status.auto, 'Download regions automatically', id='maps-auto') }}</div></div>
+    <div class="set-row"><label class="set-l" for="maps-refresh">Refresh</label><div class="set-c"><select class="sel" id="maps-refresh" name="refresh">{% for v, l in (('monthly', 'Monthly'), ('quarterly', 'Quarterly'), ('off', 'Off')) %}<option value="{{ v }}"{% if (status.refresh or 'monthly') == v %} selected{% endif %}>{{ l }}</option>{% endfor %}</select></div></div>
+    {% endif %}
+  </div>
+</section>
+
+{% if status %}
+<section class="group">
+  <h2 class="sec">Regions</h2>
+  <div class="group-b">
+    {% for r in regions %}
+    <div class="set-row"><span class="set-l">{{ r.label }}<span class="set-s">{{ r.why }}{% if r.why %} · {% endif %}{{ r.mb }} MB · {% if r.refreshed_dt %}{{ r.refreshed_dt|local('%b %-d') }}{% else %}not built yet{% endif %}</span></span>
+      <div class="set-c"><button type="submit" class="btn sm danger" form="region-rm" name="id" value="{{ r.id }}" aria-label="Remove {{ r.label }}">Remove</button></div></div>
+    {% else %}
+    <div class="empty">No region yet</div>
+    {% endfor %}
+    <details class="set-x"><summary class="set-row"><span class="set-l">Add a region</span></summary>
+      <div class="set-p">
+        <div class="set-row"><span class="set-l"><label for="region-id">Geofabrik id</label> {% call info("Region ids") %}The path at <a href="https://download.geofabrik.de" target="_blank" rel="noopener">download.geofabrik.de</a>, such as us/oregon or norcal.{% endcall %}</span>
+          <div class="set-c"><input class="field" id="region-id" name="id" form="region-add" placeholder="us/oregon" autocomplete="off" spellcheck="false" autocapitalize="off"><button type="submit" class="btn sm" form="region-add">Add</button></div></div>
+      </div>
+    </details>
+  </div>
+</section>
+{% endif %}
+
+<section class="group">
+  <h2 class="sec">What leaves this box</h2>
+  <div class="group-b">
+    <input type="hidden" name="public_tiles_shown" value="1">
+    <div class="set-row"><span class="set-l"><label for="public-tiles">Map backgrounds from OpenFreeMap</label> {% call info("Map backgrounds") %}Off: maps draw routes and places on a plain background. Local backgrounds aren't built yet.{% endcall %}<span class="set-s">OpenFreeMap sees which area you view</span></span><div class="set-c">{{ s.switch('public_tiles', st.public_tiles, 'Map backgrounds from OpenFreeMap', id='public-tiles') }}</div></div>
+    <input type="hidden" name="public_geocoder_shown" value="1">
+    <div class="set-row"><span class="set-l"><label for="public-geocoder">{{ 'Public place names outside your regions' if maps_on else 'Place names from OpenStreetMap' }}</label> {% call info("Place names") %}{% if maps_on %}Used when local maps can't name a stop.{% else %}OpenStreetMap's public geocoder names each stop.{% endif %}{% endcall %}<span class="set-s">Nominatim sees {{ 'that' if maps_on else 'each' }} stop, rounded to about 100 m</span></span><div class="set-c">{{ s.switch('public_geocoder', st.public_geocoder, 'Public place names', id='public-geocoder') }}</div></div>
+  </div>
+</section>
+{{ s.savebar() }}
+</form>
+{% if status %}
+<form id="region-add" method="post" action="{{ root }}/settings/maps/regions/add{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+<form id="region-rm" method="post" action="{{ root }}/settings/maps/regions/remove{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+{% if status.building == "failed" %}<form id="maps-retry" method="post" action="{{ root }}/settings/maps/retry{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}
+{% endif %}
+{% endblock %}

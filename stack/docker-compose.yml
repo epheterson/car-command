@@ -1,0 +1,293 @@
+# Car Command — the garage logged by CarConnectivity. Source of truth is
+# the carcommand repo's stack/; this directory on the host is an rsync
+# copy plus .env and secrets/ which exist only here.
+#
+# This stack publishes 3044 (Car Command web) and nothing else. carcommand-cc holds
+# the only Lucid credential and is deliberately unpublished.
+
+services:
+  cc:
+    build:
+      context: ./cc
+      args:
+        # Which connectors the image carries; see CC_CONNECTORS in .env.example.
+        CC_CONNECTORS: ${CC_CONNECTORS:-carconnectivity-connector-lucid==0.1.8}
+    image: carcommand-cc
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-cc
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - TZ=${TZ:-America/Los_Angeles}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      # Resolved here, because render_config.py uses string.Template, which has no
+      # ${VAR:-default} syntax and raises on one rather than falling back.
+      - DB_HOST=${COMPOSE_PROJECT_NAME:-carcommand}-db
+      - WEBUI_USER=${WEBUI_USER}
+      - WEBUI_PASSWORD=${WEBUI_PASSWORD}
+      - REST_USER=${REST_USER}
+      - REST_PASSWORD=${REST_PASSWORD}
+      # How often the connector asks Lucid, asleep and driving. Defaults here rather
+      # than in the template: render_config has no default syntax on purpose, so a
+      # placeholder with nothing behind it stops the container rather than guessing.
+      #
+      # 15 s while driving, which is the floor the Lucid connector enforces. The
+      # TeslaMate bridge that used to share this account called Lucid every 5 s for
+      # weeks without trouble; the two of them together got the account rate-limited
+      # four times in 72 hours, every time mid-drive, each costing a 15-minute
+      # blackout. Alone there is room to go lower, and the connector's floor is the
+      # thing in the way rather than Lucid.
+      #
+      # Do not set this below 15 without lowering that floor first: the connector
+      # raises on a smaller value and the container then restart-loops.
+      - CC_POLL_IDLE_S=${CC_POLL_IDLE_S:-60}
+      - CC_POLL_DRIVING_S=${CC_POLL_DRIVING_S:-15}
+      # The connectors block of the config, as JSON; empty means the Lucid block above. See .env.example.
+      - CC_CONNECTORS_JSON=${CC_CONNECTORS_JSON:-}
+      # Opens the Lucid source kept in the app (the web container seals it with the same key).
+      - CC_SECRET_KEY=${CC_SECRET_KEY:-}
+    volumes:
+      - ./config:/config:ro
+      # READ-ONLY on purpose: the refresh token does not rotate. Mint/replace
+      # it on the host with
+      #   the python-lucidmotors login example (username + password once, save the refresh_token)
+      - ./secrets/lucid-token.json:/secrets/lucid-token.json:ro
+      # Connectors for other brands, installed when one is added in Settings › Cars and sources.
+      - cc_plugins:/plugins
+    networks: [carcommand]
+
+  # One shot, then it exits. The database plugin owns the schema and creates it when a
+  # connector runs; an install that only imports history has no connector, so the site
+  # and the importers had no tables at all. This makes the schema without making one a
+  # second time in this repo, where it would drift from the plugin's.
+  schema:
+    build: ./cc
+    image: ${COMPOSE_PROJECT_NAME:-carcommand}-cc
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-schema
+    restart: "no"
+    # The image's default user is root, for the connector's supervisor; this needs none of that.
+    user: "10001:10001"
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["python3", "/app/init_db.py"]
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@${COMPOSE_PROJECT_NAME:-carcommand}-db:5432/${DB_NAME}
+    networks: [carcommand]
+
+  web:
+    # Car Command's own site: live state from cc's REST plugin, history from
+    # Postgres. Nothing of its own to persist.
+    build: ./web
+    image: carcommand-web
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-web
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+      schema:
+        condition: service_completed_successfully
+      # No dependency on cc. The site reads the connector over HTTP and renders
+      # without it, so an install with only imported history never needs it running.
+      # `docker compose up -d db web` used to start the connector anyway.
+    environment:
+      - TZ=${TZ:-America/Los_Angeles}
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@${COMPOSE_PROJECT_NAME:-carcommand}-db:5432/${DB_NAME}
+      - CC_REST_URL=http://${COMPOSE_PROJECT_NAME:-carcommand}-cc:40000
+      - REST_USER=${REST_USER}
+      - REST_PASSWORD=${REST_PASSWORD}
+      # Sign-in. On by default: the first person to open the site chooses the password.
+      # Set CC_PASSWORD to choose it here instead, or CC_AUTH=off when a proxy in front
+      # already signs people in. CC_SECRET pins the cookie-signing key; left unset, one
+      # is generated on first start and kept in the database.
+      - CC_AUTH=${CC_AUTH:-on}
+      - CC_PASSWORD=${CC_PASSWORD:-}
+      - CC_SECRET=${CC_SECRET:-}
+      # Optional: only these exact redirect addresses may connect an app (see docs/api.md); empty allows any app scheme.
+      - CC_APP_REDIRECTS=${CC_APP_REDIRECTS:-}
+      # Optional: sign in through Cloudflare Access (docs/install.md). The team is never learned from a request.
+      - CF_ACCESS_TEAM=${CF_ACCESS_TEAM:-}
+      - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
+      - CC_ACCESS_PROXY=${CC_ACCESS_PROXY:-}
+      - CC_ACCESS_EMAILS=${CC_ACCESS_EMAILS:-}
+      # Where the rate averages are downloaded from; blank is the project's own (docs/costs.md).
+      - CC_RATES_URL=${CC_RATES_URL:-}
+      # Seals the sources kept in the app; see .env.example.
+      - CC_SECRET_KEY=${CC_SECRET_KEY:-}
+      # The tesla network below: admin API tokens are never accepted from it.
+      - CC_TESLA_SUBNET=${CC_TESLA_SUBNET:-192.168.62.0/24}
+      # Optional: Discord webhook for events (charge started/finished, parked, low battery, connector down).
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - TESLAFI_TOKENS=${TESLAFI_TOKENS:-}
+      # A Tesla, live and free: the TeslaMate database to follow. Empty = none.
+      - TESLAMATE_DB_URL=${TESLAMATE_DB_URL:-}
+      # Connect Tesla (Settings › Cars and sources): your own Tesla developer app and the domain
+      # its key is served on. Empty = the page explains how to make one.
+      - TESLA_CLIENT_ID=${TESLA_CLIENT_ID:-}
+      - TESLA_CLIENT_SECRET=${TESLA_CLIENT_SECRET:-}
+      - TESLA_DOMAIN=${TESLA_DOMAIN:-}
+      - TESLA_REDIRECT_URI=${TESLA_REDIRECT_URI:-}
+      # The cars' live stream (the tesla profile below): the Funnel node's public name,
+      # carcommand-stream.<your tailnet>.ts.net, and where its receiver publishes records.
+      # Empty = no stream; Connect Tesla says how to set one up.
+      - TESLA_STREAM_HOST=${TESLA_STREAM_HOST:-}
+      - TESLA_STREAM_ZMQ=${TESLA_STREAM_ZMQ:-tcp://tesla-telemetry:5284}
+      # Find my plan (Settings › Money) through a relay that holds an OpenEI key, instead
+      # of a key pasted on that page. Empty = the page asks for a key.
+      - CC_URDB_URL=${CC_URDB_URL:-}
+      - CC_STREAM_S=${CC_STREAM_S:-15}
+      # The same pair the connector gets: the recorder is the loop that actually writes
+      # a position, so sampling slower than the connector refreshes would throw the
+      # extra calls away.
+      - CC_POLL_IDLE_S=${CC_POLL_IDLE_S:-60}
+      - CC_POLL_DRIVING_S=${CC_POLL_DRIVING_S:-15}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      # Email as a third channel for the same alerts: smtps://user:pass@host:465 or smtp://user:pass@host:587, and who to.
+      - SMTP_URL=${SMTP_URL:-}
+      - EMAIL_TO=${EMAIL_TO:-}
+      - EMAIL_FROM=${EMAIL_FROM:-}
+      # Pushover as a fourth channel: the application token and your user key.
+      - PUSHOVER_TOKEN=${PUSHOVER_TOKEN:-}
+      - PUSHOVER_USER=${PUSHOVER_USER:-}
+      - MAPS_URL=${MAPS_URL:-}
+    ports:
+      - ${CC_PORT:-3044}:8000 # LAN only; put a tunnel or reverse proxy in front for the WAN
+    # carcommand: the database and the connector. tesla: to hear the receiver and to answer
+    # the Funnel node for the app's key; the two internet-facing containers live only there.
+    networks: [carcommand, tesla]
+
+  # Local maps (optional): `docker compose --profile maps up -d maps`. OpenStreetMap
+  # regions download as drives need them; place names are looked up here instead of on
+  # a public server. Internal network only.
+  maps:
+    profiles: ["maps"]
+    build: ./maps
+    image: ${COMPOSE_PROJECT_NAME:-carcommand}-maps
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-maps
+    restart: unless-stopped
+    volumes:
+      - carcommand_maps:/data
+    networks: [carcommand]
+
+  # Tesla's live stream (optional): `make tesla-net-key`, then
+  # `docker compose --profile tesla up -d tesla-net tesla-telemetry`. See the README's
+  # "Tesla live stream". No port opens at home: this node joins your tailnet, tagged, and
+  # Tailscale Funnel carries exactly two things to it from the internet: HTTPS 443 for the
+  # app's public key (one path, proxied to the site; nothing else of it), and TCP 8443
+  # passed straight through to the receiver, which does the cars' mutual TLS itself.
+  tesla-net:
+    profiles: ["tesla"]
+    image: tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-tesla-net
+    hostname: carcommand-stream
+    restart: unless-stopped
+    # Pinned on purpose: an automatic image updater leaves both of these alone.
+    labels: ["com.centurylinklabs.watchtower.enable=false"]
+    init: true
+    # The image's own start (containerboot), plus the loop that keeps the receiver's certificate current.
+    entrypoint: ["/bin/sh", "/tesla/net.sh"]
+    environment:
+      - TS_HOSTNAME=carcommand-stream
+      # The key file comes from `make tesla-net-key`; it never sits in .env or here.
+      - TS_AUTHKEY=file:/run/secrets/tailscale-authkey
+      - TS_EXTRA_ARGS=--advertise-tags=tag:carcommand-tesla
+      - TS_AUTH_ONCE=true
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SOCKET=/tmp/tailscaled.sock
+      - TS_USERSPACE=true
+      - TS_SERVE_CONFIG=/tesla/serve.json
+    secrets:
+      - tailscale-authkey
+    volumes:
+      - tesla_net_state:/var/lib/tailscale
+      - tesla_certs:/certs
+      - ./tesla:/tesla:ro
+    healthcheck:
+      # healthy once the receiver's certificate is on the shared volume
+      test: ["CMD-SHELL", "test -s /certs/tls.crt && test -s /certs/tls.key"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5m
+    networks: [tesla] # only the site and the receiver: no way to the database or the connector
+
+  # Tesla's own receiver. It shares tesla-net's process space so a renewed certificate can
+  # restart it (tesla-net ends it; Docker starts it again). No port is published: Funnel
+  # reaches 4443 over the tesla network, and the site subscribes to 5284 there.
+  tesla-telemetry:
+    profiles: ["tesla"]
+    image: tesla/fleet-telemetry:v0.9.5@sha256:7cb5f429210128b8edc5aac1e403589315893106f4c5a3ff85cb32213e2f8e37
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-tesla-telemetry
+    restart: unless-stopped
+    labels: ["com.centurylinklabs.watchtower.enable=false"]
+    pid: "service:tesla-net"
+    depends_on:
+      tesla-net:
+        condition: service_healthy
+    volumes:
+      - ./tesla/telemetry.json:/etc/fleet-telemetry/config.json:ro
+      - tesla_certs:/certs:ro
+    networks: [tesla]
+
+  db:
+    # postgres:18, pinned by digest; Dependabot (docker-compose) moves the digest with the tag.
+    image: postgres:18@sha256:fc973eb97c9fd04bfa1840e0f510719a584ccb3be8debfe6a4144637a9dfe8cf
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-db
+    restart: always
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+      - TZ=UTC
+      - PGTZ=UTC
+    volumes:
+      # postgres:18 keeps its data under /var/lib/postgresql/18/docker; the
+      # volume mounts one level up. The volume has a fixed name, so a host backup can find it.
+      - carcommand_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [carcommand]
+
+volumes:
+  # Explicit name: Compose would otherwise double the prefix
+  # (carcommand_carcommand_pgdata), and docker-backup.sh looks this volume up by
+  # its exact name. Keyed on the project so a second stack — a test install, a
+  # staging copy — gets its own volume instead of attaching to the live one.
+  carcommand_pgdata:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_pgdata
+  carcommand_maps:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_maps
+  # Other brands' connector plugins (pip --user into /plugins); safe to delete, they reinstall.
+  cc_plugins:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_cc_plugins
+  # The Funnel node's identity (losing it means a new node and a new auth key) and the receiver's certificate.
+  tesla_net_state:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_tesla_net
+  tesla_certs:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_tesla_certs
+
+secrets:
+  tailscale-authkey:
+    file: ./secrets/tailscale-authkey
+
+networks:
+  carcommand:
+    # A pinned subnet, because this host's Docker pool is fully allocated and the
+    # default picker fails. Anywhere else the default is fine; override CC_SUBNET
+    # in .env if this range collides with something on your network.
+    ipam:
+      config:
+        - subnet: ${CC_SUBNET:-192.168.61.0/24}
+  # The site and the two Tesla stream containers (profile tesla), which face the internet
+  # through Funnel and so get no route to the database or the connector. Pinned for the
+  # same reason as above; CC_TESLA_SUBNET overrides it.
+  tesla:
+    ipam:
+      config:
+        - subnet: ${CC_TESLA_SUBNET:-192.168.62.0/24}

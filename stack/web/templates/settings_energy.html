@@ -1,0 +1,49 @@
+{% extends "settings_base.html" %}
+{# Settings › Energy: the house's energy, read from the Tesla account (its live status every five
+   minutes, and the history backfill). Status and management; setting it up is in Connect Tesla. #}
+{% from "_info.html" import info %}
+{% from "_energy.html" import backfill_rows with context %}
+{% block section %}
+{% if energy_error %}<p class="notice err" role="alert">{{ energy_error }}</p>{% endif %}
+
+<section class="group" id="now">
+  <h2 class="sec">Now</h2>
+  <div class="group-b">
+    {% if reading %}
+    <div class="set-row"><span class="set-l">Last reading<span class="set-s">{{ reading_age }} from {{ reading.source_label }}</span></span>
+      <span class="set-v">{% if reading.soc is not none %}{{ reading.soc|num }}% · {% endif %}{% for p in reading.parts %}{{ p.label }} {{ p.arrow }}{{ p.kw }}{{ ' · ' if not loop.last }}{% endfor %}</span></div>
+    {% else %}
+    <div class="set-row"><span class="set-l">Last reading</span><span class="set-v">None yet</span></div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="group" id="setup">
+  <div class="group-b"><div class="set-row"><span class="set-l">Set up step by step</span><div class="set-c"><a class="btn sm" href="{{ root }}/settings/sources/tesla#pw">Open in Connect Tesla</a></div></div></div>
+</section>
+
+<section class="group" id="tesla">
+  <h2 class="sec">Tesla account</h2>
+  <div class="group-b">
+    <div class="set-row"><span class="set-l">Energy access {% call info("What it reads") %}Read with <code>energy_device_data</code>: the Powerwall's live status (every 5 minutes) and its history. Car Command sends it no commands.{% endcall %}</span>
+      <span class="set-v">{% if not cloud.connected %}Connect Tesla first{% elif cloud.granted %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>Granted</span>{% else %}Not granted{% endif %}</span></div>
+    {% if cloud.connected and not cloud.granted %}<div class="set-row sub"><span class="set-l">This sign-in predates it. Sign in again to add it</span><div class="set-c"><a class="btn sm" href="{{ root }}/settings/sources/tesla/start?energy=1">Sign in again</a></div></div>
+    {% elif not cloud.connected %}<div class="set-row sub"><span class="set-l">No Tesla account yet</span><div class="set-c"><a class="btn sm" href="{{ root }}/settings/sources/tesla">Connect Tesla</a></div></div>{% endif %}
+    {% if cloud.connected %}
+    <div class="set-row"><span class="set-l">Use this account's Powerwall<span class="set-s">{% if cloud.enabled %}Site {{ cloud.name or cloud.site }}{% endif %}</span></span>
+      <div class="set-c">{% if cloud.enabled %}<span class="sstate"><span class="sdot {{ 'bad' if cloud.status and not cloud.status.ok else 'ok' }}" aria-hidden="true"></span><span>{{ cloud.status.error if cloud.status and not cloud.status.ok else 'On' }}</span></span>
+        <form method="post" action="{{ root }}/settings/energy/cloud/off{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="btn sm">Turn off</button></form>
+        {% else %}<form method="post" action="{{ root }}/settings/energy/cloud{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="btn sm primary"{% if not cloud.granted %} disabled{% endif %}>Find and use</button></form>{% endif %}</div></div>
+    {% endif %}
+  </div>
+</section>
+
+{% if cloud.enabled %}
+<section class="group" id="history">
+  <h2 class="sec">History {% call info("The cost") %}{{ cloud.note }}{% endcall %}</h2>
+  <div class="group-b">
+{{ backfill_rows(cloud, none) }}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

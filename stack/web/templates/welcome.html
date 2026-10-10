@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Set up · Car Command{% endblock %}
+{% block body %}
+{% import "_icons.html" as icm %}
+<div class="hero">
+  <span class="hero-mark">{{ icm.brand_mark("arrive") }}</span>
+  <h1>Nothing here yet</h1>
+  <p class="lede">No connector is reporting a car and no history has been imported.</p>
+</div>
+<div class="two">
+  <section>
+    <h2>Log a car live</h2>
+    <p class="lede">Add a source under <a href="{{ root }}/settings/cars">Settings › Cars and sources</a>.</p>
+    {% if connector %}<p class="muted small">{{ connector }}</p>{% else %}<p class="muted small">CarConnectivity is answering, but it has no cars yet.</p>{% endif %}
+  </section>
+  <section>
+    <h2>Or bring history in</h2>
+    <p class="lede">Import a TeslaFi export or a TeslaMate database.</p>
+    <p class="muted small"><code>make import FILE=TeslaFiData.csv.gz</code>, then <code>make discover</code> to name its places.</p>
+  </section>
+</div>
+{% endblock %}

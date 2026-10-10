@@ -1,0 +1,6 @@
+{"type": "Feature", "id": "w100", "geometry": {"type": "LineString", "coordinates": [[-89.65, 39.80], [-89.64, 39.81]]}, "properties": {"name": "Evergreen Terrace", "highway": "residential"}}
+{"type": "Feature", "id": "w101", "geometry": {"type": "LineString", "coordinates": [[-89.651, 39.800], [-89.649, 39.802]]}, "properties": {"addr:housenumber": "742", "addr:street": "Evergreen Terrace"}}
+{"type": "Feature", "id": "w102", "geometry": {"type": "MultiLineString", "coordinates": [[[-89.70, 39.70], [-89.69, 39.71]], [[-89.68, 39.72], [-89.67, 39.73]]]}, "properties": {"name": "Alpha Trail", "leisure": "track"}}
+{"type": "Feature", "id": "w103", "geometry": {"type": "GeometryCollection", "geometries": [{"type": "LineString", "coordinates": [[-89.60, 39.60], [-89.59, 39.61]]}]}, "properties": {"name": "Bravo Loop", "leisure": "park"}}
+{"type": "Feature", "id": "n104", "geometry": {"type": "Point", "coordinates": [-89.50, 39.50]}, "properties": {"amenity": "bench", "name": "Charlie Bench"}}
+{"type": "Feature", "id": "w999", "geometry": {"type": "Polygon", "coordinates": null}, "properties": {"name": "Broken Shape", "boundary": "administrative", "admin_level": "8"}}

@@ -1,0 +1,13 @@
+{% extends "gate.html" %}
+{% block title %}Connect · Car Command{% endblock %}
+{% block body %}
+<h1>{{ client }} wants to read your cars</h1>
+<p class="muted small">Calls itself “{{ client }}” · opens {{ destination }}</p>
+<form method="post" action="{{ root }}/connect" class="gate-form connect-actions">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  {% for name, value in fields.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  <label class="check"><input type="checkbox" name="share_place"> Share where each car is (place name, home or away)</label>
+  <button type="submit" name="decision" value="allow" class="btn primary">Allow</button>
+  <button type="submit" name="decision" value="cancel" class="btn">Cancel</button>
+</form>
+{% endblock %}

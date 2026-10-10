@@ -1,0 +1,50 @@
+{% extends "settings_base.html" %}
+{# Settings › Data: what counts as a drive or a charge and the weather lookup (one form, one Save
+   bar), then each car's checks as a row with its findings beneath, and the downloads. #}
+{% from "_info.html" import info %}
+{% import "_settings.html" as s %}
+{% block section %}
+<form id="data" method="post" action="{{ root }}/settings/data{{ q }}" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
+<section class="group">
+  <h2 class="sec">What counts {% call info("Short drives and charges") %}Shorter ones stay logged but are left out of lists and totals.{% endcall %}</h2>
+  <div class="group-b">
+    {% if conv.min_drive_km is defined %}
+    <div class="set-row"><label class="set-l" for="min-drive">Ignore drives under</label><div class="set-c">{{ s.num('min_drive_km', conv.min_drive_km, unit='km', step='0.1', min=0, max=80, w=4, id='min-drive') }}</div></div>
+    {% else %}
+    <div class="set-row"><label class="set-l" for="min-drive">Ignore drives under</label><div class="set-c">{{ s.num('min_drive_mi', st.min_drive_mi if st.min_drive_mi is not none else 0.1, unit='mi', step='0.1', min=0, max=50, w=4, id='min-drive') }}</div></div>
+    {% endif %}
+    <div class="set-row"><label class="set-l" for="min-charge">Ignore charges under</label><div class="set-c">{{ s.num('min_charge_kwh', s.n(st.min_charge_kwh if st.min_charge_kwh is not none else 0), unit='kWh', step='0.1', min=0, max=50, w=4, id='min-charge') }}</div></div>
+  </div>
+</section>
+<section class="group">
+  <h2 class="sec">Weather</h2>
+  <div class="group-b">
+    <input type="hidden" name="weather_shown" value="1">
+    <div class="set-row"><span class="set-l"><label for="weather">Weather at the start of each drive</label> {% call info("What is sent") %}Asked of Open-Meteo after a drive ends: the start rounded to two decimals, and the date. Nothing about the car is sent.{% endcall %}<span class="set-s">Open-Meteo sees a spot rounded to about 1 km</span></span><div class="set-c">{{ s.switch('weather', st.weather is not false, 'Weather at the start of each drive', id='weather') }}</div></div>
+  </div>
+</section>
+{{ s.savebar() }}
+</form>
+
+<section class="group">
+  <h2 class="sec">Checks {% call info("What is checked") %}Hourly, per car: what arrives, what gets logged, and whether the week's odometer miles are all in drives. Findings go out once a day as a Data check alert.{% endcall %}</h2>
+  <div class="group-b">
+    {% for d in data_checks %}{% set f = d.facts %}
+    <div class="set-row"><span class="set-l">{{ d.name }}<span class="set-s">{{ d.source }}{% if f.get('raw_newest') %} · newest reading {{ f.get('raw_newest')|when }}{% endif %}</span>{% if f.get('odo_7d') is not none %}<span class="set-s">This week {{ '%.0f'|format(f.get('odo_7d')) }} mi on the odometer, {{ '%.0f'|format(f.get('trips_7d') or 0) }} in drives</span>{% elif f.get('derived_newest') %}<span class="set-s">Newest drive or charge {{ f.get('derived_newest')|when }}</span>{% endif %}</span>
+      <span class="set-v">{% if d.findings %}<span class="sstate"><span class="sdot bad" aria-hidden="true"></span>{{ d.findings|length }} finding{{ 's' if d.findings|length != 1 }}</span>{% elif f %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>Fine</span>{% else %}not checked yet{% endif %}</span></div>
+    {% if d.findings %}<div class="set-notes">{% for x in d.findings %}<p class="notice {{ 'err' if x.level == 'bad' else 'warn' }}">{{ x.text }}</p>{% endfor %}</div>{% endif %}
+    {% else %}
+    <div class="empty">No cars yet</div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="group">
+  <h2 class="sec">Downloads</h2>
+  <div class="group-b">
+    <a class="set-row set-nav" href="{{ root }}/drives.csv{{ q }}" download><span class="set-l">Drives<span class="set-s">Every drive with its figures, CSV</span></span></a>
+    <a class="set-row set-nav" href="{{ root }}/charges.csv{{ q }}" download><span class="set-l">Charges<span class="set-s">Every charge with its figures, CSV</span></span></a>
+    <a class="set-row set-nav" href="{{ root }}/data{{ q }}"><span class="set-l">A day's readings<span class="set-s">The rows as they arrived, a day at a time</span></span></a>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,31 @@
+{# The naming card (static/placecard.js): one place, or one stop no place covers yet, named
+   where it was tapped. Fetched once a page from /places/card the first time a place name is
+   tapped; placecard.js fills it from /places/candidates. Top to bottom: the name, prefilled
+   with the best suggestion (the cars' navigation, then the map's places nearby) and the other
+   suggestions as chips under it; the icon row (More… opens every icon in the card's own
+   flow); the price; then Details › (the place's page), Merge… and Save. The chips hold their
+   row while the lookup runs, so nothing below them moves. A second view of the same card
+   confirms a merge. #}
+{% import "_icons.html" as ic %}{% import "_price.html" as pr %}
+<div class="pcard" role="dialog" aria-modal="false" aria-labelledby="pcard-h" tabindex="-1" hidden data-kind-icons='{{ PLACE_KIND_ICONS|tojson }}'>
+<form class="pcard-f" method="post" novalidate>
+  <div class="pcard-hd"><h2 id="pcard-h">Name this place</h2><button type="button" class="pcard-x" aria-label="Close">&times;</button></div>
+  <p class="pcard-at muted small"></p>
+  <input type="text" name="name" maxlength="60" autocomplete="off" enterkeyhint="done" placeholder="Name, or blank for the address" aria-label="Name" data-auto-icon>
+  <div class="pcard-chips" aria-label="Suggestions" aria-live="polite" aria-busy="true"><span class="pchip-skel"></span><span class="pchip-skel"></span><span class="pchip-skel"></span></div>
+  {{ ic.icon_row("", none) }}
+  {{ pr.price_line(none, cur=cur or "$") }}
+  <div class="pcard-dup" role="alert" hidden><span class="pcard-dupsay"></span><button type="button" class="pcard-dupmerge"></button><button type="button" class="quiet pcard-dupkeep">Keep both</button></div>
+  <p class="pcard-err" role="alert" hidden></p>
+  <div class="pcard-acts"><a class="pcard-details" href="{{ root }}/places">Details ›</a><button type="button" class="linkish pcard-merge" hidden>Merge…</button><span class="sp"></span><span class="pcard-keys muted" hidden>Enter saves · Esc skips</span><button type="submit" class="pcard-save">Save</button></div>
+  <input type="hidden" name="address_lookup">
+</form>
+<div class="pcard-confirm" hidden>
+  <div class="pcard-hd"><h2 class="pcard-ch">Merge</h2><button type="button" class="pcard-x" aria-label="Close">&times;</button></div>
+  <p class="pcard-keep"></p>
+  <ul class="pcard-mlist" aria-label="Places that move"></ul>
+  <p class="muted small pcard-mnote">Their visits and charges move here and are re-priced.</p>
+  <p class="pcard-err" role="alert" hidden></p>
+  <div class="pcard-acts"><button type="button" class="quiet pcard-back">Back</button><span class="sp"></span><button type="button" class="pcard-domerge">Merge</button></div>
+</div>
+</div>

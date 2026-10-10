@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Places · Car Command{% endblock %}
+{% block head %}
+<script src="{{ root }}/static/placesmap.js?v={{ js_v }}" defer></script>
+{% endblock %}
+{% block body %}
+{# Every place on one map, beside a slim list (under the map on a phone): the named ones,
+   busiest first, then To name: the places found from where the cars stop, busiest first, the
+   top ten with Show all, each with its suggested name. A row or a marker opens the naming card
+   on it, the place marked on the map; after a found place is named the next one in the list
+   opens (Enter saves and moves on, Esc skips). One field
+   finds a place in both. Merge… (the card, a place's page) picks on the map the places to
+   take in. The page carries only this frame: the places come from /places/index.json once
+   it has drawn, and the map and its scripts (_maphead.html, kept here unrun) start at once, never
+   waiting for the arrival; with backgrounds off it needs no vector library at all (static/placesmap.js). #}
+<div class="pbar"><h1>Places</h1><span class="muted">{{ named|num }} place{{ "s" if named != 1 }}</span></div>
+<div class="plhead">
+  <input class="filter plfind" type="search" placeholder="Find a place" aria-label="Find a place by name or town" autocomplete="off" data-place-filter>
+  <a class="pladd" href="{{ root }}/places/new">Add a place</a>
+</div>
+<div class="plmerge" role="status" hidden><span class="plmerge-say"></span><span class="sp"></span><button type="button" class="quiet plmerge-cancel">Cancel</button><button type="button" class="plmerge-go" disabled>Merge…</button></div>
+<div class="plwrap" data-index="{{ root }}/places/index.json"{% if merge %} data-merge="{{ merge }}"{% endif %}>
+  <div class="pllist">
+    <section class="plsec plsec-near" hidden aria-labelledby="pl-near-h"><h2 id="pl-near-h">Within a kilometre</h2><ul class="plrows" id="pl-near"></ul></section>
+    <section class="plsec plsec-named" aria-labelledby="pl-named-h"><h2 id="pl-named-h">Your places <span class="n">{{ named|num }}</span></h2>
+      {% if named %}<ul class="plrows" id="pl-named">{% for _ in range([named, 6]|min) %}<li class="plr skel" aria-hidden="true"></li>{% endfor %}</ul>
+      {% else %}<ul class="plrows" id="pl-named"></ul><p class="muted plempty">None yet</p>{% endif %}</section>
+    <section class="plsec plsec-need" aria-labelledby="pl-need-h"{% if not found %} hidden{% endif %}><h2 id="pl-need-h">To name <span class="n">{{ found|num }}</span></h2>
+      <ul class="plrows" id="pl-need">{% for _ in range([found, 10]|min) %}<li class="plr skel" aria-hidden="true"></li>{% endfor %}</ul></section>
+    <p class="muted small plnone" hidden>No place matches.</p>
+  </div>
+  <div id="pl-map" class="plmap" role="application" aria-label="Map of every place: named ones as their icons, found ones as dots sized by their visits"></div>
+</div>
+<template id="pl-maphead">{% include "_maphead.html" %}</template>
+{% endblock %}

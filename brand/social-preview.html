@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- The repository's social card, 1280 x 640: the name and the pitch beside the Now page of the
+     demo car on a phone. brand/make-demo-media.sh takes media/now-phone-dark.png and renders this
+     to social-preview.png. GitHub crops the card to different shapes in different places, and shows
+     it as small as 300 px wide, so the words are large and everything sits well inside the edges. -->
+<html><head><meta charset="utf-8"><style>
+  html, body { margin: 0; width: 1280px; height: 640px; overflow: hidden; }
+  body { background: #141319; color: #F0EDE4; font-family: "Avenir Next", "Jost", "Helvetica Neue", Arial, sans-serif;
+         display: flex; align-items: center; box-sizing: border-box; padding: 0 0 0 110px; position: relative; }
+  .words { flex: 1; padding-right: 40px; }
+  .lockup { width: 520px; display: block; margin-bottom: 44px; }
+  .pitch { font-size: 50px; line-height: 1.18; font-weight: 500; max-width: 640px; letter-spacing: -0.01em; }
+  .pitch span { color: #F0C24A; }
+  .facts { margin-top: 30px; font-size: 26px; color: #A9A5B4; }
+  .facts b { color: #F0C24A; font-weight: 500; }
+  /* The phone: the screenshot inside a plain rounded bezel, cut off by the card's bottom edge. */
+  .phone { width: 360px; margin-right: 110px; margin-top: 150px; align-self: flex-start; border-radius: 52px; padding: 12px;
+           background: #2A2932; box-shadow: 0 0 0 2px #3A3944, 0 30px 80px rgba(0,0,0,0.55); }
+  .phone img { display: block; width: 100%; border-radius: 40px; }
+</style></head><body>
+  <div class="words">
+    <img class="lockup" src="lockup-horizontal-night.svg" alt="Car Command">
+    <div class="pitch">Every drive, every charge,<br>every car.<br><span>On your own server.</span></div>
+    <div class="facts">Self-hosted <b>·</b> Tesla <b>·</b> Lucid <b>·</b> CarConnectivity</div>
+  </div>
+  <div class="phone"><img src="media/now-phone-dark.png" alt=""></div>
+</body></html>

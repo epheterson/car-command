@@ -1,0 +1,29 @@
+name: wait for the site
+description: Poll the health endpoint until the container answers, or fail with what is running.
+inputs:
+  port:
+    description: the published port
+    required: true
+  timeout:
+    description: seconds to wait
+    required: false
+    default: "120"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PORT: ${{ inputs.port }}
+        TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        set -euo pipefail
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        until curl -fsS "http://localhost:${PORT}/health" >/dev/null 2>&1; do
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error::the site never answered on port ${PORT} within ${TIMEOUT}s"
+            docker ps -a
+            exit 1
+          fi
+          sleep 2
+        done
+        echo "answering on ${PORT}"

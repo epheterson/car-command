@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% import "_info.html" as i %}
+{% block title %}Statistics · Car Command{% endblock %}
+{% block body %}
+{# One period for the whole page: a month (set beside the month before and the average of the
+   months the car has been logged), a year, all time or two dates, chosen in the header. #}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}
+{% set h = heads|default(none) or {'this': month_window.label.split(' ')[0][:3], 'last': month_window.prev_label.split(' ')[0], 'avg': '12-mo avg', 'partial': false} %}
+{% set mode = period|default('month') %}
+{% macro cost_info() %}{% call i.info('How the cost is worked out') %}{% if rate_plan %}Home charges priced on {{ rate_plan }} by the hour they drew power.{% elif estimate %}Home charges estimated at the {{ estimate.areas|join(', ') }} average until you set a plan in Settings › Money.{% else %}Home charges have no cost until you set a plan in Settings › Money.{% endif %}{% if estimate %} ≈ {{ estimate.charges|num }} home charge{{ 's' if estimate.charges != 1 }} no plan covers {{ 'are' if estimate.charges != 1 else 'is' }} priced at the {{ estimate.areas|join(', ') }} average ({{ estimate.sources|join('; ') }}), {{ estimate.from|month_label }}{% if estimate.to != estimate.from %} to {{ estimate.to|month_label }}{% endif %} figures{% if estimate.lagged %}; months not published yet take the newest figure{% endif %}.{% endif %}{% endcall %}{% endmacro %}
+{% macro fig(key, v, mark=none, tile=false) -%}
+{% if v is none %}—{% elif mark == 'none' %}{% if tile %}<small>No price yet</small>{% else %}<span class="muted">no price</span>{% endif %}{% else %}{{ '≈' if mark == 'est' }}{% if key == 'miles' %}{{ v|dist }}{% if tile %}<small>{{ u.dist }}</small>{% else %} {{ u.dist }}{% endif %}{% elif key == 'added_kwh' %}{{ v|num }}{% if tile %}<small>kWh</small>{% else %} kWh{% endif %}{% elif key == 'cost' %}{{ cur }}{{ v|num if tile else v|num(2) }}{% elif key == 'cost_per_mi' %}{{ (v * 100)|perdist(1) }}{% if tile %}<small>¢/{{ u.dist }}</small>{% else %}¢{% endif %}{% else %}{{ v|num }}{% endif %}{% endif %}
+{%- endmacro %}
+<div class="pbar"><h1>Stats</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span><span class="sp"></span>
+  {% if ctl %}<nav class="segmented" aria-label="Period">{% for o in ctl.periods %}<a href="{{ root }}/stats?{{ o.href }}"{% if o.on %} aria-current="page"{% endif %}>{{ o.label }}</a>{% endfor %}</nav>
+  {% if ctl.step %}<nav class="stepper" aria-label="{{ 'Month' if mode == 'month' else 'Year' }}"><a href="{{ root }}/stats?{{ ctl.step.prev }}" aria-label="{{ ctl.step.prev_label }}">‹</a><span class="now">{{ ctl.step.label }}{% if mode == 'month' and h.partial %} <small class="muted">· {{ h.this.split(' ')[1] }}</small>{% endif %}</span>{% if ctl.step.next %}<a href="{{ root }}/stats?{{ ctl.step.next }}" aria-label="{{ ctl.step.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav>{% endif %}{% endif %}
+</div>
+{% if ctl and ctl.custom %}<form method="get" action="{{ root }}/stats" class="dates">{% for k, v in ctl.keep %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}<input type="hidden" name="period" value="custom">
+  <label><span>From</span><input type="date" name="from" value="{{ ctl.from }}"></label><label><span>To</span><input type="date" name="to" value="{{ ctl.to }}"></label><button type="submit" class="btn">Show</button></form>{% endif %}
+{% if mode == 'month' %}
+{% set extra = 1 + (1 if totals.get('fsd_miles') else 0) + (1 if petrol and (petrol.ok or totals.charges) else 0) %}
+<div class="tiles stats-t{{ ' odd' if (cmp|length + extra) is odd }}">{% for m in cmp %}<div class="tile"><span class="l">{{ ('Per ' ~ u.dist) if m.key == 'cost_per_mi' else m.label }}</span>
+  <span class="v">{% if m.key == 'cost_per_mi' and not m.this and m.marks[0] != 'none' %}—{% else %}{{ fig(m.key, m.this, m.marks[0], true) }}{% endif %}</span>
+  <span class="d">{% if m.marks[0] == 'none' %}<a href="{{ root }}/settings/money">set a plan in Settings › Money</a>{% else %}{% for ref, name in [(m.vs_last, 'vs ' ~ h.last), (m.vs_avg if m.n_avg > 1 else none, 'vs avg')] if ref is not none %}<span class="{{ 'up' if ref > 0 else 'down' if ref < 0 else '' }}">{{ '▲' if ref > 0 else '▼' if ref < 0 else '' }} {{ (ref|abs * 100)|num }}% {{ name }}</span>{% if not loop.last %} · {% endif %}{% endfor %}{% endif %}</span>
+  {% if m.proj is not none and m.marks[0] != 'none' %}<span class="d pace">on pace for ~{{ fig(m.key, m.proj) }}</span>{% endif %}{% if m.key == 'cost' %}{{ cost_info() }}{% endif %}</div>{% endfor %}
+    <div class="tile"><span class="l">Efficiency</span><span class="v">{{ totals.wh_per_mi|econ }}<small>{{ u.econ }}</small></span><span class="d">{{ totals.used_kwh|num }} kWh used</span>{% call i.info('How efficiency is worked out') %}Rated range used, times this car's kWh per rated {{ u.dist }}, measured from its charges.{% endcall %}</div>
+    {% if totals.get('fsd_miles') %}<div class="tile"><span class="l">On FSD</span><span class="v">{{ (totals.fsd_miles / totals.miles * 100)|num }}<small>%</small></span><span class="d">{{ totals.fsd_miles|dist }} {{ u.dist }}</span></div>{% endif %}
+    {% if petrol and petrol.ok %}<div class="tile"><span class="l">Against petrol</span><span class="v">≈{{ '−' if petrol.saved < 0 }}{{ cur }}{{ petrol.saved|abs|num }}</span><span class="d">{{ 'saved' if petrol.saved >= 0 else 'more' }} vs a {% if u.dist == 'km' %}{{ petrol.l_per_100km|num(1) }} L/100 km{% else %}{{ petrol.mpg|num }} mpg{% endif %} car</span>
+      {% call i.info('How the petrol comparison is worked out') %}{{ petrol.charges|num }} priced charge{{ 's' if petrol.charges != 1 }} added energy for about {{ petrol.miles|dist }} {{ u.dist }} at each car's measured efficiency; a {% if u.dist == 'km' %}{{ petrol.l_per_100km|num(1) }} L/100 km car would burn {{ petrol.litres|num }} L{% else %}{{ petrol.mpg|num }} mpg car would burn {{ petrol.gallons|num }} gal{% endif %}, {{ cur }}{{ petrol.petrol|num }}{% if petrol.own_price %} at your price on Settings{% else %} at the {{ petrol.areas|join(', ') }} average ({{ petrol.sources|join('; ') }}), {{ petrol.from|month_label }}{% if petrol.to != petrol.from %} to {{ petrol.to|month_label }}{% endif %}{% endif %}, against {{ cur }}{{ petrol.charging|num }} for the charging.{% set left = petrol.skipped.unpriced + petrol.skipped.petrol + petrol.skipped.efficiency %}{% if left %} {{ left|num }} charge{{ 's' if left != 1 }} left out ({% if petrol.skipped.unpriced %}{{ petrol.skipped.unpriced }} with no price{% endif %}{% if petrol.skipped.petrol %}{{ ', ' if petrol.skipped.unpriced }}{{ petrol.skipped.petrol }} with no petrol price for the region{% endif %}{% if petrol.skipped.efficiency %}{{ ', ' if petrol.skipped.unpriced or petrol.skipped.petrol }}{{ petrol.skipped.efficiency }} with no measured efficiency{% endif %}).{% endif %}{% endcall %}</div>
+    {% elif petrol and totals.charges %}<div class="tile"><span class="l">Against petrol</span><span class="v"><small>Not yet</small></span><span class="d">{% if not totals.priced %}needs a charging price first{% elif petrol.skipped.petrol %}no petrol price for this region{% else %}no measured efficiency yet{% endif %}</span></div>{% endif %}
+  </div>
+{{ parts.bars(mbars, u.dist, names, colors) }}{{ parts.bars(mbars_phone, u.dist, names, colors, 'phone') }}
+<table class="cmp">
+  <thead><tr><th></th><th class="r">{{ h.this }}</th><th class="r">{{ h.last }}</th><th class="r">{{ h.avg }}{% if cmp and cmp[0].n_avg < 12 %} ({{ cmp[0].n_avg }}){% endif %}</th><th class="vsh">vs average</th></tr></thead>
+  <tbody>{% for m in cmp %}<tr><td>{{ ('Per ' ~ u.dist) if m.key == 'cost_per_mi' else m.label }}</td>{% for v in [m.this, m.last, m.avg] %}<td class="r">{{ fig(m.key, v, m.marks[loop.index0]) }}</td>{% endfor %}
+    <td class="chg">{% if m.vbar and 'none' not in m.marks %}<span class="vs"><span class="trk"><i class="{{ m.vbar.side }}{{ ' cap' if m.vbar.cap }}" style="width:{{ '%.1f'|format(m.vbar.w / 2) }}%"></i></span><b>{{ '+' if m.vs_avg > 0 }}{{ (m.vs_avg * 100)|num }}%</b></span>{% endif %}</td></tr>{% endfor %}</tbody>
+</table>
+{% elif rows %}
+<div class="tiles">
+    <div class="tile"><span class="l">Driven</span><span class="v">{{ totals.miles|dist }}<small>{{ u.dist }}</small></span><span class="d">{{ totals.drives|num }} drives</span></div>
+    <div class="tile"><span class="l">Efficiency</span><span class="v">{{ totals.wh_per_mi|econ }}<small>{{ u.econ }}</small></span><span class="d">{{ totals.used_kwh|num }} kWh used</span>{% call i.info('How efficiency is worked out') %}Rated range used, times this car's kWh per rated {{ u.dist }}, measured from its charges.{% endcall %}</div>
+    <div class="tile"><span class="l">Charged</span><span class="v">{{ totals.added_kwh|num }}<small>kWh</small></span><span class="d">{{ totals.charges|num }} charges</span></div>
+    {% if totals.charges and not totals.priced %}<div class="tile"><span class="l">Charging cost</span><span class="v"><small>No price yet</small></span><span class="d"><a href="{{ root }}/settings/money">Set a plan in Settings › Money</a></span></div>
+    {% else %}<div class="tile"><span class="l">Charging cost</span><span class="v">{{ '≈' if estimate }}{{ cur }}{{ totals.cost|num(2) }}</span><span class="d">{% if estimate and estimate.cost >= totals.cost - 0.005 %}estimate from the {{ estimate.areas|join(', ') }} average{% elif estimate %}{{ rate_plan or 'set rates' }}, part estimate from the {{ estimate.areas|join(', ') }} average{% else %}{{ rate_plan or 'no rate plan set' }}{% endif %}</span>
+      {{ cost_info() }}</div>{% endif %}
+    {% if totals.get('fsd_miles') %}<div class="tile"><span class="l">On FSD</span><span class="v">{{ (totals.fsd_miles / totals.miles * 100)|num }}<small>%</small></span><span class="d">{{ totals.fsd_miles|dist }} {{ u.dist }}</span></div>{% endif %}
+    {% if petrol and petrol.ok %}<div class="tile"><span class="l">Against petrol</span><span class="v">≈{{ '−' if petrol.saved < 0 }}{{ cur }}{{ petrol.saved|abs|num }}</span><span class="d">{{ 'saved' if petrol.saved >= 0 else 'more' }} vs a {% if u.dist == 'km' %}{{ petrol.l_per_100km|num(1) }} L/100 km{% else %}{{ petrol.mpg|num }} mpg{% endif %} car</span>
+      {% call i.info('How the petrol comparison is worked out') %}{{ petrol.charges|num }} priced charge{{ 's' if petrol.charges != 1 }} added energy for about {{ petrol.miles|dist }} {{ u.dist }} at each car's measured efficiency; a {% if u.dist == 'km' %}{{ petrol.l_per_100km|num(1) }} L/100 km car would burn {{ petrol.litres|num }} L{% else %}{{ petrol.mpg|num }} mpg car would burn {{ petrol.gallons|num }} gal{% endif %}, {{ cur }}{{ petrol.petrol|num }}{% if petrol.own_price %} at your price on Settings{% else %} at the {{ petrol.areas|join(', ') }} average ({{ petrol.sources|join('; ') }}), {{ petrol.from|month_label }}{% if petrol.to != petrol.from %} to {{ petrol.to|month_label }}{% endif %}{% endif %}, against {{ cur }}{{ petrol.charging|num }} for the charging.{% set left = petrol.skipped.unpriced + petrol.skipped.petrol + petrol.skipped.efficiency %}{% if left %} {{ left|num }} charge{{ 's' if left != 1 }} left out ({% if petrol.skipped.unpriced %}{{ petrol.skipped.unpriced }} with no price{% endif %}{% if petrol.skipped.petrol %}{{ ', ' if petrol.skipped.unpriced }}{{ petrol.skipped.petrol }} with no petrol price for the region{% endif %}{% if petrol.skipped.efficiency %}{{ ', ' if petrol.skipped.unpriced or petrol.skipped.petrol }}{{ petrol.skipped.efficiency }} with no measured efficiency{% endif %}).{% endif %}{% endcall %}</div>
+    {% elif petrol and totals.charges %}<div class="tile"><span class="l">Against petrol</span><span class="v"><small>Not yet</small></span><span class="d">{% if not totals.priced %}needs a charging price first{% elif petrol.skipped.petrol %}no petrol price for this region{% else %}no measured efficiency yet{% endif %}</span></div>{% endif %}
+  </div>
+{% if mode != 'all' and ctl and ctl.versus %}<nav class="segmented vsnav" aria-label="Compare with">{% for o in ctl.versus %}<a href="{{ root }}/stats?{{ o.href }}"{% if o.on %} aria-current="page"{% endif %}>{{ 'Alone' if o.key == 'none' else 'vs ' ~ o.short|lower }}</a>{% endfor %}</nav>{% endif %}
+{% if compare %}
+<section>
+  <table class="cmp pair">
+    <thead><tr><th></th><th class="r">{{ rng.label }}</th><th class="r">{{ compare.label }}</th><th class="r">Change</th></tr></thead>
+    <tbody>{% for label, key, fmt in [("Driven", "miles", "dist"), ("Drives", "drives", "int"), ("Hours driving", "drive_h", "h"), ("Energy used", "used_kwh", "kwh"), (u.econ, "wh_per_mi", "econ"), ("Charges", "charges", "int"), ("Energy added", "added_kwh", "kwh"), ("Cost", "cost", "money")] %}{% set a = totals.get(key) %}{% set b = compare.totals.get(key) %}<tr>
+      <td>{{ label }}</td>
+      {% for x in (a, b) %}<td class="r">{% if x is not none %}{% if fmt == 'dist' %}{{ x|dist }} {{ u.dist }}{% elif fmt == 'h' %}{{ x|num(1) }} h{% elif fmt == 'kwh' %}{{ x|num }} kWh{% elif fmt == 'econ' %}{{ x|econ }}{% elif fmt == 'money' %}{{ cur }}{{ x|num(2) }}{% else %}{{ x }}{% endif %}{% endif %}</td>{% endfor %}
+      <td class="r">{% if a and b %}{% set d = (a - b) / b * 100 %}<span class="{% if d > 0 %}up{% elif d < 0 %}down{% endif %}">{{ '+' if d > 0 }}{{ d|num }}%</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+</section>
+{% endif %}
+{{ parts.bars(mbars, u.dist, names, colors) }}{{ parts.bars(mbars_phone, u.dist, names, colors, 'phone') }}
+{% endif %}
+{% if rows %}
+{% if per_car %}
+<section class="group">
+  <h2 class="sec">By car</h2>
+  <div class="ovx"><table class="cmp pair bycar">
+    <thead><tr><th></th>{% for t in per_car %}<th class="r"><a href="{{ root }}/stats?{{ ctl.href(vin=t.vin) if ctl else 'by=' ~ by ~ '&vin=' ~ t.vin }}"><span class="dot c{{ colors.get(t.vin, 0) }}"></span>{{ t.name }}</a></th>{% endfor %}</tr></thead>
+    <tbody>
+      <tr><td>{{ u.distname|capitalize }}</td>{% for t in per_car %}<td class="r">{{ t.miles|dist }}</td>{% endfor %}</tr>
+      <tr><td>Drives</td>{% for t in per_car %}<td class="r">{{ t.drives|num }}</td>{% endfor %}</tr>
+      <tr><td>Driving</td>{% for t in per_car %}<td class="r">{{ t.drive_h|num }} h</td>{% endfor %}</tr>
+      <tr><td>Used</td>{% for t in per_car %}<td class="r">{{ t.used_kwh|num }} kWh</td>{% endfor %}</tr>
+      <tr><td>{{ u.econ }}</td>{% for t in per_car %}<td class="r">{{ t.wh_per_mi|econ }}</td>{% endfor %}</tr>
+      <tr><td>Charges</td>{% for t in per_car %}<td class="r">{{ t.charges }}</td>{% endfor %}</tr>
+      <tr><td>Added</td>{% for t in per_car %}<td class="r">{{ t.added_kwh|num }} kWh</td>{% endfor %}</tr>
+      <tr><td>Cost</td>{% for t in per_car %}<td class="r">{% if t.cost %}{{ '≈' if t.avg_cost }}{{ cur }}{{ t.cost|num(2) }}{% elif t.charges %}<span class="muted">no price</span>{% else %}–{% endif %}</td>{% endfor %}</tr>
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+<section class="group">
+  <h2 class="sec">By {{ by }}{% if ctl %}<span class="sp"></span><nav class="segmented" aria-label="Group by">{% for g in ctl.grains %}<a href="{{ root }}/stats?{{ g.href }}"{% if g.on %} aria-current="page"{% endif %}>{{ g.label }}</a>{% endfor %}</nav>{% endif %}</h2>
+  {% set many = rows|length > 12 %}{% if many %}<input type="checkbox" id="rows-all" class="rows-all" aria-label="Show every {{ by }}">{% endif %}
+  <div class="ovx sticky1"><table class="data">
+    <thead><tr><th>{{ by|capitalize }}</th><th class="r">Drives</th><th class="r">{{ u.distname|capitalize }}</th><th class="r">Driving</th><th class="r">Used kWh</th><th class="r">{{ u.econ }}</th><th class="r">Drive cost</th><th class="r">Charges</th><th class="r">Added kWh</th><th class="r">Charging</th><th class="r">¢/{{ u.dist }}</th></tr></thead>
+    <tbody>{% for r in rows %}<tr{% if loop.index > 12 %} class="later"{% endif %}>
+      <td>{{ r.period.strftime('%b %-d, %Y') if by != 'month' else r.period.strftime('%b %Y') }}</td>
+      <td class="r">{{ r.drives }}</td><td class="r">{{ r.miles|dist(1) }}</td><td class="r">{{ r.drive_h|num(1) }} h</td><td class="r">{{ r.used_kwh|num(1) }}</td><td class="r">{{ r.wh_per_mi|econ }}</td><td class="r">{% if r.drive_cost %}{{ est(r.drive_cost_estimate, 'at a home rate partly priced at the regional average') }}{{ cur }}{{ r.drive_cost|num(2) }}{% endif %}</td>
+      <td class="r">{{ r.charges }}</td><td class="r">{{ r.added_kwh|num(1) }}</td><td class="r">{% if r.cost %}{{ '≈' if r.avg_cost }}{{ cur }}{{ r.cost|num(2) }}{% endif %}</td><td class="r">{% if r.cost_per_mi %}{{ (r.cost_per_mi * 100)|perdist }}{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% if many %}<label for="rows-all" class="btn sm rows-more"><span class="off">All {{ rows|length }}</span><span class="on">Latest 12</span></label>{% endif %}
+</section>
+{% if sun %}<section class="group" id="sun">
+  <h2 class="sec">Sun share of home charging</h2>
+  <div class="sunmonths">{% for m in sun[:12] %}<div class="sm"><span class="sm-l">{{ m.label }}</span><span class="mixbar" role="img" aria-label="{{ m.percent|round|int }}% sun"><i class="sun" style="width:{{ '%.1f'|format(m.percent) }}%"></i></span><b class="sm-v">{{ m.percent|round|int }}%</b><span class="sm-k">of {{ m.kwh|num(0) }} kWh</span></div>{% endfor %}</div>
+</section>
+{% endif %}
+{% if odometer %}<section><h2>Odometer</h2>{{ parts.chart('odo', odometer) }}</section>{% endif %}
+{% if bins.temp or bins.speed %}
+<div class="overrow"><span class="cap">Drives over</span><nav class="segmented" aria-label="Drives over">{% for o in [1, 5, 10, 25, 50] %}<a href="{{ root }}/stats?{{ ctl.href(over=o|string) if ctl else 'by=' ~ by ~ '&over=' ~ o ~ dq }}"{% if over == o %} aria-current="page"{% endif %}>{{ o|dist }} {{ u.dist }}</a>{% endfor %}</nav></div>
+<section class="two">
+  {% for title, unit, rows, fmt in [("Efficiency by outside temperature", u.temp, bins.temp, "temp"), ("Efficiency by average speed", u.speed, bins.speed, "speed")] %}
+  <div>
+    <h2>{{ title }}</h2>
+    <div class="ovx"><table class="bins">
+      <thead><tr><th>{{ unit }}</th><th class="r">Drives</th><th class="r">{{ u.distname|capitalize }}</th><th class="r">Of rated</th><th>{{ u.econ }}</th></tr></thead>
+      <tbody>{% for b in rows %}<tr>
+        <td>{% set lo = (b.lo|temp) if fmt == "temp" else (b.lo|speed) %}{% set hi = (b.hi|temp) if fmt == "temp" else (b.hi|speed) %}{% if b.lo < 0 %}under {{ hi }}{% elif b.hi > 150 %}{{ lo }} and up{% else %}{{ lo }}–{{ hi }}{% endif %}</td>
+        <td class="r">{{ b.drives }}</td><td class="r">{{ b.miles|dist }}</td><td class="r">{% if b.of_rated %}{{ (b.of_rated * 100)|num }}%{% endif %}</td>
+        <td class="bar-cell"><span class="bar" style="width: {{ '%.0f'|format(b.share * 70) }}%"></span><span class="bar-n">{{ b.wh_per_mi|econ }}</span></td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+{% else %}<div class="empty">Nothing logged in this period</div>{% endif %}
+{% endblock %}

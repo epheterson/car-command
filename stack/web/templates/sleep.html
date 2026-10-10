@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% import "_info.html" as i %}
+{% block title %}Sleep · Car Command{% endblock %}
+{% block body %}
+{# What parked time costs, then per car four tiles and one row a day: its ribbon, asleep and
+   wake-ups; a day opens onto the stops of an hour or more that began on it. #}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}
+<div class="pbar"><h1>Sleep</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span><span class="sp"></span>
+  <nav class="segmented" aria-label="Window"><a href="{{ root }}/sleep{{ q }}"{% if not window %} aria-current="page"{% endif %}>14 days</a><a href="{{ root }}/sleep?month={{ window.ym if window else now.strftime('%Y-%m') }}{{ dq }}"{% if window %} aria-current="page"{% endif %}>Month</a></nav>
+  {% if window %}<nav class="stepper" aria-label="Month"><a href="{{ root }}/sleep?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/sleep?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav>{% endif %}
+</div>
+{% if parked_rates %}
+<section class="group">
+  <h2 class="sec">An hour parked costs {% call i.info('How this is measured') %}Median rated {{ u.dist }} lost per hour, over parked stretches of 2 to 24 h with no charge.{% endcall %}</h2>
+  {% if parked_rates|length == 1 %}{% set r = parked_rates[0] %}
+  <div class="tiles t3">
+    <div class="tile"><span class="l">Nothing on</span><span class="v">{{ r.idle|perdist(2) }}<small>{{ u.dist }}/h</small></span><span class="d">{{ r.idle_n|num }} stretches</span></div>
+    <div class="tile"><span class="l">{{ r.guard or guard_all }}</span>{% if r.sentry %}<span class="v">{{ r.sentry|perdist(2) }}<small>{{ u.dist }}/h</small></span><span class="d">{{ r.sentry_n|num }} stretches</span>{% else %}<span class="v none">–</span><span class="d">too few yet</span>{% endif %}</div>
+    <div class="tile"><span class="l">Climate</span>{% if r.climate %}<span class="v">{{ r.climate|perdist(2) }}<small>{{ u.dist }}/h</small></span><span class="d">{{ r.climate_n|num }} stretches</span>{% else %}<span class="v none">–</span><span class="d">too few yet</span>{% endif %}</div>
+  </div>
+  {% else %}
+  <table class="cmp pair">
+    <thead><tr><th>{{ u.dist }}/h</th><th class="r">Nothing on</th><th class="r">{{ guard_all }}</th><th class="r">Climate</th></tr></thead>
+    <tbody>{% for r in parked_rates %}<tr>
+      <th scope="row">{{ r.name }}</th>
+      <td class="r">{{ r.idle|perdist(2) }}</td>
+      <td class="r">{% if r.sentry %}{{ r.sentry|perdist(2) }}{% else %}<span class="muted">–</span>{% endif %}</td>
+      <td class="r">{% if r.climate %}{{ r.climate|perdist(2) }}{% else %}<span class="muted">–</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+  {% endif %}
+</section>
+{% endif %}
+{% for b in blocks %}
+<section class="daycar">
+{% if car.garage %}<h2 class="daycar-h"><span class="dot c{{ colors.get(b.vin, 0) }}"></span>{{ b.name }}</h2>{% endif %}
+<div class="tiles">
+  <div class="tile"><span class="l">Asleep</span><span class="v">{{ b.summary.asleep_pct|num }}<small>%</small></span><span class="d">of {{ b.summary.days }} day{{ 's' if b.summary.days != 1 else '' }}{% if b.streak %} · now {{ b.streak[0] }} for {{ b.streak[1]|duration }}{% endif %}</span></div>
+  <div class="tile"><span class="l">Wake-ups</span><span class="v">{{ b.summary.wakeups_per_day|num(1) }}</span><span class="d">a day</span></div>
+  <div class="tile"><span class="l">Driving</span><span class="v">{{ b.summary.driving_h|num(1) }}<small>h</small></span><span class="d">in all</span></div>
+  <div class="tile"><span class="l">Charging</span><span class="v">{{ b.summary.charging_h|num(1) }}<small>h</small></span><span class="d">in all</span></div>
+</div>
+{% if loop.first %}<details class="fsheet"{% if searching %} open{% endif %}><summary>Filter stops{% if searching %} · on{% endif %}</summary>
+<form method="get" action="{{ root }}/sleep" class="filterform">
+  {% if car.vin and q %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}{% if window %}<input type="hidden" name="month" value="{{ window.ym }}">{% endif %}
+  <div class="group-b">
+    <div class="set-row"><span class="set-l">Hours</span><span class="set-c"><span class="num w4"><input type="number" inputmode="numeric" name="min_h" min="1" max="10000" step="1" value="{{ search.min_h|int if search and search.min_h else '' }}" placeholder="1" aria-label="At least, hours"><span class="u">h</span></span><span class="muted">to</span><span class="num w4"><input type="number" inputmode="numeric" name="max_h" min="1" max="10000" step="1" value="{{ search.max_h|int if search and search.max_h else '' }}" placeholder="any" aria-label="At most, hours"><span class="u">h</span></span></span></div>
+    <div class="set-row"><label class="set-l" for="sl-place">Place</label><span class="set-c"><input id="sl-place" class="field" name="place" value="{{ search.place if search else '' }}" placeholder="Any" maxlength="60"></span></div>
+    <div class="set-row"><label class="set-l" for="sl-sentry">{{ guard_all }} on</label><span class="set-c"><label class="switch"><input id="sl-sentry" type="checkbox" role="switch" name="sentry"{% if search and search.sentry_only %} checked{% endif %}><span aria-hidden="true"></span></label></span></div>
+  </div>
+  <div class="acts">{% if searching %}<a class="btn" href="{{ root }}/sleep{{ q }}{% if window %}{{ '&' if q else '?' }}month={{ window.ym }}{% endif %}">Clear</a>{% endif %}<button type="submit" class="btn primary">Show</button></div>
+</form>
+</details>{% endif %}
+<div class="sdays">
+  <div class="sday-h" aria-hidden="true"><span>Day</span><span>Midnight to midnight</span><span class="r">Asleep</span><span class="r">Wakes</span></div>
+  {% for d in b.days %}{% if not searching or d.idles %}
+  <details class="sday"{% if searching %} open{% endif %}>
+    <summary>
+      <span class="sday-d">{{ d.date.strftime('%a %b %-d') }}</span>
+      <span class="ribbon small-ribbon" title="midnight to {{ 'now' if loop.first else 'midnight' }}; {{ d.hours.unknown|num(1) }} h not logged">{% for s in d.segments %}<span class="seg {{ s.label }}" style="width: {{ '%.2f'|format(s.width * d.span_h / 24 * 100) }}%" title="{{ s.label }} {{ s.start|local('%-I:%M %p') }} to {{ s.end|local('%-I:%M %p') }}"></span>{% endfor %}</span>
+      <span class="r">{% if d.asleep_pct is not none %}{{ d.asleep_pct|num }}%{% else %}<span class="muted">–</span>{% endif %}</span>
+      <span class="r">{{ d.wakeups }}</span>
+    </summary>
+    <div class="sday-p">
+      <p class="sday-hrs">Idle {{ d.hours.idle|num(1) }} h · driving {{ d.hours.driving|num(1) }} h · charging {{ d.hours.charging|num(1) }} h</p>
+      {% for p in d.idles %}
+      <div class="sstop">
+        <span class="sstop-t">{{ p.start|local('%-I:%M %p') }} → {% if p.open %}now{% elif p.end|local('%a') != p.start|local('%a') %}{{ p.end|local('%a %-I:%M %p') }}{% else %}{{ p.end|local('%-I:%M %p') }}{% endif %}</span>
+        <span class="sstop-w">{{ p.place or 'Somewhere unnamed' }}</span>
+        <span class="sstop-n"><b>{{ p.hours|num(1) }}</b> h</span>
+        <span class="sstop-m">{% if p.asleep_share is not none %}{{ (p.asleep_share * 100)|num }}% asleep{% endif %}{% if p.soc_start is not none and p.soc_end is not none %} · {{ p.soc_start|num }}→{{ p.soc_end|num }}%{% endif %}{% if p.drop_per_day is not none %} · {{ p.drop_per_day|num(1) }}%/day{% endif %}{% if p.sentry_share %} · {{ guard.get(b.vin, 'Guard mode') }} {{ (p.sentry_share * 100)|num }}%{% endif %}</span>
+      </div>
+      {% else %}<div class="empty">No stop of an hour or more began this day</div>{% endfor %}
+    </div>
+  </details>
+  {% endif %}{% endfor %}
+  {% if searching and not b.idles %}<div class="empty">No stop matches</div>{% endif %}
+</div>
+{% if loop.last %}<p class="legend muted"><span class="key sleeping"></span>Sleeping <span class="key idle"></span>Idle <span class="key driving"></span>Driving <span class="key charging"></span>Charging <span class="key unknown"></span>Not logged</p>{% endif %}
+</section>
+{% endfor %}
+{% if not blocks %}<div class="empty">Nothing logged in this window</div>{% endif %}
+{% endblock %}

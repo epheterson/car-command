@@ -1,0 +1,26 @@
+name: Feature request
+description: Something Car Command should show or do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What you want to know or do
+      description: The question you want answered about your car, or what you do by hand today.
+    validations:
+      required: true
+  - type: textarea
+    id: now
+    attributes:
+      label: How you do it now
+      description: Where you look today, if anywhere, and what is missing.
+  - type: input
+    id: brand
+    attributes:
+      label: Car brand and source
+      placeholder: Tesla Model 3, through the live stream
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Sketches, examples, or data the car already sends that could answer it.

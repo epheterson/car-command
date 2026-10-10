@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% block title %}Now · Car Command{% endblock %}
+{% block body %}
+<h1>Now <span class="more">every car</span></h1>
+{% set act_link = true %}{% include "_activity.html" %}
+<div class="today"><span class="lbl">Today</span>
+  {% for l in line or [] %}<span class="car{% if not l.moved %} still{% endif %}"><span class="dot c{{ colors.get(l.vin, 0) }}"></span>{% if l.moved %}<b>{{ l.name }}</b>{% else %}{{ l.name }}{% endif %} {{ l.text }}</span>{% endfor %}
+</div>
+<section class="car-cards">
+{% for c in cars %}{{ parts.car_card(c, root, colors, u, (today or {}).get(c.vin), ticks or []) }}{% endfor %}
+</section>
+{{ parts.pw_row(pw) }}
+<p class="legend muted small"><span class="key sleeping"></span>Asleep <span class="key idle"></span>Parked, awake <span class="key driving"></span>Driving <span class="key charging"></span>Charging</p>
+{% endblock %}

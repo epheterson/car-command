@@ -1,0 +1,22 @@
+{% extends "gate.html" %}
+{% block title %}Choose a password · Car Command{% endblock %}
+{% block body %}
+<h1>Choose a password</h1>
+<p class="lede">No password is set yet. Choose one now, before the site is reachable from anywhere else.</p>
+{% if error %}<p class="gate-error">{{ error }}</p>{% endif %}
+<form method="post" action="{{ root }}/setup" class="gate-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="new-password" autofocus required>
+  <label for="confirm">Again</label>
+  <input id="confirm" name="confirm" type="password" autocomplete="new-password" required>
+  {% if not keyless %}
+  {% if window_passed %}<p class="muted small">The no-code window, the first hour after this site first started, has passed.</p>{% endif %}
+  <label for="code">Setup code</label>
+  <input id="code" name="code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+  <p class="muted small">Get the setup code: <code>docker compose exec web python3 setup_code.py</code> in the stack directory (one container: <code>docker exec carcommand carcommand web python3 setup_code.py</code>; a remote deploy: <code>make setup-code</code>).</p>
+  {% endif %}
+  <button type="submit">Set it and sign in</button>
+</form>
+<p class="muted small">Behind a proxy that handles sign-in? Set <code>CC_AUTH=off</code>.</p>
+{% endblock %}

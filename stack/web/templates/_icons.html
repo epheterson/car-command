@@ -1,0 +1,61 @@
+{# Line icons for the shell, one per section: 1.6 px strokes on a 24 px grid, drawn in the text colour. #}
+{% macro icon(name) -%}
+<svg class="ic" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+{%- if name == "now" %}<path d="M4.5 16a7.5 7.5 0 1 1 15 0"/><path d="M12 16l3.6-4.2"/><circle cx="12" cy="16" r="1.2" fill="currentColor" stroke="none"/>
+{%- elif name == "timeline" %}<path d="M8 6h11M8 12h11M8 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4.5" cy="18" r="1" fill="currentColor" stroke="none"/>
+{%- elif name == "calendar" %}<rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>
+{%- elif name == "stats" %}<path d="M5 20V12M10 20V6M15 20v-9M20 20V9"/>
+{%- elif name == "map" %}<path d="M9 5 4 7v12l5-2 6 2 5-2V5l-5 2-6-2z"/><path d="M9 5v12M15 7v12"/>
+{%- elif name == "places" %}<path d="M12 21s6.5-5.6 6.5-11a6.5 6.5 0 0 0-13 0c0 5.4 6.5 11 6.5 11z"/><circle cx="12" cy="10" r="2.3"/>
+{%- elif name == "settings" %}<circle cx="12" cy="12" r="3"/><path d="M12 3v2.2M12 18.8V21M4.2 7.5l1.9 1.1M17.9 15.4l1.9 1.1M4.2 16.5l1.9-1.1M17.9 8.6l1.9-1.1"/>
+{%- elif name == "drive" %}<path d="M5 18.5c0-4.5 4.5-4 7-6.5s7-2 7-6.5"/><circle cx="5" cy="18.5" r="1.6"/><circle cx="19" cy="5.5" r="1.6" fill="currentColor" stroke="none"/>
+{%- elif name == "charge" %}<path d="M13 3 5.5 13.5h6L10.5 21 18.5 10.5h-6L13 3z"/>
+{%- elif name == "update" %}<circle cx="12" cy="12" r="8.5"/><path d="M12 16.5V8M8.5 11.5 12 8l3.5 3.5"/>
+{%- elif name == "more" %}<circle cx="6" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.3" fill="currentColor" stroke="none"/>
+{%- elif name == "signout" %}<path d="M14 5h4a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-4M10 16l-4-4 4-4M6 12h9"/>
+{%- endif %}</svg>
+{%- endmacro %}
+
+{# A place's icon (home, work, school, ...): the paths live once in placeicons.py
+   (PLACE_ICONS, a Jinja global), read here and by the `places` filter alike. #}
+{% macro place_icon(key) -%}
+<svg class="pl-ic pl-{{ key }}" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">{{ PLACE_ICONS.get(key, "")|safe }}</svg>
+{%- endmacro %}
+
+{# The icon choice, one markup for a place's page and the naming card: a row of the likely
+   icons (the place's own first, then the common ones) with No icon and More…, which opens a
+   search over every icon in a box below the row, in the form's own flow, so it never covers a
+   field. Every icon is a radio named "icon" in whatever form holds it, so a keyboard moves
+   through them and a plain post carries the choice; nothing is checked until somebody picks
+   (or a typed name guesses, placecard.js), so a Save that touches nothing leaves the stored
+   icon alone. The icon a place shows without one stored (its name's guess) is marked, not
+   checked. The rest of the set comes from one cached file (/icons/places.json?v=PLACE_ICONS_V)
+   only when More… opens; the name -> icon guesses ride on the row as data. #}
+{% macro icon_row(name, current) %}{% set eff = resolve_place_icon(name, current) %}<div class="icorow" data-icons-v="{{ PLACE_ICONS_V }}" data-name-icons='{{ PLACE_NAME_ICONS.items()|list|tojson }}'>
+  <div class="icoquick" role="radiogroup" aria-label="Icon">{% if eff and eff not in PLACE_ICON_QUICK %}{{ _icopt(eff, current, eff) }}{% endif %}{% for k in PLACE_ICON_QUICK %}{{ _icopt(k, current, eff) }}{% endfor %}<label class="icopt icopt-none" title="No icon"><input type="radio" name="icon" value="none" aria-label="Icon: None"{% if current == 'none' %} checked{% endif %}><span class="icnone">&times;</span></label><button type="button" class="icomore" aria-expanded="false">More…</button></div>
+  <div class="icofull" hidden>
+    <input type="search" class="icosearch" placeholder="Search icons: pizza, school, dog…" aria-label="Search icons" autocomplete="off" enterkeyhint="done">
+    <div class="icoopts" role="radiogroup" aria-label="Every icon"></div>
+    <p class="icoempty" hidden>No icon matches.</p>
+    <p class="icohome">The house icon marks home.</p>
+  </div>
+</div>{% endmacro %}
+{% macro _icopt(k, current, eff) %}<label class="icopt{{ ' eff' if eff == k and current != k }}" title="{{ place_icon_title(k) }}"><input type="radio" name="icon" value="{{ k }}" aria-label="Icon: {{ place_icon_title(k) }}"{% if current == k %} checked{% endif %}>{{ place_icon(k) }}</label>{% endmacro %}
+
+{# The Car Command mark: the star is the garage and the car is coming home (brand/mark.svg): one leg
+   folded flat into the road, the point raised level into the roof, the car pulled in under it.
+   Drawn inline so it takes the theme's colour; a touch heavier than the master's 2.6 at this small size.
+   Motion "tow" is the sidebar's and the phone bar's arrival: the star folds into the garage and the car
+   pulls in, moved by CSS alone (style.css, the fold; one clock with the name riding behind the car); the
+   car is filled with the panel so it hides the road under it. It plays only when base.html marks a fresh
+   load (html.arrive), then hands over to the still copy beside it.
+   Motion "arrive" is the same fold played always (the sign-in and first-run pages), its car clipped to
+   the frame as it rolls in; a still copy beside it is what reduced motion shows. Once a page: its ids are fixed.
+   Motion "loop" pulls in while a page waits. #}
+{% macro _fold(car_clip="") -%}
+<g fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"><path d="M 10.76 44.72 A 0.6 0.6 0 0 1 10.18 44 L 13.33 29.13 A 0.6 0.6 0 0 0 13.15 28.56 L 2.3 18.79 A 0.6 0.6 0 0 1 2.64 17.75 L 17.16 16.21 A 0.6 0.6 0 0 0 17.64 15.86 L 23.58 2.53 A 0.6 0.6 0 0 1 24.68 2.53 L 30.62 15.86 A 0.6 0.6 0 0 0 31.1 16.21"/><g class="tw-arm"><path d="M 31.1 16.21 L 45.96 18.29"/><g class="tw-flap"><path d="M 45.96 18.29 L 34.86 28.79"/></g></g><path class="tw-roof" d="M 61.38 16.21 L 68.27 16.21" pathLength="1"/><path class="tw-leg" d="M 37.5 44.72 L 34.86 28.79"/><path class="tw-vl" d="M 10.76 44.72 L 24.13 36.16"/><path class="tw-vr" d="M 37.5 44.72 L 24.13 36.16"/><path class="tw-drive" d="M 53.65 44.72 L 68.27 44.72" pathLength="1"/><g{{ ' clip-path="url(#' ~ car_clip ~ ')"' if car_clip }}><path class="tow" d="M 61.27 44.72 C 60.43 44.72 60.42 43.55 60.27 42.72 C 60.04 41.42 59.84 40.12 59.52 38.84 C 59.23 37.68 58.32 36.76 57.15 36.47 C 55 35.93 52.97 35.01 50.9 34.22 C 48.2 33.18 45.42 32.22 42.52 32.22 C 40.45 32.22 38.35 32.5 36.52 33.47 L 30.9 36.41 C 29.72 37.03 28.47 37.53 27.15 37.72 C 24.84 38.04 22.55 38.49 20.27 38.97 C 19.27 39.18 18.22 39.62 17.9 40.6 C 17.59 41.54 17.26 42.49 17.09 43.47 C 17 43.98 17.04 44.72 16.52 44.72 L 16.52 47.5 L 61.27 47.5 Z" style="fill:var(--tow-fill, var(--panel));stroke:none"/><path class="tow" d="M 61.27 44.72 C 60.43 44.72 60.42 43.55 60.27 42.72 C 60.04 41.42 59.84 40.12 59.52 38.84 C 59.23 37.68 58.32 36.76 57.15 36.47 C 55 35.93 52.97 35.01 50.9 34.22 C 48.2 33.18 45.42 32.22 42.52 32.22 C 40.45 32.22 38.35 32.5 36.52 33.47 L 30.9 36.41 C 29.72 37.03 28.47 37.53 27.15 37.72 C 24.84 38.04 22.55 38.49 20.27 38.97 C 19.27 39.18 18.22 39.62 17.9 40.6 C 17.59 41.54 17.26 42.49 17.09 43.47 C 17 43.98 17.04 44.72 16.52 44.72"/></g></g>
+{%- endmacro %}
+{% macro brand_mark(motion="") -%}
+{% if motion == "arrive" %}<svg class="mark arrive" viewBox="0 0 69.57 46.02" aria-hidden="true" focusable="false"><defs><clipPath id="cc-arrive-frame"><rect x="-2" y="-2" width="71.6" height="50"/></clipPath></defs>{{ _fold("cc-arrive-frame") }}</svg>{% elif motion == "tow" %}<svg class="mark towing" viewBox="0 0 69.57 46.02" aria-hidden="true" focusable="false">{{ _fold() }}</svg>{% endif -%}
+<svg class="mark{{ ' ' ~ {'arrive': 'arrive-still', 'tow': 'towed'}.get(motion, motion) if motion }}" viewBox="0 0 69.57 46.02" aria-hidden="true" focusable="false"><path d="M 68.27 44.72 L 61.27 44.72 C 60.43 44.72 60.42 43.55 60.27 42.72 C 60.04 41.42 59.84 40.12 59.52 38.84 C 59.23 37.68 58.32 36.76 57.15 36.47 C 55 35.93 52.97 35.01 50.9 34.22 C 48.2 33.18 45.42 32.22 42.52 32.22 C 40.45 32.22 38.35 32.5 36.52 33.47 L 30.9 36.41 C 29.72 37.03 28.47 37.53 27.15 37.72 C 24.84 38.04 22.55 38.49 20.27 38.97 C 19.27 39.18 18.22 39.62 17.9 40.6 C 17.59 41.54 17.26 42.49 17.09 43.47 C 17 43.98 17.04 44.72 16.52 44.72 L 10.76 44.72 A 0.6 0.6 0 0 1 10.18 44 L 13.33 29.13 A 0.6 0.6 0 0 0 13.15 28.56 L 2.3 18.79 A 0.6 0.6 0 0 1 2.64 17.75 L 17.16 16.21 A 0.6 0.6 0 0 0 17.64 15.86 L 23.58 2.53 A 0.6 0.6 0 0 1 24.68 2.53 L 30.62 15.86 A 0.6 0.6 0 0 0 31.1 16.21 L 68.27 16.21" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round" pathLength="1"/></svg>
+{%- endmacro %}

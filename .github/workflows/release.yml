@@ -1,0 +1,97 @@
+# A release starts with a pull request that raises VERSION in stack/web/version.py and fills in
+# that version's section of CHANGELOG.md. When it lands on main:
+#   1. this workflow tags the merge commit vX.Y.Z and builds the image as :X.Y.Z (release-image.yml);
+#   2. it drafts the GitHub release, its notes taken from the CHANGELOG section;
+#   3. a maintainer reads the draft, edits it if need be, and presses Publish;
+#   4. publish.yml then points :X.Y and :latest at the image. A pre-release (0.2.0-rc.1) is
+#      published as a pre-release and never moves :latest.
+# Nothing is public before step 3 but the tag and the :X.Y.Z image.
+#
+# A re-run, or a version whose tag already exists, does nothing twice: an existing tag is left
+# where it is, and an existing draft keeps its notes. Run it by hand (Run workflow) if a push
+# did not start it.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [stack/web/version.py]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: tag and draft
+    # The public repository only; a private copy never tags or publishes.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the tag and the draft release
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - id: v
+        name: Read the version
+        run: |
+          version=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' stack/web/version.py)
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-(rc|beta|alpha)\.[0-9]+)?$' || { echo "::error::version.py says '$version'"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION exists; leaving it"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA" >/dev/null
+            echo "tagged $GITHUB_SHA v$VERSION"
+          fi
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "a release for v$VERSION exists; its notes stay as they are"
+            exit 0
+          fi
+          base=${VERSION%%-*}
+          awk -v v="$base" 'index($0, "## [" v "]") == 1 {f=1; next} /^## \[/ {f=0} /^\[[^]]+\]: / {f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::CHANGELOG.md has no section for $base"; exit 1; }
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          cat >> notes.md <<EOF
+
+          ### Install or upgrade
+
+          \`\`\`sh
+          docker pull $image:$VERSION
+          \`\`\`
+
+          Upgrading a running install: [docs/install.md](https://github.com/$GITHUB_REPOSITORY/blob/v$VERSION/docs/install.md#upgrades).
+          EOF
+          pre=""; case "$VERSION" in *-*) pre="--prerelease" ;; esac
+          gh release create "v$VERSION" --draft $pre --verify-tag --title "Car Command $VERSION" --notes-file notes.md
+          echo "Draft ready: $(gh release view "v$VERSION" --json url --jq .url). Read it, then Publish." >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    needs: tag
+    uses: ./.github/workflows/release-image.yml
+    with:
+      version: ${{ needs.tag.outputs.version }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write

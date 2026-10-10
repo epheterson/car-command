@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% import "_info.html" as i %}
+{% block title %}Charge · {{ session.session_start_date|local }} · Car Command{% endblock %}
+{% block body %}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}
+{# A charge: one line of what it was, a tile each for the charger's figures, then the chart
+   (its headline the peak, not the last reading after unplugging) and what can be done with it. #}
+<div class="pbar"><h1>{{ place_refs(session.where, [session.get('where_ref')]) }}</h1><span class="pbar-ctx">{{ session.session_start_date|local('%a %b %-d, %-I:%M %p') }}</span><span class="sp"></span><a class="btn sm" href="{{ root }}/day?date={{ session.session_start_date|local('%Y-%m-%d') }}{{ dq }}">Day ›</a></div>
+{% set line = [] %}{% if stats.kwh %}{% set _ = line.append((stats.kwh|num(1)) ~ ' kWh') %}{% endif %}{% if session.duration %}{% set _ = line.append(session.duration|duration) %}{% elif not session.session_end_date %}{% set _ = line.append('still charging') %}{% endif %}
+<div class="drv-sum"><b>{{ line|join(' · ') }}{% if session.cost is not none %}{{ ' · ' if line }}{{ '≈' if session.get('cost_source') == 'average' }}{{ cur }}{{ session.cost|num(2) }}{% endif %}</b>{% if session.cost is not none %}{% call i.info('How the cost is worked out') %}{% if session.get('cost_source') == 'average' %}An estimate from the {{ session.rate_plan or 'regional average' }}{% if session.rate_month %}, {{ session.rate_month|month_label }} figure{% endif %}. Set a plan in Settings › Money to price it.{% else %}{{ session.rate_plan or 'Its own price' }}{% for k, v in (session.get('cost_parts') or {}).items() if v %}{{ ':' if loop.first }} {{ v|num(1) }} kWh {{ k|replace('_', '-') }}{{ ',' if not loop.last }}{% endfor %}.{% endif %}{% endcall %}{% endif %}<span class="sp"></span>{% if session.start_level is not none and session.end_level is not none %}<span>{{ session.start_level|num }}→{{ session.end_level|num }}%</span>{% endif %}</div>
+{% if session.get('mix') %}<div class="mix">{{ parts.mix_bar(session.mix, true, cur) }}</div>{% endif %}
+<div class="tiles pair">
+  {% if stats.get('peak_kw') %}<div class="tile"><span class="l">Peak power</span><span class="v">{{ stats.peak_kw|num(1) }}<small>kW</small></span><span class="d">{% if stats.get('avg_kw') %}{{ stats.avg_kw|num(1) }} kW average{% endif %}{% if session.charging_type %}{{ ' · ' if stats.get('avg_kw') }}{{ 'DC' if session.charging_type == 'DC' else 'AC' }}{% endif %}</span></div>{% endif %}
+  {% if stats.get('avg_volts') %}<div class="tile"><span class="l">Charger</span><span class="v">{{ stats.avg_volts|num }}<small>V</small></span><span class="d">{% if stats.get('avg_amps') %}{{ stats.avg_amps|num }} A{% endif %}</span></div>{% endif %}
+  {% if session.get('range_added') and session.range_added > 0 %}<div class="tile"><span class="l">Range added</span><span class="v">{{ session.range_added|dist }}<small>{{ u.dist }}</small></span></div>{% endif %}
+  {% if stats.get('kwh_profile') and stats.kwh and stats.kwh_profile > stats.kwh %}<div class="tile"><span class="l">Into the battery</span><span class="v">{{ (stats.kwh / stats.kwh_profile * 100)|num }}<small>%</small></span><span class="d">of {{ stats.kwh_profile|num(1) }} kWh</span></div>{% endif %}
+  {% if stats.get('kwh_per_100') %}<div class="tile"><span class="l">Full battery</span><span class="v">{{ stats.kwh_per_100|num(1) }}<small>kWh</small></span></div>{% endif %}
+  {% if session.plug_connected_date %}<div class="tile"><span class="l">Plugged in</span><span class="v small-v">{{ session.plug_connected_date|local('%-I:%M %p') }}</span><span class="d">{% if session.plug_disconnected_date %}out {{ session.plug_disconnected_date|local('%-I:%M %p') }}{% endif %}</span></div>{% endif %}
+</div>
+{% if chart.primary.points %}{{ parts.chart('charge-' ~ session.id, chart, big=((stats.peak_kw|num(1)) ~ ' kW peak') if stats.get('peak_kw') else none) }}{% else %}<div class="empty">No power readings inside this charge</div>{% if chart.extras %}{{ parts.chart('charge-' ~ session.id, dict(chart, primary=chart.extras[0], extras=chart.extras[1:])) }}{% endif %}{% endif %}
+<section class="group drv-more">
+  <div class="group-b">
+    {% if bill and bill.invoice_id %}<a class="set-row set-nav" href="{{ root }}/dx/charging/invoice/{{ bill.invoice_id|urlencode }}" target="_blank" rel="noopener"><span class="set-l">Invoice</span></a>{% endif %}
+    <form method="post" action="{{ root }}/charges/{{ session.id }}/{{ 'unhide' if hidden else 'hide' }}" class="set-row"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><span class="set-l">{% if hidden %}Hidden from every list and total{% else %}In every list and total{% endif %}</span><span class="set-c"><button type="submit" class="btn sm">{% if hidden %}Unhide{% else %}Hide{% endif %}</button></span></form>
+    {% if session.get('by_hand') %}<form method="post" action="{{ root }}/charges/{{ session.id }}/remove" class="set-row"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><span class="set-l">Entered by hand</span><span class="set-c"><button type="submit" class="btn sm danger">Remove</button></span></form>{% endif %}
+  </div>
+</section>
+<section>
+  <h2>Every reading <span class="more">{% if samples %}{{ readings|num }} recorded{% if every > 1 %}, 1 in {{ every|num }} shown{% endif %}{% endif %}</span></h2>
+  {% if samples %}
+  <details class="readings">
+    <summary>Show the readings</summary>
+    <table class="readings">
+      <thead><tr><th>Time</th><th class="r">kW</th><th class="r">Battery</th><th class="r">Rated {{ u.dist }}</th><th class="r">Volts</th><th class="r">Amps</th></tr></thead>
+      <tbody>
+      {% for s in samples %}
+        <tr>
+          <td>{{ s.at|local('%-I:%M:%S %p') }}</td>
+          <td class="r">{{ s.kw|num(1) }}</td>
+          <td class="r">{% if s.level is not none %}{{ s.level|num }}%{% endif %}</td>
+          <td class="r">{{ s.rated|dist(1) }}</td>
+          <td class="r">{{ s.volts|num }}</td>
+          <td class="r">{{ s.amps|num }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% else %}<div class="empty">No charging-power readings recorded inside this charge</div>{% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,58 @@
+{% macro chip(vin) %}<span class="chip c{{ colors.get(vin, 0) }}">{{ names.get(vin, vin) }}</span>{% endmacro %}
+{% extends "base.html" %}
+{% block title %}Tags · Car Command{% endblock %}
+{% block head %}
+{% include "_maphead.html" %}
+{% endblock %}
+{% block body %}
+<h1>Tagged drives</h1>
+{% if said %}<p class="said">{{ said }}</p>{% endif %}
+<section class="hero rules">
+  <h2>Auto-tag rules <span class="more">{{ rules|length if rules else 0 }}</span></h2>
+  {% if rules %}<table class="cards"><thead><tr><th>From</th><th>To</th><th>Tag</th><th>Both ways</th><th></th></tr></thead>
+    <tbody>{% for r in rules %}<tr><td data-l="From">{{ r.from_name or 'anywhere' }}</td><td data-l="To">{{ r.to_name or 'anywhere' }}</td><td data-l="Tag"><span class="tag">{{ r.tag }}</span></td><td data-l="Both ways">{{ 'yes' if r.both_ways else 'no' }}</td>
+      <td class="r"><button type="submit" form="unrule-{{ r.id }}" class="quiet tiny" title="Remove this rule">×</button></td></tr>{% endfor %}</tbody></table>
+  {% else %}<p class="muted">No rules yet. A rule tags drives between two named places. A tag you set by hand wins.</p>{% endif %}
+  <form method="post" action="{{ root }}/tags/rules" class="row"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin if not car.garage else '' }}">
+    <label>From <select name="from_name"><option value="">anywhere</option>{% for p in named_places or [] %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}</select></label>
+    <label>To <select name="to_name"><option value="">anywhere</option>{% for p in named_places or [] %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}</select></label>
+    <label>Tag <input name="tag" maxlength="40" placeholder="e.g. Commute" required></label>
+    <label class="check"><input type="checkbox" name="both_ways" checked> both ways</label>
+    <button type="submit" class="quiet">Add rule</button>
+  </form>
+  {% if rules %}<p class="muted small">New drives are tagged as they finish. <button type="submit" form="apply-rules" class="quiet">Apply to every past drive</button> tags untagged drives.</p>{% endif %}
+</section>
+{% if tags %}
+<p class="seg-links filters">{% for t in tags %}<a href="{{ root }}/tags?tag={{ t|urlencode }}{% if window %}&month={{ window.ym }}{% else %}&all=1{% endif %}{% if q %}&vin={{ car.vin }}{% endif %}" {% if t == tag %}aria-current="page"{% endif %}>{{ t }}</a>{% endfor %}</p>
+<p class="seg-links month-nav">{% if window %}<a href="{{ root }}/tags?tag={{ tag|urlencode }}&month={{ window.prev }}{% if q %}&vin={{ car.vin }}{% endif %}">‹ {{ window.prev_label }}</a><span aria-current="page">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/tags?tag={{ tag|urlencode }}&month={{ window.next }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ window.next_label }} ›</a>{% endif %}<a href="{{ root }}/tags?tag={{ tag|urlencode }}&all=1{% if q %}&vin={{ car.vin }}{% endif %}">All time</a>{% else %}<a href="{{ root }}/tags?tag={{ tag|urlencode }}{% if q %}&vin={{ car.vin }}{% endif %}">‹ By month</a><span aria-current="page">All time</span>{% endif %}</p>
+<section class="hero"><div class="figures">
+  <div class="fig"><span class="n">{{ totals.miles|dist(1) }}<small>{{ u.dist }}</small></span><span class="l">{{ totals.drives }} drive{{ 's' if totals.drives != 1 }} tagged {{ tag }}</span></div>
+  <div class="fig"><span class="n">{{ totals.hours|num(1) }}<small>h</small></span><span class="l">Driving</span></div>
+  {% if totals.kwh %}<div class="fig"><span class="n">{{ totals.kwh|num(1) }}<small>kWh</small></span><span class="l">Energy{% if totals.cost %}, {{ est(totals.get('cost_estimate'), 'at a home rate partly priced at the regional average') }}{{ cur }}{{ totals.cost|num(2) }} at home rates{% endif %}</span></div>{% endif %}
+  {% if away %}<div class="fig"><span class="n">{{ away|length }}</span><span class="l">Charges away{% if totals.charge_kwh %}, {{ totals.charge_kwh|num }} kWh{% endif %}</span></div>{% endif %}
+</div><p class="muted small">Tag a road trip's drives to see them together on the map, with the charges between them.</p></section>
+{% if routes %}<section><div id="map" class="map tall"></div></section>
+<script>
+// the map starts at once; it never waits for the brand's arrival
+(function () {
+  var routes = {{ routes|tojson }};
+  var map = CCMap.base("map");
+  var all = [];
+  routes.forEach(function (r) { CCMap.route(map, r.pts, CCMap.palette[r.c], 4); all = all.concat(r.pts); });
+  map.fitBounds(all, { padding: [24, 24] });
+})();
+</script>{% endif %}
+{% if away %}
+<section><h2>Charges along the way</h2>
+<table class="cards"><thead><tr><th>Started</th>{% if car.garage %}<th>Car</th>{% endif %}<th>Where</th><th>Type</th><th class="r">Gained</th><th class="r">kWh</th><th class="r">Time</th></tr></thead>
+  <tbody>{% for c in away %}<tr><td data-l="Started"><a href="{{ root }}/charges/{{ c.id }}{{ q }}">{{ c.session_start_date|when }}</a></td>{% if car.garage %}<td data-l="Car">{{ chip(c.vin) }}</td>{% endif %}<td data-l="Where">{{ c.where|places }}</td><td data-l="Type">{{ c.charging_type or '' }}</td><td class="r" data-l="Gained">{% if c.gained is not none %}{{ c.start_level|num }}→{{ c.end_level|num }}%{% endif %}</td><td class="r" data-l="kWh">{{ c.kwh|num(1) }}</td><td class="r" data-l="Time">{{ c.duration|duration }}</td></tr>{% endfor %}</tbody></table>
+</section>
+{% endif %}
+{% if drives %}<table class="cards">
+  <thead><tr><th>Start</th>{% if car.garage %}<th>Car</th>{% endif %}<th>From</th><th>To</th><th class="r">{{ u.distname|capitalize }}</th><th class="r">Time</th><th>Note</th></tr></thead>
+  <tbody>{% for d in drives %}<tr><td data-l="Start"><a href="{{ root }}/drives/{{ d.id }}{{ q }}">{{ d.start_date|when }}</a></td>{% if car.garage %}<td data-l="Car">{{ chip(d.vin) }}</td>{% endif %}<td data-l="From">{{ d.from|places }}</td><td data-l="To">{{ d.to|places }}</td><td class="r" data-l="{{ u.dist }}">{{ d.miles|dist(1) }}</td><td class="r" data-l="Time">{{ d.duration|duration }}</td><td data-l="Note" class="muted small">{{ d.note or '' }}</td></tr>{% endfor %}</tbody>
+</table>{% else %}<p class="muted">No drives tagged {{ tag }} in this window.</p>{% endif %}
+{% else %}<p class="muted">No tags yet. Tag a drive, for example Work, and its distance adds up here by month.</p>{% endif %}
+{% for r in rules or [] %}<form id="unrule-{{ r.id }}" method="post" action="{{ root }}/tags/rules/{{ r.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin if not car.garage else '' }}"></form>{% endfor %}
+<form id="apply-rules" method="post" action="{{ root }}/tags/rules/apply"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin if not car.garage else '' }}"></form>
+{% endblock %}

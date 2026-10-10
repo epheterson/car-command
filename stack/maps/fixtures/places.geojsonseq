@@ -1,0 +1,8 @@
+{"type": "Feature", "id": "r1", "geometry": {"type": "Polygon", "coordinates": [[[-89.72, 39.75], [-89.58, 39.75], [-89.58, 39.85], [-89.72, 39.85], [-89.72, 39.75]]]}, "properties": {"boundary": "administrative", "admin_level": "8", "name": "Springfield"}}
+{"type": "Feature", "id": "r2", "geometry": {"type": "Polygon", "coordinates": [[[-90.0, 39.5], [-89.3, 39.5], [-89.3, 40.0], [-90.0, 40.0], [-90.0, 39.5]]]}, "properties": {"boundary": "administrative", "admin_level": "6", "name": "Sangamon County"}}
+{"type": "Feature", "id": "r3", "geometry": {"type": "Polygon", "coordinates": [[[-92, 37], [-87.5, 37], [-87.5, 42.5], [-92, 42.5], [-92, 37]]]}, "properties": {"boundary": "administrative", "admin_level": "4", "name": "Illinois"}}
+{"type": "Feature", "id": "w10", "geometry": {"type": "Polygon", "coordinates": [[[-89.65047, 39.80065], [-89.64953, 39.80065], [-89.64953, 39.80135], [-89.65047, 39.80135], [-89.65047, 39.80065]]]}, "properties": {"shop": "supermarket", "name": "Bravo Market"}}
+{"type": "Feature", "id": "n20", "geometry": {"type": "Point", "coordinates": [-89.6504, 39.8013]}, "properties": {"amenity": "cafe", "name": "Alpha Coffee"}}
+{"type": "Feature", "id": "n21", "geometry": {"type": "Point", "coordinates": [-89.65, 39.804]}, "properties": {"amenity": "fuel", "name": "Charlie Fuel"}}
+{"type": "Feature", "id": "n22", "geometry": {"type": "Point", "coordinates": [-89.65, 39.82]}, "properties": {"amenity": "cafe", "name": "Far Cafe"}}
+{"type": "Feature", "id": "n30", "geometry": {"type": "Point", "coordinates": [-89.6501, 39.8009]}, "properties": {"addr:housenumber": "742", "addr:street": "Evergreen Terrace"}}

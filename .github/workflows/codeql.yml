@@ -1,0 +1,59 @@
+# Static analysis of the site's Python, its browser scripts and these workflows. Findings land
+# under Security › Code scanning; a pull request that adds one gets it as a review comment.
+# Nothing here is compiled, so every language is read as source (build-mode: none).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC: new queries find old code too
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # upload the results
+      actions: read # read this run's own details (needed on a private repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          # Security findings only; style is black's and ruff's job. The tests render templates
+          # without escaping on purpose and are not shipped, so they are left out.
+          queries: security-extended
+          config: |
+            paths-ignore:
+              - "**/test_*.py"
+              - "**/conftest.py"
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:${{ matrix.language }}
+          # A private repository without code scanning cannot take the upload; there the
+          # findings are printed below instead (docs/security-notes.md lists the known ones).
+          upload: ${{ github.event.repository.private && 'never' || 'always' }}
+          output: sarif-out
+      - name: Findings, while the repository is private
+        if: github.event.repository.private
+        run: |
+          for f in sarif-out/*.sarif; do
+            echo "$f: $(jq '[.runs[].results[]] | length' "$f") results"
+            jq -r '.runs[].results[] | "\(.ruleId)  \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)"' "$f"
+          done

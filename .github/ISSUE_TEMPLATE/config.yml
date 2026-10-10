@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help
+    url: https://github.com/epheterson/car-command/discussions/categories/q-a
+    about: Setup, which source to use, what a figure means.
+  - name: Ideas
+    url: https://github.com/epheterson/car-command/discussions/categories/ideas
+    about: Not sure it's a feature yet? Start here.
+  - name: Security vulnerability
+    url: https://github.com/epheterson/car-command/security/advisories/new
+    about: Report it privately, not as an issue.

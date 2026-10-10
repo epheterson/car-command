@@ -1,0 +1,18 @@
+# The house style here is dense: one statement, one line, up to about 200 columns,
+# because the queries and the table rows read better whole than wrapped. This file
+# exists so `black` agrees with that instead of exploding every call onto six lines.
+[tool.black]
+line-length = 200
+skip-string-normalization = true
+
+[tool.ruff]
+line-length = 200
+
+[tool.ruff.lint]
+# F catches the one that actually bit: a name used but never imported. app.py called
+# daily_breakdown for weeks without importing it, so the 07:00 summary raised on every
+# tick and nothing noticed, because it only runs inside a recorder hook.
+select = ["F", "E9"]
+
+[tool.pytest.ini_options]
+testpaths = ["stack/web"]

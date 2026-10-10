@@ -1,0 +1,16 @@
+# The build context is stack/, which on a host also holds .env and secrets/. Only what the
+# image copies goes in; tests and caches stay out.
+*
+!aio/carcommand.py
+!cc
+!config
+!shared
+!web
+cc/test_*.py
+cc/wheels
+web/test_*.py
+web/conftest.py
+**/__pycache__
+**/.pytest_cache
+cc/Dockerfile
+web/Dockerfile

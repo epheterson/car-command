@@ -1,0 +1,59 @@
+name: Bug report
+description: Something shows the wrong figure, breaks, or does not start.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Leave out anything that identifies a car or a place: VINs, addresses, coordinates, a map with your home on it. Security problems go to a [private report](https://github.com/epheterson/car-command/security/advisories/new).
+  - type: input
+    id: version
+    attributes:
+      label: Car Command version
+      description: The release tag, or the commit (`git rev-parse --short HEAD`).
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source
+      description: Where this car's data comes from. Pick every one that applies.
+      multiple: true
+      options:
+        - Tesla, direct (Connect Tesla)
+        - Tesla live stream
+        - TeslaFi feed
+        - TeslaFi export import
+        - TeslaMate
+        - Lucid connector
+        - Another CarConnectivity connector
+        - Demo data (make demo)
+    validations:
+      required: true
+  - type: input
+    id: brand
+    attributes:
+      label: Car brand and model
+      placeholder: Lucid Air, Tesla Model Y 2023, Volkswagen ID.4
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: What it runs on.
+      placeholder: Raspberry Pi 5 (arm64), Docker 27; Synology DS923+ (amd64)
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: The page, the figure it showed, and the figure you expected. Steps to reproduce, if you have them.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`docker logs --tail=200 carcommand` for the one container; under compose, `docker compose -f stack/docker-compose.yml logs --tail=200 web` (and `cc` for a connector problem). Remove tokens and positions before pasting."
+      render: text

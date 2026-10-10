@@ -1,0 +1,12 @@
+{# A plan's newest version as month-by-hour grids shaded by price, and its legend unless the
+   page shows the prices as chips. `view` is planview.grid_view's. #}
+{% macro tou_grid(view, legend=true) -%}
+{% for g in view.grids %}
+<h3 class="tou-h">{{ g.title }}</h3>
+<table class="tou" aria-label="{{ g.title }}: period by month and hour">
+  <thead><tr><th></th>{% for h in (0, 6, 12, 18) %}<th colspan="6">{{ ('12am', '6am', '12pm', '6pm')[loop.index0] }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for row in g.rows %}<tr><th scope="row">{{ row.month }}</th>{% for c in row.cells %}<td style="--heat:{{ c.heat }}" title="{{ row.month }} {{ loop.index0 }}:00, {{ c.label }}"></td>{% endfor %}</tr>{% endfor %}</tbody>
+</table>
+{% endfor %}
+{% if legend %}<p class="legend">{% for p in view.legend %}<span class="tou-item"><span class="key tou-key" style="--heat:{{ p.heat }}"></span>{{ p.label }}</span> {% endfor %}</p>{% endif %}
+{%- endmacro %}

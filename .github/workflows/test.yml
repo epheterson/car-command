@@ -1,0 +1,48 @@
+# Runs on GitHub Actions and on Gitea Actions, which reads this same directory.
+# The point of pinning the install to requirements.txt is that CI tests the versions
+# that ship in the container, not whatever the runner happens to have.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# Read-only: these jobs build and test, and never write to the repository.
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12" # the version in stack/web/Dockerfile
+      - name: Install the pinned dependencies
+        run: pip install -r stack/web/requirements.txt pytest
+      - name: Tests
+        run: cd stack/web && python -m pytest -q
+      - name: Templates compile, as the image build checks them
+        run: cd stack/web && python -c "import filters; from jinja2 import Environment, FileSystemLoader; e = Environment(loader=FileSystemLoader('templates')); filters.register(e); [e.get_template(t) for t in e.list_templates()]"
+      - name: Local maps tests
+        run: cd stack/maps && python -m pytest -q
+      # The connector's own logic: the supervisor's restart rules and the privacy hook
+      # (positions rounded; no geocoder decision means no lookups at all).
+      - name: Connector tests
+        run: pip install requests && cd stack/cc && python -m pytest -q
+      # The one container's supervisor: secrets, environments, restarts, stop, logs (stack/aio).
+      - name: One-container tests
+        run: cd stack/aio && python -m pytest -q
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      # Pinned, so a new release cannot restyle the tree under us between one push and the next.
+      - run: pip install black==26.5.1 ruff==0.16.9
+      - run: black --check --diff .
+      - run: ruff check .

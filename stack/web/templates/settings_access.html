@@ -1,0 +1,147 @@
+{% extends "settings_base.html" %}
+{# Settings › Sign-in and API: sign-in, the API tokens, who may use an admin token from where,
+   and the admin calls made. The page is one form, for the one setting here (admin tokens from
+   anywhere), with its Save bar; the password, a new token and each Revoke are their own small
+   forms at the foot, which their controls name with form="…". #}
+{% from "_info.html" import info %}
+{% import "_settings.html" as s %}
+{% block section %}
+<form id="access" method="post" action="{{ root }}/settings/tokens/anywhere" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
+<section class="group" id="signin">
+  <h2 class="sec">Sign-in</h2>
+  <div class="group-b">
+    {% if cf_team and cf_pinned %}
+    <div class="set-row"><span class="set-l">Cloudflare Access<span class="set-s">{{ cf_team }}.cloudflareaccess.com{% if cf_user %} · signed in as {{ cf_user }}{% endif %}</span></span>
+      {% if cf_env %}<span class="set-v">Set in .env (CF_ACCESS_TEAM)</span>{% else %}<div class="set-c"><button type="submit" class="btn sm danger" form="cfoff">Stop using Cloudflare Access</button></div>{% endif %}</div>
+    {% elif cf_team and cf_offer %}
+    <div class="set-row"><span class="set-l">Cloudflare Access<span class="set-s">{{ cf_team }}.cloudflareaccess.com · you reached this page through it</span></span><div class="set-c">{% if cf_need_code and not cf_emails %}<input class="field" name="code" form="cfon" placeholder="Setup code" aria-label="Setup code" autocomplete="off" autocapitalize="characters" spellcheck="false">{% endif %}<button type="submit" class="btn primary" form="cfon">Use Cloudflare Access</button></div></div>
+    {% elif cf_team %}
+    <div class="set-row"><span class="set-l">Cloudflare Access<span class="set-s">{{ cf_team }}.cloudflareaccess.com · open this page through its Cloudflare address to use it</span></span></div>
+    {% else %}
+    <div class="set-row"><span class="set-l">Cloudflare Access<span class="set-s">Set CF_ACCESS_TEAM in .env to use it</span></span></div>
+    {% endif %}
+    {% if cf_team and cf_proxy_unset %}
+    <div class="set-row"><span class="set-l"><span class="set-s">Any private address may present the Cloudflare token. Set CC_ACCESS_PROXY to your tunnel's address to narrow it.</span></span></div>
+    {% endif %}
+    {% if cf_can_set %}
+    <details class="set-x" id="cf-set"><summary class="set-row"><span class="set-l">Cloudflare Access team</span></summary>
+      <div class="set-p">
+        <div class="set-row"><label class="set-l" for="cf-team">Team</label><div class="set-c"><input class="field" id="cf-team" name="team" form="cfset" value="{{ cf_team or '' }}" placeholder="your-team" autocomplete="off" autocapitalize="none" spellcheck="false"></div></div>
+        <div class="set-row"><label class="set-l" for="cf-aud">Application tag</label><div class="set-c"><input class="field" id="cf-aud" name="aud" form="cfset" placeholder="optional" autocomplete="off" autocapitalize="none" spellcheck="false"></div></div>
+        <div class="acts"><button type="submit" class="btn primary" form="cfset">Save</button></div>
+      </div>
+    </details>
+    {% endif %}
+    {% if not auth_enabled %}
+    <div class="set-row"><span class="set-l">Sign-in <span class="set-s">Anyone who can reach the site can use it</span></span><span class="set-v">Off</span></div>
+    <div class="set-p">
+      {% if signin_error %}<p class="notice err" role="alert">{{ signin_error }}</p>{% endif %}
+      {% if signin_need_code %}<div class="set-row"><label class="set-l" for="on-code">Setup code {% call info("Where to find it") %}From outside the home network, turning sign-in on asks for the code the site logs at start: docker logs carcommand-web 2>&1 | grep "setup code"{% endcall %}</label><div class="set-c"><input class="field" id="on-code" name="code" form="signon" autocomplete="off" autocapitalize="characters" spellcheck="false" required></div></div>{% endif %}
+      {% if password_in_env %}
+      <p class="set-s">The password is set in .env (CC_PASSWORD)</p>
+      {% else %}
+      <input class="vh" type="text" name="username" value="Car Command" autocomplete="username" form="signon" tabindex="-1" aria-hidden="true" readonly>
+      <div class="set-row"><label class="set-l" for="on-pw">Password</label><div class="set-c"><input class="field" id="on-pw" type="password" name="password" form="signon" autocomplete="new-password" required minlength="8"></div></div>
+      <div class="set-row"><label class="set-l" for="on-again">Again</label><div class="set-c"><input class="field" id="on-again" type="password" name="confirm" form="signon" autocomplete="new-password" required minlength="8"></div></div>
+      {% endif %}
+      <div class="acts"><button type="submit" class="btn primary" form="signon">Turn on sign-in</button></div>
+    </div>
+    {% else %}
+    <div class="set-row"><span class="set-l">Sign-in<span class="set-s">One password for the household</span></span><span class="set-v">Sign-in is on</span></div>
+    {% if password_in_env %}
+    <div class="set-row"><span class="set-l">Password {% call info("Where it is set") %}CC_PASSWORD in .env is applied at every start. Change it there and restart.{% endcall %}</span><span class="set-v">Set in .env (CC_PASSWORD)</span></div>
+    {% elif has_password is not defined or has_password %}
+    <details class="set-x" id="password"{% if pw_error %} open{% endif %}><summary class="set-row"><span class="set-l">Change the password</span></summary>
+      <div class="set-p">
+        {% if pw_error %}<p class="notice err" role="alert">{{ pw_error }}</p>{% endif %}
+        <div class="set-row"><label class="set-l" for="pw-current">Current</label><div class="set-c"><input class="field" id="pw-current" type="password" name="current" form="pw" autocomplete="current-password" required></div></div>
+        <div class="set-row"><label class="set-l" for="pw-new">New</label><div class="set-c"><input class="field" id="pw-new" type="password" name="password" form="pw" autocomplete="new-password" required minlength="8"></div></div>
+        <div class="set-row"><label class="set-l" for="pw-again">Again</label><div class="set-c"><input class="field" id="pw-again" type="password" name="confirm" form="pw" autocomplete="new-password" required minlength="8"></div></div>
+        <div class="acts">{% call info("What changing it does") %}Every other device is signed out{% if secret_in_env %}, unless the signing key is set in .env (CC_SECRET){% endif %}, and an alert goes out on every channel.{% endcall %}<button type="submit" class="btn primary" form="pw">Change the password</button></div>
+      </div>
+    </details>
+    {% endif %}
+    {% if has_password is not defined or has_password %}
+    <details class="set-x" id="signoff-box"{% if signin_error %} open{% endif %}><summary class="set-row"><span class="set-l">Turn off sign-in</span></summary>
+      <div class="set-p">
+        {% if signin_error %}<p class="notice err" role="alert">{{ signin_error }}</p>{% endif %}
+        <div class="set-row"><label class="set-l" for="off-pw">Password</label><div class="set-c"><input class="field" id="off-pw" type="password" name="password" form="signoff" autocomplete="current-password" required></div></div>
+        <div class="acts"><button type="submit" class="btn danger" form="signoff">Turn off sign-in</button></div>
+      </div>
+    </details>
+    {% endif %}
+    {% endif %}
+  </div>
+</section>
+
+<section class="group">
+  <h2 class="sec">API tokens {% call info("Read, status and admin tokens") %}A read token reads the /api/ endpoints, for every car or one. A status token reads only the car's state and its stream, with no location; apps you connect get one. An admin token can also change setup under /api/admin/. All are listed in docs/api.md.{% endcall %}</h2>
+  {% if minted %}
+  <div class="notice ok minted" role="status">Your {{ minted_kind ~ ' ' if minted_kind in ('admin', 'status') else '' }}token for “{{ minted_label }}”, shown once: copy it now.
+    <code class="token">{{ minted }}</code>
+    {% if minted_kind == 'admin' %}<span class="set-s">This token can change setup. Keep it private and revoke it when you're done.</span>{% endif %}
+    <span class="set-s">Send it as an Authorization: Bearer header, never in a URL {% call info("Trying it") %}curl -H "Authorization: Bearer …" {{ request.url.scheme }}://{{ request.url.netloc }}{{ root }}/api/whoami{% endcall %}</span>
+  </div>
+  {% endif %}
+  <div class="group-b">
+    {% for t in tokens %}
+    <div class="set-row"><span class="set-l">{{ t.label }}{% if t.last4 %} <span class="muted">…{{ t.last4 }}</span>{% endif %}<span class="badge kind{{ ' admin' if t.kind == 'admin' }}">{{ {'admin': 'Admin', 'status': 'Status'}.get(t.kind, 'Read') }}</span>
+        <span class="set-s">{{ t.car }} · made {{ t.created_at|when }} · {{ 'used ' ~ (t.last_used_at|when) if t.last_used_at else 'never used' }}</span></span>
+      <div class="set-c"><button type="submit" class="btn sm danger" form="revoke-{{ t.hash[:16] }}" aria-label="Revoke {{ t.label }}">Revoke</button></div></div>
+    {% if t.kind == 'status' %}
+    <div class="set-row"><span class="set-l">Share where each car is <span class="set-s">place name, home or away · {{ 'on' if t.share_place else 'off' }}</span></span>
+      <div class="set-c"><label class="switch"><input type="checkbox" role="switch" form="place-{{ t.hash[:16] }}" name="share_place"{% if t.share_place %} checked{% endif %} onchange="this.form.requestSubmit()" aria-label="Share where each car is for {{ t.label }}"><span aria-hidden="true"></span></label>
+        <noscript><button type="submit" class="btn sm" form="place-{{ t.hash[:16] }}">Save</button></noscript></div></div>
+    {% endif %}
+    {% else %}
+    <div class="empty">No tokens yet</div>
+    {% endfor %}
+    <details class="set-x" id="new-token"><summary class="set-row"><span class="set-l">New token</span></summary>
+      <div class="set-p">
+        <div class="set-row"><label class="set-l" for="tok-label">Label</label><div class="set-c"><input class="field" id="tok-label" name="label" form="mint" placeholder="e.g. Home Assistant" maxlength="40"></div></div>
+        <div class="set-row"><span class="set-l">Kind</span><div class="set-c"><div class="segmented" role="radiogroup" aria-label="Kind"><label><input type="radio" name="kind" value="read" form="mint" checked><span>Read</span></label><label><input type="radio" name="kind" value="status" form="mint"><span>Status</span></label><label><input type="radio" name="kind" value="admin" form="mint"><span>Admin</span></label></div></div></div>
+        <div class="set-row"><label class="set-l" for="tok-car">For</label><div class="set-c"><select class="sel" id="tok-car" name="vin" form="mint"><option value="">Every car</option>{% for v in (token_vehicles or []) %}<option value="{{ v.vin }}">{{ v.name }}</option>{% endfor %}</select></div></div>
+        <div class="acts"><button type="submit" class="btn primary" form="mint">Mint a token</button></div>
+      </div>
+    </details>
+  </div>
+  {% if remembered_apps %}
+  <div class="group-b">
+    {% for a in remembered_apps %}
+    <div class="set-row"><span class="set-l">{{ a.client }}<span class="set-s">{{ a.redirect_uri }} · allowed here once</span></span><div class="set-c"><button type="submit" class="btn sm" form="forget-{{ loop.index }}">Forget</button></div></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="group">
+  <h2 class="sec">Admin tokens</h2>
+  <div class="group-b">
+    <div class="set-row"><span class="set-l"><label for="anywhere">Allow admin tokens from anywhere</label> {% call info("Where admin tokens work") %}Off: admin tokens work only from the local network or the tailnet, and requests through Cloudflare are refused. On: they work from anywhere.{% endcall %}
+        <span class="set-s{{ ' danger' if admin_anywhere }}">{% if admin_anywhere %}On: admin tokens are now allowed from anywhere{% else %}Local network and tailnet only{% endif %}</span></span>
+      <div class="set-c"><label class="switch danger"><input type="checkbox" role="switch" id="anywhere" name="anywhere" aria-label="Allow admin tokens from anywhere"{% if admin_anywhere %} checked{% endif %}><span aria-hidden="true"></span></label></div></div>
+  </div>
+</section>
+{{ s.savebar() }}
+</form>
+
+<section class="group">
+  <h2 class="sec">Admin calls {% call info("What is kept") %}The last 50 shown, kept 90 days.{% endcall %}</h2>
+  <div class="group-b">
+    {% for c in (api_log or []) %}
+    <div class="set-row"><span class="set-l"><code class="call">{{ c.method }} {{ c.path }}</code><span class="set-s">{{ c.at|when }} · {{ c.label }}{% if c.last4 %} …{{ c.last4 }}{% endif %} · {{ c.client_ip }}</span></span><span class="set-v"><span class="sstate"><span class="sdot {{ 'ok' if c.status < 400 else 'bad' }}" aria-hidden="true"></span>{{ c.status }}</span></span></div>
+    {% else %}
+    <div class="empty">No admin calls yet</div>
+    {% endfor %}
+  </div>
+</section>
+
+<form id="cfon" method="post" action="{{ root }}/settings/signin/cloudflare"><input type="hidden" name="csrf_token" value="{{ csrf }}">{% if signin_next %}<input type="hidden" name="next" value="{{ signin_next }}">{% endif %}</form>
+<form id="cfoff" method="post" action="{{ root }}/settings/signin/cloudflare/off"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+<form id="cfset" method="post" action="{{ root }}/settings/signin/cloudflare/set"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+{% if not auth_enabled %}<form id="signon" method="post" action="{{ root }}/settings/signin/on"><input type="hidden" name="csrf_token" value="{{ csrf }}">{% if signin_next %}<input type="hidden" name="next" value="{{ signin_next }}">{% endif %}</form>{% else %}<form id="signoff" method="post" action="{{ root }}/settings/signin/off"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}
+{% if auth_enabled and not password_in_env %}<form id="pw" method="post" action="{{ root }}/settings/password"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}
+<form id="mint" method="post" action="{{ root }}/settings/tokens"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+{% for a in remembered_apps or [] %}<form id="forget-{{ loop.index }}" method="post" action="{{ root }}/settings/connect/forget"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="redirect_uri" value="{{ a.redirect_uri }}"><input type="hidden" name="client" value="{{ a.client }}"></form>{% endfor %}
+{% for t in tokens %}{% if t.kind == 'status' %}<form id="place-{{ t.hash[:16] }}" method="post" action="{{ root }}/settings/tokens/{{ t.hash }}/place"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}<form id="revoke-{{ t.hash[:16] }}" method="post" action="{{ root }}/settings/tokens/{{ t.hash }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endfor %}
+{% endblock %}

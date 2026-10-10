@@ -1,0 +1,59 @@
+# Weekly version updates, grouped so a quiet week is one pull request per ecosystem, not ten.
+# Security updates are separate: they come as soon as an advisory lands, whatever the schedule
+# (Settings › Code security › Dependabot security updates; see docs/repo-settings.md).
+version: 2
+
+updates:
+  # The site's and the connector's pinned requirements, which the images install as they are.
+  - package-ecosystem: pip
+    directories:
+      - /stack/web
+      - /stack/cc
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies]
+    groups:
+      python-minor:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+
+  # Every action is pinned to a commit; this keeps the pins and their version comments current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies]
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Base images: python:3.12-slim for the site, the connector and the one container, and the
+  # routing engine for the local maps add-on.
+  - package-ecosystem: docker
+    directories:
+      - /stack/web
+      - /stack/cc
+      - /stack/aio
+      - /stack/maps
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies]
+    ignore:
+      # A Python version is a deliberate move: CI and the Dockerfiles name 3.12 together.
+      - dependency-name: python
+        update-types: [version-update:semver-major, version-update:semver-minor]
+
+  # The images the compose file runs as they are: Postgres, the telemetry server, Tailscale.
+  - package-ecosystem: docker-compose
+    directory: /stack
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies]
+    ignore:
+      # A new Postgres major needs a dump and restore of every install's data; never a bot's call.
+      - dependency-name: postgres
+        update-types: [version-update:semver-major]

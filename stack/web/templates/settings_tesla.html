@@ -1,0 +1,195 @@
+{% extends "settings_base.html" %}
+{# Connect Tesla: each car's stream first, then the setup as a checklist (a finished step is one
+   line that shows its detail on request; the step to do now is open), then which source writes
+   each car's history and the Supercharger bills. Every action is its own small form. #}
+{% import "_info.html" as i %}
+{% import "_parts.html" as parts %}
+{% from "_energy.html" import backfill_rows with context %}
+{% macro switching(w) %}{% if w.switch %}{% set j = w.switch %}<p class="notice {{ 'err' if j.state == 'refused' else 'ok' }}" role="status">{% if j.state == 'switching' %}Switching to {{ j.name }}… reload in a minute.{% elif j.state == 'done' %}Switched to {{ j.name }}{% if j.boundary %} from {{ j.boundary|local }}{% endif %}; it rewrites what follows within the hour.{% else %}Not switched to {{ j.name }}: {{ j.problem }}{% endif %}</p>{% endif %}{% if w.silent %}<p class="notice warn" role="alert">{{ w.silent }}</p>{% endif %}{% endmacro %}
+
+{# What a step needs from you, or what it set up #}
+{% macro body(s) -%}
+{% if s.id == 'app' and s.state != 'done' %}
+<div class="set-s">Make a Fleet API app at <a href="https://developer.tesla.com" target="_blank" rel="noopener">developer.tesla.com</a> with these values {% call i.info("The app") %}Grant types: Authorization Code and Machine-to-Machine. Tesla bills API use; prices are on developer.tesla.com. Put its Client ID and Secret in stack/.env.{% endcall %}</div>
+<table class="pairs"><tbody>
+  <tr><th>Allowed origin</th><td><code>{{ 'https://' ~ tesla_domain if tesla_domain else 'https://your.domain' }}</code> <button type="button" class="btn sm copy" data-copy="{{ 'https://' ~ tesla_domain if tesla_domain else '' }}">Copy</button></td></tr>
+  <tr><th>Redirect URI</th><td><code>{{ tesla_redirect or 'https://your.domain/settings/sources/tesla/callback' }}</code> <button type="button" class="btn sm copy" data-copy="{{ tesla_redirect }}">Copy</button></td></tr>
+  <tr><th>Scopes</th><td>{{ tesla_scopes|join(', ') }}</td></tr>
+  <tr><th>In <code>.env</code></th><td><code>TESLA_CLIENT_ID=…</code><br><code>TESLA_CLIENT_SECRET=…</code><br><code>TESLA_DOMAIN={{ tesla_domain or 'your.domain' }}</code></td></tr>
+</tbody></table>
+{% elif s.id == 'app' %}
+<div class="set-s">Client ID and Secret in stack/.env · {{ tesla_domain }}</div>
+{% endif %}
+{% if s.id == 'domain' %}
+<div class="set-s">The key at <code>https://{{ key_domain or tesla_domain }}/.well-known/appspecific/com.tesla.3p.public-key.pem</code> {% call i.info("The key") %}Public, with no sign-in in front of it.{% if key_domain and key_domain != tesla_domain %} Tesla allows one domain per app, so the key is served at the stream address and {{ tesla_domain }} stays the sign-in page.{% endif %} The private half is sealed here.{% endcall %}</div>
+{% if s.state in ('next', 'problem') %}<form method="post" action="{{ root }}/settings/sources/tesla/register" data-wait="Asking Tesla…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><div class="acts"><button type="submit" class="btn primary">{{ 'Try again' if s.state == 'problem' else 'Publish and register' }}</button></div></form>{% endif %}
+{% endif %}
+{% if s.id == 'signin' and s.state in ('next', 'problem', 'done') %}
+<div class="acts"><a class="btn{{ ' primary' if s.state != 'done' }}" href="{{ root }}/settings/sources/tesla/start">{{ 'Sign in again' if s.state == 'done' else 'Sign in with Tesla' }}</a></div>
+{% endif %}
+{% if s.id == 'keys' and facts and facts.cars and s.state != 'waiting' %}
+<ul class="keycars">
+{% for c in facts.cars %}<li class="keycar" data-vin="{{ c.vin }}">
+  <div class="set-l"><b>{{ c.name }}</b><span class="set-s">{% if c.known_as %}history continues as {{ c.known_as }}{% else %}new to Car Command{% endif %}{% if c.firmware %} · software {{ c.firmware }}{% endif %}{% if c['keys'] %} · {{ c['keys'] }} of 20 keys used{% endif %}</span></div>
+  {% if c.paired %}<p class="keyok">Has the key</p>
+  {% else %}<div class="keyadd"><span class="qr" title="Scan with the phone that has the Tesla app">{{ links[c.vin].qr|safe }}</span>
+    <div class="keyhow"><a href="{{ links[c.vin].url }}" target="_blank" rel="noopener" class="keylink btn primary">Add the key to {{ c.name }}</a>
+      <span class="set-s">On your phone, near the car; confirm with the key card</span></div>
+    <p class="keyok" hidden>Has the key</p></div>{% endif %}
+</li>{% endfor %}
+</ul>
+<div class="acts"><a class="btn sm" href="{{ root }}/settings/sources/tesla?fresh=1">Check again</a></div>
+{% endif %}
+{% if s.id == 'stream' and s.state != 'waiting' %}
+<div class="set-s">Receiver <code>{{ stream_host or 'carcommand-stream.your-tailnet.ts.net' }}:{{ stream_port }}</code> via Tailscale Funnel {% call i.info("What the internet reaches") %}Each car sends what changes, about once a second while driving or charging, to a receiver here. Only this port and the key's address are reachable from the internet. No port is opened on your router.{% endcall %}</div>
+{% if facts.receiver %}{% if facts.receiver.ok and not facts.receiver.problem %}<p class="keyok">The receiver answers with a certificate the cars trust{% if facts.receiver.expires %}, good until {{ facts.receiver.expires_at|local("%b %-d") }}{% endif %}</p>{% else %}<p class="notice err">{{ facts.receiver.error }}</p>{% endif %}{% endif %}
+{% if facts.stream_host_ok and not facts.stream_registered %}<form method="post" action="{{ root }}/settings/sources/tesla/stream/register" data-wait="Asking Tesla…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><div class="acts"><button type="submit" class="btn primary">Register the stream address</button></div></form>{% endif %}
+{% endif %}
+{%- endmacro %}
+
+
+{# The Powerwall, as steps in this same flow: each one shown when the one before is done, the one to do
+   now with the primary button, every action returning to its own step (back=tesla). #}
+{% macro pw_flow(pw) -%}
+{% set f = pw.flow %}{% set cur = f.current %}
+<section class="group pwflow" id="pw">
+  <h2 class="sec">Powerwall {% call i.info("What this adds") %}The house beside the cars: a Powerwall row on Now, and for each home charge how much came from the sun, the Powerwall and the grid. Read with the Tesla account.{% endcall %}</h2>
+  <ol class="pwline" aria-label="Powerwall setup">{% for s in f.steps %}<li class="{{ s.state }}{{ ' now' if s.id == cur }}"><span class="n">{{ s.n }}</span> {{ {'signin': 'Signed in', 'powerwall': 'Powerwall', 'history': 'History'}[s.id] }}</li>{% endfor %}</ol>
+  {% if pw.error %}<p class="notice err" role="alert">{{ pw.error }}</p>{% endif %}
+  <div class="group-b">
+  {% for s in f.steps %}
+    {% if s.id == 'signin' %}
+      {% if s.state == 'done' %}<div class="set-row" id="pw-signin"><span class="step-mark ok" aria-hidden="true">✓</span><span class="set-l">Signed in</span></div>
+      {% else %}<div class="set-row" id="pw-signin"><span class="set-l"><b>Sign in with Tesla</b></span><div class="set-c"><a class="btn primary" href="{{ root }}/settings/sources/tesla/start?energy=1">Sign in with Tesla</a></div></div>{% endif %}
+    {% elif s.id == 'powerwall' %}
+      {% if s.state == 'done' %}<div class="set-row" id="pw-powerwall"><span class="step-mark ok" aria-hidden="true">✓</span><span class="set-l">Your Powerwall<span class="set-s">{{ s.name or 'On this account' }}</span></span></div>
+      {% elif s.state == 'next' %}<div class="set-row" id="pw-powerwall"><span class="set-l"><b>Your Powerwall</b>{% if s.need == 'none' %}<span class="set-s">This account has none</span>{% endif %}</span>
+        <div class="set-c">
+          {% if s.need == 'scope' %}<a class="btn primary" href="{{ root }}/settings/sources/tesla/start?energy=1">Bring it in</a>
+          {% elif s.need == 'use' %}<form method="post" action="{{ root }}/settings/energy/cloud{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="back" value="tesla"><button type="submit" class="btn primary">Use it</button></form>{% endif %}
+        </div></div>
+        {% if s.need == 'pick' %}{% for c in s.choices %}<div class="set-row sub"><span class="set-l">{{ c.name or c.site_id }}</span><div class="set-c"><form method="post" action="{{ root }}/settings/energy/cloud{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="back" value="tesla"><input type="hidden" name="site" value="{{ c.site_id }}"><button type="submit" class="btn {{ 'primary' if loop.first }}">Use this one</button></form></div></div>{% endfor %}{% endif %}
+      {% else %}<div class="set-row" id="pw-powerwall"><span class="set-l muted">Your Powerwall</span><span class="set-v">after signing in</span></div>{% endif %}
+    {% elif s.id == 'history' %}
+      {% if s.state == 'done' %}<div class="set-row" id="pw-history"><span class="step-mark ok" aria-hidden="true">✓</span><span class="set-l">History<span class="set-s">{{ s.label }}</span></span></div>
+      {% elif s.state == 'next' %}<div id="pw-history"><div class="set-row"><span class="set-l"><b>History</b><span class="set-s">{{ s.label }} {% call i.info("The cost") %}{{ pw.cloud.note }}{% endcall %}</span></span></div>
+        {{ backfill_rows(pw.cloud, 'tesla', cur == 'history') }}</div>
+      {% else %}<div class="set-row" id="pw-history"><span class="set-l muted">History</span><span class="set-v">after the Powerwall</span></div>{% endif %}
+    {% endif %}
+  {% endfor %}
+  </div>
+</section>
+{%- endmacro %}
+
+{% block section %}
+{% if tesla_error %}<p class="notice err" role="alert">{{ tesla_error }}</p>{% endif %}
+{% if signed %}<p class="notice ok" role="status">Signed in with Tesla.</p>{% endif %}
+{% if registered %}<p class="notice ok" role="status">Tesla has the domain and its key.</p>{% endif %}
+{% if streaming %}<p class="notice ok" role="status">Tesla took it. A car picks up its config the next time it wakes.</p>{% endif %}
+{% if checking %}<p class="group-f" role="status">Checking with Tesla…</p>{% endif %}
+{% if steps %}
+<div class="groups">
+{% if facts.stream_registered and stream %}
+<section class="group" id="streaming">
+  <h2 class="sec">Streaming {% call i.info("How it connects") %}The stream doesn't wake the car. Drives, charges and sleep are worked out from it every hour.{% endcall %}</h2>
+  <div class="group-b">
+    {% for c in stream %}
+    <div class="set-row streamcar" data-vin="{{ c.vin }}"><span class="dot {{ 'live' if c.live else 'quiet' }}" title="{{ 'Streaming now' if c.live else 'Nothing in the last two minutes' }}"></span>
+      <span class="set-l"><b>{{ c.name }}</b><span class="set-s streamstate">{% if c.on %}{% if c.live %}Streaming now{% elif c.last_at %}Last message {{ c.last_at|when }}{% else %}Nothing heard yet{% endif %} · {% if c.config and c.config.synced %}config taken{% elif c.config and c.last_at %}new config at its next wake{% elif c.config %}config sent{% else %}started{% endif %}{% else %}Not streaming{% endif %}</span></span>
+      <form class="set-c" method="post" action="{{ root }}/settings/sources/tesla/stream/{{ 'stop' if c.on else 'start' }}" data-wait="Asking Tesla…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ c.vin }}"><button type="submit" class="btn sm{{ '' if c.on else ' primary' }}"{% if not c.on and not c.paired %} disabled title="Add the key first (step 4)"{% endif %}>{{ 'Stop' if c.on else 'Start' }}</button></form></div>
+    {% if c.said or c.trouble or c.outdated %}<div class="set-notes">
+      {% if c.said %}<p class="notice{{ '' if c.said.startswith('Waiting') else ' warn' }}">{{ c.said }}</p>{% endif %}
+      {% for e in c.trouble %}<div class="notice err trouble">{{ e.what }}{% if e.n > 1 %} ×{{ e.n }}{% endif %}{% if e.last %} · last {{ e.last|when }}{% endif %} {% call i.info("What Tesla said") %}{{ e.raw }}{% endcall %}</div>{% endfor %}
+      {% if c.outdated %}<div class="notice warn bar streamold"><span>Its config is outdated {% call i.info("Why") %}Car Command now asks for more fields, such as the lock state or the navigation route. Update sends the new config; the car takes it when it next wakes.{% endcall %}</span>
+        <form method="post" action="{{ root }}/settings/sources/tesla/stream/start" data-wait="Asking Tesla…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ c.vin }}"><button type="submit" class="btn sm">Update</button></form></div>{% endif %}
+    </div>{% endif %}
+    {% endfor %}
+  </div>
+  {% if facts.stream_dropped %}<p class="group-f">{{ facts.stream_dropped|num }} records from cars not started here were dropped.</p>{% endif %}
+  {% if facts.stream_lost %}<p class="notice warn">{{ facts.stream_lost|num }} records were lost while the database was away.</p>{% endif %}
+  {% if facts.stream_error %}<p class="notice err">Listening to the receiver: {{ facts.stream_error }}</p>{% endif %}
+</section>
+{% endif %}
+
+{% set done = steps|selectattr('state', 'equalto', 'done')|list|length %}
+<section class="group" id="setup">
+  <h2 class="sec">Setup · {{ done }} of {{ steps|length }} done</h2>
+  <ol class="steps group-b">
+  {% for s in steps %}<li class="step {{ s.state }}" id="step-{{ s.id }}">
+    {% if s.state == 'done' %}
+    <details class="set-x"><summary class="set-row"><span class="step-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="set-l">{{ s.title }}</span><span class="set-v">Show</span></summary>
+      <div class="set-p">{{ body(s) }}</div></details>
+    {% elif s.state == 'waiting' %}
+    <div class="set-row"><span class="step-mark" aria-hidden="true">{{ loop.index }}</span><span class="set-l">{{ s.title }}</span><span class="set-v">after the step above</span></div>
+    {% else %}
+    <div class="set-row"><span class="step-mark" aria-hidden="true">{{ loop.index }}</span><span class="set-l"><b>{{ s.title }}</b></span>{% if s.state == 'problem' %}<span class="set-v step-said">needs you</span>{% endif %}</div>
+    <div class="set-p">{% if s.detail %}<p class="notice{{ ' err' if s.state == 'problem' }}">{{ s.detail }}</p>{% endif %}{{ body(s) }}</div>
+    {% endif %}
+  </li>{% endfor %}
+  </ol>
+</section>
+
+{% if history_step %}
+<section class="group" id="step-history">
+  <h2 class="sec">History from {% call i.info("One writer per car") %}One source writes each car's drives, charges and sleep. The others keep recording, so you can compare them and switch back.{% endcall %}</h2>
+  <div class="group-b">
+  {% for h in history_step %}{% set r = h.compare.result %}
+    <div class="set-row stack keycar"><span class="set-l"><b>{{ h.name }}</b>
+      {% if r %}{% set off = (r.drives|selectattr('off')|list|length) + (r.charges|selectattr('off')|list|length) %}<span class="set-s">Last {{ '%g'|format(r.days) }} days · <span class="{{ 'warn' if off else 'keyok' }}">{% if off %}{{ off }} difference{{ 's' if off != 1 }}{% else %}stream matches{% endif %}</span></span>
+      {% elif h.compare.error %}<span class="set-s">The comparison failed: {{ h.compare.error }}</span>
+      {% elif h.compare.running %}<span class="set-s">Comparing the last week…</span>{% endif %}
+      {% if h.choices|length <= 1 %}<span class="set-s">{{ (h.choices|first).name if h.choices else 'This stream' }} writes it · <a class="quietlink" href="{{ root }}/settings/sources/tesla/compare?vin={{ h.vin }}">Compare</a></span>{% endif %}</span>
+      {% if h.choices|length > 1 %}{{ parts.writer_choice(h.vin, h.choices, root, csrf, back='tesla') }}{% endif %}
+    </div>
+    {% if h.switch or h.silent %}<div class="set-notes">{{ switching(h) }}</div>{% endif %}
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="group" id="billing">
+  <h2 class="sec">Supercharger bills</h2>
+  <div class="group-b">
+    <div class="set-row"><span class="set-l">Read with <code>vehicle_charging_cmds</code> {% call i.info("What the scope allows") %}Every few hours the account's charging history is read, and each Supercharger session is priced at what Tesla billed, with its invoice. The same scope allows charge commands. Your developer app must allow Vehicle Charging Management.{% endcall %}<span class="set-s">Charge commands: Car Command sends none</span></span>
+      <span class="set-v">{% if not billing %}Asked for at sign-in{% elif billing.granted %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>Granted</span>{% else %}Not granted{% endif %}</span></div>
+    {% if billing and billing.granted %}<div class="set-row sub"><span class="set-l">{% if billing.read_at %}History last read {{ billing.read_at|local }}, {{ billing.count|num }} bill{{ 's' if billing.count != 1 }} kept{% else %}The first read happens in the background shortly{% endif %}</span></div>
+    {% elif billing %}<div class="set-row sub"><span class="set-l">Sign in again to grant it {% call i.info("Why") %}This account signed in without it, so Superchargers are priced at the Settings › Money rate.{% endcall %}</span><div class="set-c"><a class="btn sm" href="{{ root }}/settings/sources/tesla/start">Sign in again</a></div></div>{% endif %}
+  </div>
+</section>
+<section class="group" id="powerwall">
+  <h2 class="sec">Powerwall</h2>
+  <div class="group-b">
+    <div class="set-row"><span class="set-l">Read with <code>energy_device_data</code> {% call i.info("What the scope allows") %}A Powerwall's live status, every 5 minutes, and its history. Car Command sends it no commands. Your developer app must allow Energy Product Data.{% endcall %}<span class="set-s"><a class="quietlink" href="{{ root }}/settings/energy">Settings › Energy</a></span></span>
+      <span class="set-v">{% if not energy_scope %}Asked for at sign-in{% elif energy_scope.granted %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>Granted</span>{% else %}Not granted{% endif %}</span></div>
+    {% if energy_scope and not energy_scope.granted %}<div class="set-row sub"><span class="set-l">Sign in again to grant it {% call i.info("Why") %}This account signed in before Car Command asked for it. Nothing changes until you do, and a Powerwall on the home network needs none of this.{% endcall %}</span><div class="set-c"><a class="btn sm" href="{{ root }}/settings/sources/tesla/start?energy=1">Sign in again</a></div></div>{% endif %}
+  </div>
+</section>
+</div>
+{% endif %}
+{% if pw %}{{ pw_flow(pw) }}{% endif %}
+<script>
+(() => {
+  document.querySelectorAll("button.copy").forEach(b => b.addEventListener("click", () => {
+    const text = b.dataset.copy; if (!text) return;
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => { b.textContent = "Copied"; }, () => { b.textContent = "Select and copy"; });
+  }));
+  // After a key link is opened, look for the key every 10 s for five minutes: each look is a billed call.
+  const waiting = () => document.querySelectorAll(".keycar .keyadd").length;
+  let until = 0, timer = null;
+  const look = () => {
+    if (Date.now() > until || !waiting()) { clearInterval(timer); timer = null; return; }
+    fetch("{{ root }}/settings/sources/tesla/keys.json", {credentials: "same-origin"}).then(r => {
+      if (r.status === 409) { until = 0; location.href = "{{ root }}/settings/sources/tesla?fresh=1"; return {}; }  // the account needs a sign-in: stop looking, show step 3
+      return r.ok ? r.json() : {};
+    }).then(got => {
+      document.querySelectorAll(".keycar").forEach(li => {
+        const add = li.querySelector(".keyadd");
+        if (add && got[li.dataset.vin]) { add.querySelector(".qr").remove(); add.querySelector(".keyhow").remove(); add.querySelector(".keyok").hidden = false; add.classList.remove("keyadd"); }
+      });
+      if (!waiting()) location.href = "{{ root }}/settings/sources/tesla?fresh=1";
+    }).catch(() => {});
+  };
+  document.querySelectorAll("a.keylink").forEach(a => a.addEventListener("click", () => { until = Date.now() + 5 * 60 * 1000; if (!timer) timer = setInterval(look, 10000); }));
+})();
+</script>
+{% endblock %}

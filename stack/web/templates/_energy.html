@@ -1,0 +1,17 @@
+{# Pieces shared by Settings › Energy and the Powerwall steps of Connect Tesla. Imported with context
+   (root, q, csrf). `back` is "tesla" in the flow: every form then carries it, so each action comes
+   back to its own step rather than to another page. #}
+{% from "_info.html" import info %}
+{% macro bk(back) %}{% if back %}<input type="hidden" name="back" value="{{ back }}">{% endif %}{% endmacro %}
+
+{# The Tesla history backfill: its line, its bar, its button. The bar is redrawn in place from
+   `progress_url` while it runs (static/shell.js reads the data-bf marks). #}
+{% macro backfill_rows(cloud, back, primary=false) %}
+{% set b = cloud.backfill %}
+<div class="set-row" data-bf="{{ root }}/settings/energy/progress" data-state="{{ b.state }}"><span class="set-l">Backfill from Tesla<span class="set-s bf-text">{% if b.state == 'error' %}{{ b.error }}{% elif b.text %}{{ b.text }}{% else %}One request a day, newest first{% endif %}</span></span>
+  <div class="set-c">
+    <form class="bf-stop" method="post" action="{{ root }}/settings/energy/backfill{{ q }}"{% if b.state != 'running' %} hidden{% endif %}><input type="hidden" name="csrf_token" value="{{ csrf }}">{{ bk(back) }}<input type="hidden" name="do" value="stop"><button type="submit" class="btn sm">Stop</button></form>
+    {% if b.state != 'done' and b.state != 'running' %}<form method="post" action="{{ root }}/settings/energy/backfill{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">{{ bk(back) }}<button type="submit" class="btn sm{{ ' primary' if primary }}"{% if not cloud.granted %} disabled{% endif %}>{{ 'Resume' if b.state in ('paused', 'error') else 'Start' }}</button></form>{% endif %}
+  </div></div>
+<div class="set-row sub bf-bar"{% if b.state != 'running' %} hidden{% endif %}><span class="set-l"><progress max="100" value="{{ b.percent }}" aria-label="Backfill progress"></progress> <span class="bf-pct">{{ b.percent }}%</span></span></div>
+{% endmacro %}
