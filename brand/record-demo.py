@@ -22,7 +22,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 PHONE = {"width": 390, "height": 844}
-SCALE = 2  # recorded at twice the CSS size, so text stays sharp on a high-density screen
+SCALE = 2  # pages render at twice the CSS size, so stills stay sharp on a high-density screen
 FPS = 12
 LOOP_WIDTH = 390  # the README shows the loop 260 px wide; a GIF this size stays sharp on a high-density screen at a size GitHub will carry
 DESKTOP = {"width": 1280, "height": 800}
@@ -79,7 +79,9 @@ def record_loop(browser, base: str, state: Path, scheme: str, work: Path) -> tup
         color_scheme=scheme,
         storage_state=str(state),
         record_video_dir=str(vid),
-        record_video_size={"width": PHONE["width"] * SCALE, "height": PHONE["height"] * SCALE},
+        # Playwright's video is the viewport in CSS pixels whatever the scale; a larger frame only
+        # pads it with grey (the loop once showed the phone in its top-left quarter).
+        record_video_size=PHONE,
     )
     # One look at Now and Places first, on a page of its own (its video is thrown away), with the outside
     # requests (the map's tiles) kept as they come, so the recorded visit gets its map at once.
@@ -105,7 +107,8 @@ def record_loop(browser, base: str, state: Path, scheme: str, work: Path) -> tup
     page = ctx.new_page()
     t0 = time.monotonic()  # the recording starts with the page
     page.goto(f"{base}/", wait_until="commit")  # a fresh visit: the arrival plays
-    start = time.monotonic() - t0
+    page.wait_for_selector("main", state="visible")
+    start = time.monotonic() - t0  # the first paint: the loop starts here, not on a blank page
     page.wait_for_load_state("networkidle")
     time.sleep(max(0.5, 4.4 - (time.monotonic() - t0 - start)))  # the arrival runs 4 s
     go(page, "/timeline", 0.8)
@@ -127,7 +130,7 @@ def record_loop(browser, base: str, state: Path, scheme: str, work: Path) -> tup
 
 
 def encode(raw: Path, start: float, out_dir: Path, scheme: str) -> None:
-    trim = ["-ss", f"{start + 0.12:.2f}", "-i", str(raw)]  # past the blank page before the first paint
+    trim = ["-ss", f"{start + 0.12:.2f}", "-i", str(raw)]  # from the first paint
     gif = out_dir / f"demo-{scheme}.gif"
     subprocess.run(
         [
@@ -154,7 +157,7 @@ def encode(raw: Path, start: float, out_dir: Path, scheme: str) -> None:
                 "error",
                 *trim,
                 "-vf",
-                f"fps=30,scale={PHONE['width'] * SCALE}:-2",
+                f"fps=30,scale={PHONE['width']}:-2",
                 "-c:v",
                 "libx264",
                 "-pix_fmt",

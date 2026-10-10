@@ -25,6 +25,17 @@
 
 </div>
 
+## What it is
+
+Car Command is a logbook and dashboard for the electric cars in your household, running on a machine you own. It records every drive and every charge from the cars themselves: where each car went, the energy it took, what that cost at your own electricity rates, and how the battery is holding up. Everything is kept in your own database.
+
+- **Every car on one site**, of any make: Tesla directly (streaming live, about once a second), Lucid, and the other [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) brands (Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity).
+- **Your history comes with you**: years of drives and charges import from TeslaFi or TeslaMate.
+- **Real costs**: each charge priced from your time-of-use plan by the hour the car drew power, a price you set for a place, or what Tesla billed for a Supercharger. Otherwise the regional average, marked `≈`.
+- **Solar and Powerwall**: with a Tesla Powerwall at home, each home charge is split into sun, Powerwall and grid, and the sun counts as free.
+- **The rest of owning an EV**: battery health and parked drain, efficiency by temperature and speed, a service log with reminders and tire sets, alerts (Discord, Telegram, email, Pushover), CSV and JSON export.
+- **Phone widgets**: apps [connect](docs/api.md) with a sign-in inside the app and see each car's state but not where it is.
+
 ## Quick start
 
 Docker on an amd64 or arm64 machine:
@@ -38,14 +49,6 @@ Get the setup code with `docker exec carcommand carcommand web python3 setup_cod
 To look around first, `docker exec carcommand carcommand demo` loads six weeks of a fictional car. `docker stop carcommand && docker rm carcommand && docker volume rm carcommand` removes it.
 
 Settings, backups and upgrades: [docs/install.md](docs/install.md).
-
-## What it does
-
-Car Command logs drives and charges for one or more electric cars, of different makes, on one site. Cars connect through [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) (Lucid, the Volkswagen group brands, Tronity) or straight from Tesla, and history can be imported from TeslaFi or TeslaMate.
-
-Each charge is priced from your time-of-use plan by the hour the car drew power, a price you set for the place, or what Tesla billed for a Supercharger session. Otherwise it takes the regional average, marked `≈`.
-
-With a Tesla Powerwall at home, each home charge is split into sun, Powerwall and grid, and the sun counts as free. Phone apps can [connect](docs/api.md) with a sign-in inside the app, for widgets and live activities that see each car's state but not where it is.
 
 ## Docker Compose
 
@@ -74,7 +77,7 @@ For Lucid or another CarConnectivity brand, start the connector too: `docker com
 </tr>
 </table>
 
-Also: efficiency by temperature and speed, the same miles priced in gas, a service log with reminders and tire sets, trip tags, alerts (Discord, Telegram, email, Pushover), CSV and JSON export, an [API](docs/api.md), dark mode and a phone layout. Raw readings are kept, so drives and charges can be recomputed after a fix.
+Also: the same miles priced in gas, trip tags, an [API](docs/api.md), dark mode and a phone layout. Raw readings are kept, so drives and charges can be recomputed after a fix.
 
 ## Sources
 
