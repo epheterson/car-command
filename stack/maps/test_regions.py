@@ -39,3 +39,12 @@ def test_an_unknown_size_never_counts_as_small():
 
 def test_nowhere_picks_nothing():
     assert IDX.chain(0.0, 0.0) == [] and pick([], {}) is None
+
+
+def test_a_region_with_an_empty_outline_is_left_out():
+    """Geofabrik's index can list a region whose geometry has no coordinates; reading the
+    index must skip it, not fail every lookup."""
+    empty = {"type": "Feature", "properties": {"id": "nowhere-land", "urls": {"pbf": "https://example.invalid/x.osm.pbf"}}, "geometry": {"type": "MultiPolygon", "coordinates": [[[]]]}}
+    idx = Index([*FIX["features"], empty])
+    assert "nowhere-land" not in idx.by_id
+    assert idx.chain(43.7384, 7.4246) == IDX.chain(43.7384, 7.4246)

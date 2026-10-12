@@ -7,7 +7,7 @@ smallest containing region."""
 
 from __future__ import annotations
 
-from geo import bbox, contains
+from geo import _points as points, bbox, contains
 
 REGION_CAP_BYTES = 700_000_000
 
@@ -18,8 +18,8 @@ class Index:
         for f in features:
             p = f.get("properties") or {}
             pbf = (p.get("urls") or {}).get("pbf")
-            if not f.get("geometry") or not pbf:
-                continue
+            if not f.get("geometry") or not pbf or not any(points(f["geometry"])):
+                continue  # no download, or an outline with no coordinates: nothing to look up
             self.regions.append({"id": p["id"], "parent": p.get("parent"), "name": p.get("name", p["id"]), "pbf": pbf, "geometry": f["geometry"], "bbox": bbox(f["geometry"])})
         self.by_id = {r["id"]: r for r in self.regions}
 
