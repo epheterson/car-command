@@ -3,7 +3,7 @@ a token for one car may not (it is the house's, not that car's)."""
 
 import pytest
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import energy
 from test_connect import status_client, world  # noqa: F401 - fixtures
@@ -111,3 +111,56 @@ def test_the_page_redraws_its_row_every_twenty_seconds_and_only_when_it_has_one(
     js = (Path(__file__).parent / "static" / "shell.js").read_text()
     part = js[js.index("The Powerwall row on Now") :]
     assert 'document.querySelector(".pwrow")' in part and "20000" in part and "/energy/row" in part and "document.hidden" in part
+
+
+HOUR = {
+    "hour": datetime(2026, 10, 1, 7, tzinfo=timezone.utc),
+    "solar_kwh": 0.0,
+    "home_kwh": 1.0,
+    "grid_in_kwh": 1.0,
+    "grid_out_kwh": 0.0,
+    "battery_in_kwh": 0.0,
+    "battery_out_kwh": 0.0,
+    "coverage": 1.0,
+}
+
+
+@pytest.fixture
+def hours(world, monkeypatch):  # noqa: F811
+    app, client = world
+    asked = []
+
+    def fake(conn, lo, hi, site=energy.SITE):
+        asked.append((lo, hi))
+        return [HOUR]
+
+    monkeypatch.setattr(app.energy, "hours", fake)
+    yield app, client, asked
+
+
+def test_hours_answer_local_days_as_utc_hours(hours):
+    app, client, asked = hours
+    body = client.get("/api/energy/hours?since=2026-10-01&until=2026-10-02").json()
+    assert body["since"] == "2026-10-01" and body["until"] == "2026-10-02" and body["tz"] == app.TZ.key
+    assert body["hours"] == [{**HOUR, "hour": "2026-10-01T07:00:00+00:00"}]
+    lo, hi = asked[0]
+    assert lo.isoformat() == "2026-10-01T00:00:00-07:00" and hi.isoformat() == "2026-10-02T00:00:00-07:00", "local midnights"
+
+
+def test_hours_until_defaults_to_tomorrow_and_bad_ranges_are_400(hours):
+    app, client, asked = hours
+    assert client.get("/api/energy/hours?since=2026-10-01").status_code == 200
+    assert asked[-1][1].date() == datetime.now(app.TZ).date() + timedelta(days=1)
+    for q in ("since=yesterday", "since=2026-10-02&until=2026-10-01", "since=2026-10-01&until=2026-10-01", "since=2020-01-01&until=2026-01-01"):
+        assert client.get(f"/api/energy/hours?{q}").status_code == 400, q
+    assert client.get("/api/energy/hours").status_code == 422, "since is required"
+
+
+def test_hours_keep_the_houses_doors(hours, status_client):  # noqa: F811
+    app, client, _ = hours
+    raw = "tok-read-one-car-hours"
+    app.TOKENS[app.auth.token_hash(raw)] = {"label": "dash", "vin": "V1", "kind": "read", "last4": raw[-4:]}
+    c = client.__class__(client.app, follow_redirects=False, headers={"Authorization": f"Bearer {raw}"})
+    assert c.get("/api/energy/hours?since=2026-10-01").status_code == 403
+    _, sc = status_client
+    assert sc.get("/api/energy/hours?since=2026-10-01").status_code == 403, "a status token opens only now and stream"

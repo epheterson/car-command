@@ -10,7 +10,7 @@
 :root { --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
         --t-cap:11px; --t-meta:13px; --t-body:16px; --t-row:17px; --t-h1:22px; --t-fig:28px; --t-hero:44px;
         --r-ctl:8px; --r-card:12px; --r-pill:999px; --h-ctl:40px; --h-sm:32px; --tabbar-h:0px; }
-/* Gold is the battery's and the mark's alone (design review 2026-10-05). Bars and lines of any
+/* Gold is the battery's and the mark's alone (a design rule). Bars and lines of any
    other figure take the neutral data colour; selection takes the ink. */
 :root { --data:color-mix(in srgb, var(--ink) 55%, var(--panel)); }
 .chartbox { --chart-p:var(--data); } .chartbox.p-level { --chart-p:var(--gold); }

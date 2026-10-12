@@ -921,7 +921,7 @@ def place_icon_map() -> dict[str, str | None]:
     including a macro imported without context, and a card drawn straight from the live
     stream with no request context at all. A database that is unreachable fails in ~2 s,
     not the pool's full 15 s wait, and the empty result is cached like any other, so a
-    whole test run (or a real outage) pays that once, not per render."""
+    whole test run (or a real database outage) pays that once, not per render."""
 
     def load():
         try:
@@ -1900,7 +1900,15 @@ async def guard(request: Request, call_next):
             # The one form whose body may be too large to read for its token (see QUERY_TOKEN_PATHS).
             submitted = request.query_params.get(auth.CSRF_FIELD)
         form_post = request.headers.get("content-type", "").startswith(("application/x-www-form-urlencoded", "multipart/form-data"))
-        if submitted is None and form_post and int(request.headers.get("content-length") or 0) <= FORM_LIMIT:
+        length = request.headers.get("content-length")
+        if submitted is None and form_post and length is None:
+            # No length (a chunked body): read only as far as the limit, before anyone has signed
+            # in, so an endless body cannot fill memory. Kept as the body, so the route reads it too.
+            body = await read_capped(request, FORM_LIMIT)
+            if body is None:
+                return JSONResponse({"error": "form too large"}, status_code=413)
+            request._body = body
+        if submitted is None and form_post and int(length or 0) <= FORM_LIMIT:
             # body() first, and only then form(): Starlette replays a body that was read whole,
             # but a stream that was merely parsed reaches the route empty and every field is missing.
             await request.body()
@@ -7371,6 +7379,30 @@ def api_energy(request: Request):
     return JSONResponse(jsonable({"reading": live, "today": energy_today()}))
 
 
+HOURS_MAX_DAYS = 400  # a true-up year and a margin; one answer, not a dump of the table
+
+
+@site.get("/api/energy/hours")
+def api_energy_hours(request: Request, since: str, until: str | None = None):
+    """The house's kWh per clock hour for the local days [since, until) (until defaults to
+    tomorrow, so today so far is in): what a reader needs to price it by time of use.
+    Same doors as /api/energy."""
+    token = getattr(request.state, "token", None)
+    if token and token.get("vin"):
+        return JSONResponse({"error": "this token is for one car; the house's energy is not any one car's"}, status_code=403)
+    try:
+        first = date.fromisoformat(since)
+        last = date.fromisoformat(until) if until else datetime.now(TZ).date() + timedelta(days=1)
+    except ValueError:
+        return JSONResponse({"error": "since and until are dates, YYYY-MM-DD"}, status_code=400)
+    if not 0 < (last - first).days <= HOURS_MAX_DAYS:
+        return JSONResponse({"error": f"since must be before until, and at most {HOURS_MAX_DAYS} days before it"}, status_code=400)
+    lo, hi = (datetime.combine(d, dtime(), TZ) for d in (first, last))
+    with db() as conn:
+        rows = energy.hours(conn, lo, hi)
+    return JSONResponse(jsonable({"since": first, "until": last, "tz": TZ.key, "hours": rows}))
+
+
 @site.get("/api/drives")
 def api_drives(vin: str | None = None):
     return JSONResponse(jsonable(drives(api_vin(vin))))
@@ -7734,9 +7766,7 @@ def apply_schema(conn) -> None:
 
     Under a lock_timeout, and that is the whole point. A CREATE or ALTER that cannot get
     its lock does not wait politely — it queues, and every reader queuing behind it stops
-    too, so one slow backfill turns a deploy into an outage of the whole site. That has
-    happened twice: 2026-09-05 for eight minutes, and again on 2026-09-06 for six while a
-    charge-facts backfill held the table. Three seconds, then give up and try again.
+    too, so one slow backfill turns a deploy into an outage of the whole site. Three seconds, then give up and try again.
     """
     for name, ddl in (
         ("places", PLACES_DDL),

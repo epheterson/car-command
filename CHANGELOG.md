@@ -37,6 +37,7 @@ The first public release.
 - **Now** shows a Powerwall row: its level and where the energy is moving.
 - **Where a home charge's energy came from:** a bar of sun, Powerwall and grid on each home charge and its page, with each part's kWh and cost (the sun free, the Powerwall's grid-charged part at the rate it was bought at, marked ≈). Stats adds the sun's share of home charging by month.
 - `GET /api/energy`: the current reading and today's kWh, for read tokens only (a status token is refused: the house's power shows when nobody is home). See [docs/api.md](docs/api.md).
+- `GET /api/energy/hours`: the house's kWh by clock hour for a range of days, to price it by time of use; same doors as `/api/energy`.
 
 ### Costs
 

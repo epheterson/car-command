@@ -512,3 +512,42 @@ def test_the_setup_code_is_printed_only_while_no_password_is_set(monkeypatch):
     monkeypatch.setenv("CC_PASSWORD", "from the environment")
     assert setup_code.code(object()) is None
     assert "turning sign-in on" in setup_code.__doc__ and "Cloudflare" in setup_code.__doc__
+
+
+# ---- a form with no length
+
+
+def test_a_chunked_form_is_read_only_as_far_as_the_form_limit(world):
+    """No Content-Length: the guard reads a form for its token only up to FORM_LIMIT, so a
+    stranger's endless body cannot fill memory before anyone has signed in."""
+    import asyncio
+
+    import httpx
+
+    app, _ = world
+    sent = []
+
+    async def endless():
+        for _ in range(4 * app.FORM_LIMIT // 65536):
+            sent.append(65536)
+            yield b"x" * 65536
+
+    async def post():
+        transport = httpx.ASGITransport(app=app.server, client=("127.0.0.1", 50000))
+        async with httpx.AsyncClient(transport=transport, base_url="http://site") as c:
+            return await c.post("/login", content=endless(), headers={"content-type": "application/x-www-form-urlencoded"})
+
+    r = asyncio.run(post())
+    assert r.status_code == 413
+    assert sum(sent) <= app.FORM_LIMIT + 2 * 65536, "stopped soon after the limit"
+
+
+def test_a_small_chunked_form_still_reaches_its_route(world):
+    app, client = world
+
+    def small():
+        yield b"password=wrong"
+        yield b"&next=/"
+
+    r = client.post("/login", content=small(), headers={"content-type": "application/x-www-form-urlencoded"})
+    assert r.status_code != 413

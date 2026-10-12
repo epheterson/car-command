@@ -1,6 +1,6 @@
 """Shape checks on the template source that a render test cannot see.
 
-Two bugs the browser found on 2026-09-17 that every render test had passed: the tread
+Two bugs the browser found that every render test had passed: the tread
 form on Service was written inside `{% block title %}`, so the whole section rendered
 into <title> and never appeared on the page; and the token forms on Settings sat inside
 the page's own <form>, which HTML does not allow, so the browser dropped the inner
@@ -56,7 +56,7 @@ def test_sub_navigation_lives_in_the_shell_only():
 def test_the_content_column_never_grows_past_the_screen():
     """The page column sits in a flex column, whose children default to their widest content:
     one long unwrapped line on Stats widened the whole page to 761 px on a 390 px phone
-    (2026-09-29). The column and its grid must be allowed to shrink."""
+    The column and its grid must be allowed to shrink."""
     import re
 
     css = (Path(__file__).parent / "static" / "style.css").read_text()
@@ -80,7 +80,7 @@ def test_nothing_sets_a_minimum_wider_than_a_phone():
 
 def test_only_the_shells_own_sheets_hide_their_disclosure_triangle():
     """Hiding the triangle on every <details> made "Add a drive by hand" and the readings
-    folds read as plain text with nothing saying they open (review, 2026-09-30)."""
+    folds read as plain text with nothing saying they open."""
     import re
 
     css = (Path(__file__).parent / "static" / "style.css").read_text()
@@ -89,7 +89,7 @@ def test_only_the_shells_own_sheets_hide_their_disclosure_triangle():
 
 
 def test_files_and_new_tabs_are_never_prefetched():
-    """Hovering a receipt on the Service page downloaded the photo or PDF (review, 2026-09-30).
+    """Hovering a receipt on the Service page downloaded the photo or PDF.
     A link that opens a file or a new tab is not a page the next tap is waiting for."""
     base = (Path(__file__).parent / "templates" / "base.html").read_text()
     js = (Path(__file__).parent / "static" / "prefetch.js").read_text()
@@ -146,7 +146,7 @@ def test_opening_one_sheet_closes_the_other_on_the_tap_itself():
 
 def test_no_new_class_rule_reaches_a_class_the_templates_already_use_for_tables():
     """`.cards { display:grid }` for the Now page's car cards also caught the eighteen
-    `<table class="cards">` lists, which broke every table on a laptop (review, 2026-09-30)."""
+    `<table class="cards">` lists, which broke every table on a laptop."""
     import re
 
     css = _css()
@@ -645,7 +645,7 @@ def test_every_table_is_one_of_the_table_kinds_and_fills_its_card():
             assert kinds, f"{page.name}: <table class=\"{m.group(1) or ''}\"> is none of {sorted(TABLE_KINDS)}"
             if kinds & {"data", "bins"}:
                 assert re.search(r'<div class="ovx(?: [a-z0-9-]+)*">$', src[max(0, m.start() - 60) : m.start()].rstrip()), f"{page.name}: a {kinds} table scrolls inside div.ovx"
-    # places.html lists places as rows of links (2026-10-05), not a table.
+    # places.html lists places as rows of links, not a table.
 
 
 def test_a_places_page_has_the_icon_row_and_the_icon_set_has_one_definition():
@@ -857,7 +857,7 @@ def test_the_month_comparison_has_phone_headings():
 def test_every_map_credits_openstreetmap():
     """Place names (local or public) and the map data come from OpenStreetMap, whose licence asks
     for visible credit wherever they're shown: in each map's own corner, backgrounds on or off
-    (a design review cut the sentence every page carried in its footer), and in the README."""
+    (not only in a page footer), and in the README."""
     here = Path(__file__).parent
     js = (here / "static" / "maps.js").read_text()
     assert js.count('link("https://www.openstreetmap.org/copyright", "OpenStreetMap")') >= 3, "vector, raster and no-tiles credits"

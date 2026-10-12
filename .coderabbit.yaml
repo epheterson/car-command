@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Independent review of each PR, once, when it opens; comment
+# `@coderabbitai review` for another pass after later pushes. Advisory, never
+# a required check: findings are fixed or answered like any outside
+# contribution. Kept quiet: no summary written into the PR description, no
+# walkthrough extras.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: false
+  poem: false
+  review_status: false
+  in_progress_fortune: false
+  collapse_walkthrough: true
+  changed_files_summary: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  related_issues: false
+  assess_linked_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: false
+    drafts: false
+  path_filters:
+    - "!brand/media/**"
+    - "!docs/screenshots/**"
+    - "!**/*.png"
+    - "!**/*.gif"
+  path_instructions:
+    - path: "stack/web/**"
+      instructions: >-
+        The site (FastAPI + Jinja) over Postgres. Location, VINs and the
+        house's energy never leave the install: flag any new outbound request,
+        third-party API, analytics or log line that would carry them. Pages
+        read precomputed facts; flag new work on a page's request path (a
+        query per row, a network call, a DDL statement) and any DDL outside
+        startup. Credentials and tokens are sealed with the install key and
+        never logged or rendered. Every API route checks its token's kind and
+        car; status tokens never see location or the house.
+    - path: "stack/web/test_*.py"
+      instructions: >-
+        Tests use the made-up cars Alpha, Bravo and Charlie in Springfield,
+        never a real VIN, address, coordinate, host or token, and clean up
+        anything they create.
+    - path: "stack/cc/**"
+      instructions: >-
+        The CarConnectivity container. Plugins install only from the pinned
+        catalogue with hashes and run unprivileged with their own database
+        role; flag anything that widens what a plugin can reach.
+    - path: "{stack/docker-compose.yml,stack/*/Dockerfile,stack/.env.example}"
+      instructions: >-
+        No secret in the image or in .env.example (placeholders only). Only
+        the web port is published; flag a new published port, capability,
+        privileged mode or a process moved from its user to root.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Actions must be pinned to full commit SHAs with least-privilege
+        permissions. Releases run from stack/web/version.py on main.
+chat:
+  auto_reply: true

@@ -1,7 +1,7 @@
 """Print the setup code, while no password is set.
 
-The code is what the first password needs from anywhere but the machine itself or, in the first hour, a device on the
-home network. It also gates turning sign-in on from Settings and pinning Cloudflare Access. It is derived from the
+The code is what the first password needs, except in the first hour from the machine itself or a device on the home
+network. It also gates turning sign-in on from Settings and pinning Cloudflare Access. It is derived from the
 site's signing key, so it is the same after a restart; once a password is set there is nothing for it to open, and
 this prints a line saying so. Run as `make setup-code`."""
 

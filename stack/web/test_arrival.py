@@ -1,5 +1,5 @@
 """The brand's arrival plays on a fresh load and never holds the page: maps and content draw
-at once (a design review found Places a blank box for three seconds on a phone while the mark
+at once (Places was once a blank box for three seconds on a phone while the mark
 played). The animation stays smooth by the page keeping its work light: long lists skip their
 off-screen rows, and the moving parts get layers only while it plays."""
 

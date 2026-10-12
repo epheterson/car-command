@@ -1,6 +1,6 @@
 """backup.sh and restore.sh, checked for the things that decide whether data survives.
 
-These scripts were exercised for real on 2026-09-06: seed two places, back up, destroy
+These scripts were exercised end to end: seed two places, back up, destroy
 the whole volume as if the machine were gone, bring the stack back, restore, and find the
 places, the settings and the password where they were. What follows guards the properties
 that made that work, because a backup nobody has restored is a rumour.

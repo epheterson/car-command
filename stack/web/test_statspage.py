@@ -242,7 +242,7 @@ def test_the_old_range_links_open_where_they_meant():
 
 def test_months_before_the_car_arrived_are_not_averaged_or_drawn():
     """A stray row eleven months before the car arrived made every empty month between
-    average in as a zero (the design review saw +714% vs avg over a run of empty bars)."""
+    average in as a zero (it showed +714% vs avg over a run of empty bars)."""
     from statspage import first_full, history_start
 
     months = by_month([row(2025, 10, 3, 1), row(2026, 8, 300, 10), row(2026, 9, 900, 30), row(2026, 10, 120, 4)])

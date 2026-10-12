@@ -1,6 +1,5 @@
 """The other brands: the CarConnectivity connectors on PyPI that Settings › Cars and sources
-can add, with the settings each release reads (checked against the connector's own code on
-2026-10-04). Which package, release, connector type and id each is, and the sha256 of every
+can add, with the settings each release reads (checked against the connector's own code at the pinned release). Which package, release, connector type and id each is, and the sha256 of every
 wheel it installs, come from connectors.json: the same file the connector container ships
 and enforces (stack/shared/connectors.json, written by scripts/connector-lock.py). Pure:
 nothing here touches the network, the database or pip.

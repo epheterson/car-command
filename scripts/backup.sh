@@ -3,11 +3,13 @@
 #
 # pg_dump rather than a tar of the volume: a dump restores into a different Postgres
 # version, on a different machine, without stopping anything, and it can be read by a
-# human when it has to be. The volume tar in infra/docker-backup.sh stays as the
-# whole-machine backup; this is the one for the data.
+# human when it has to be. A host backup of the volume is still worth having; this is the
+# one for the data.
 #
 # Usage: scripts/backup.sh [DIRECTORY]     (default: ./backups)
 set -euo pipefail
+# A dump holds every position the cars logged and the sign-in hashes: readable by its owner only.
+umask 077
 
 here=$(cd "$(dirname "$0")/.." && pwd)
 # In a checkout the compose file is under stack/; on a deployed host the contents of
@@ -45,7 +47,7 @@ docker compose version >/dev/null 2>&1 || die "docker is installed but 'docker c
 docker compose -f "$compose" ps --status running --services 2>/dev/null | grep -qx db \
     || die "the db container is not running"
 
-mkdir -p "$out_dir"
+mkdir -p -m 700 "$out_dir"
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 file="$out_dir/carcommand-$stamp.dump"
 
@@ -66,4 +68,4 @@ echo "backup: $tables tables, $((size / 1024 / 1024)) MB, verified readable"
 # Old dumps are the operator's to keep or delete; saying how many there are is enough.
 count=$(find "$out_dir" -name 'carcommand-*.dump' -type f | wc -l | tr -d ' ')
 echo "backup: $count dumps in $out_dir"
-echo "backup: sources kept in the app are sealed with CC_SECRET_KEY, which lives in .env and is not in this dump; keep .env safe beside it"
+echo "backup: the dump holds the cars' location history and the sign-in data; keep it as safe as .env (sources are sealed with CC_SECRET_KEY, which is in .env, not in the dump)"

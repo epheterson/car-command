@@ -2,7 +2,7 @@
 # Hand over to the supervisor (supervise.py), which renders the config, runs CarConnectivity
 # as the unprivileged user and runs it again when its sources change.
 #
-# Before that, as root: the vault key and the passwords move out of the environment into
+# Before that, as root: the sealing key and the passwords move out of the environment into
 # files only root can read, and the supervisor starts without them in its environment, so
 # no other process here can read them from /proc. The supervisor reads them back from the
 # files; CarConnectivity, pip and every plugin run as `carcommand` without them (privsep.py).

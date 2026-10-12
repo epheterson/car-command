@@ -130,7 +130,7 @@ def test_a_place_has_one_count_and_it_is_called_visits():
     assert "Stops here" not in place and "p.visits" in place and "st.n" not in place
 
 
-# ---- the design review (2026-10-05): gold, the shell, the place page ---------------------
+# ---- gold, the shell, the place page ---------------------
 
 
 def test_gold_is_the_battery_and_the_mark_alone():

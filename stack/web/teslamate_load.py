@@ -28,7 +28,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("dir")
     ap.add_argument("--vin", required=True)
     ap.add_argument("--name", required=True)
-    ap.add_argument("--manufacturer", default="Lucid")
+    ap.add_argument("--manufacturer", default="Tesla")  # TeslaMate logs Teslas; a car logged through a bridge names its own make
     ap.add_argument("--model", default=None)
     ap.add_argument("--capacity", type=float, default=None)
     ap.add_argument("--until", default="auto")

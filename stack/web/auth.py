@@ -330,7 +330,7 @@ def client_ip(headers, fallback: str | None) -> str:
 
 KINDS = ("read", "admin", "status")
 # What a status token may call, and nothing else: the car now, and the stream of it. Not the
-# house: its power over time shows when nobody is home, and its grid state shows outages.
+# house: its power over time shows when nobody is home, and its grid state shows power cuts.
 STATUS_PATHS = ("/api/now", "/api/stream")
 # Keys that say where the car is or how it is moving, or that give its speed from two readings
 # (the odometer and the trip meters); a status token never sees them.

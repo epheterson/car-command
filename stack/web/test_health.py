@@ -10,7 +10,7 @@ D = timedelta(days=1)
 
 
 def kitt(**over):
-    """Alpha, shaped like the morning of 2026-09-28: feed current, rebuild ok, nothing logged in 27 days."""
+    """Alpha, a car whose feed is current: rebuild ok, nothing logged in 27 days."""
     car = {
         "vin": "V1",
         "name": "Alpha",

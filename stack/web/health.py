@@ -1,9 +1,9 @@
 """What watches the data itself.
 
 Every source has a marker that says it is fine: the feed's rebuild writes `ok`, the
-connector answers, the recorder ticks. None of them noticed when one car's hourly
-replay erased twenty-four days of drives an hour at a time (2026-09-04 to 09-27): the
-rows kept arriving and the rebuild kept succeeding, on a window that no longer held the
+connector answers, the recorder ticks. None of them notice when a car's hourly
+replay erases weeks of drives an hour at a time: the
+rows keep arriving and the rebuild kept succeeding, on a window that no longer held the
 drives. These checks read the data, not the markers: does what arrived get logged, and
 do the miles the odometer saw show up as drives.
 

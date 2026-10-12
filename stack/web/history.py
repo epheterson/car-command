@@ -365,9 +365,8 @@ def fill_after_import(conn, vin: str, tz: ZoneInfo) -> tuple[int, int]:
     place_of = lambda lat, lon: place_for(lat, lon, known)  # noqa: E731
     # The DDL and the backfill were one transaction, so the ACCESS EXCLUSIVE locks that a
     # CREATE or ALTER takes on the facts tables were held for as long as the backfill ran
-    # — and every reader of those tables is the whole site. That was survivable only
-    # while the backfill had nothing to do. It stopped being survivable on 2026-09-11,
-    # the third outage of this shape, when a slower measurement moved inside the window.
+    # — and every reader of those tables is the whole site. That only works while the
+    # backfill has nothing to do; any real work inside the window blocks the site.
     #
     # A lock_timeout so the DDL gives up instead of queueing, and a commit so it lets go
     # before any work starts. The backfill's own locks are row-level and block nobody.

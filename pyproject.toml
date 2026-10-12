@@ -9,9 +9,8 @@ skip-string-normalization = true
 line-length = 200
 
 [tool.ruff.lint]
-# F catches the one that actually bit: a name used but never imported. app.py called
-# daily_breakdown for weeks without importing it, so the 07:00 summary raised on every
-# tick and nothing noticed, because it only runs inside a recorder hook.
+# F catches a name used but never imported: a call like that raises on every tick of a
+# job that runs only inside a recorder hook, where nothing surfaces it.
 select = ["F", "E9"]
 
 [tool.pytest.ini_options]

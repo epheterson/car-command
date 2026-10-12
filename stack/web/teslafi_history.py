@@ -192,8 +192,7 @@ def catchup_window(newest_before_feed: datetime | None, feed_first: datetime | N
     """The dates to ask for: from the newest thing any other import wrote (the export, a
     TeslaMate load, an earlier fill) to the feed's first row, when that hole is wider than
     the feed's own window; None when there is nothing to fill. The feed's own import is
-    left out of "newest" on purpose: it is always current, and hid a 24-day hole on
-    2026-09-28. A car with no history at all gets the last year."""
+    left out of "newest" on purpose: it is always current, and would hide a multi-week hole. A car with no history at all gets the last year."""
     end = feed_first or now
     start = newest_before_feed if newest_before_feed is not None else end - timedelta(days=365)
     if end - start <= gap:

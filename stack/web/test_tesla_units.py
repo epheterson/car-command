@@ -1,5 +1,5 @@
 """The units and shapes the stream really sends, pinned from two cars' first records
-(2026-10-05; values synthesized, every shape as it arrived).
+(values synthesized, every shape as it arrived).
 
 What the first records showed, against the TeslaFi feed's rows for the same cars at the
 same minute:

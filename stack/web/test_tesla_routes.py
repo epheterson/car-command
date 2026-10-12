@@ -33,7 +33,7 @@ class Recording(EmptyConnection):
 
 @pytest.fixture
 def tesla(bare, monkeypatch):  # noqa: F811
-    """A site with app keys, a vault, a state store and a source table that records."""
+    """A site with app keys, a sealing key, a state store and a source table that records."""
     state, log, rows = {}, [], []
     vault = sources.Vault(Fernet.generate_key().decode())
     monkeypatch.setattr(bare, "VAULT", vault)

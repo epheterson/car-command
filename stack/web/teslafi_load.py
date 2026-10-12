@@ -58,7 +58,7 @@ def main(argv: list[str]) -> int:
     with open_text(path) as fh:
         out = replay(iter_samples(fh))
     if not out["rows"]:
-        print("no rows parsed; check the column names against docs/teslafi-fields.md", file=sys.stderr)
+        print("no rows parsed; is this a TeslaFi export (a CSV with its header row)?", file=sys.stderr)
         return 2
     veh = out["vehicle"]
     vin = args.vin or veh.get("vin")

@@ -13,7 +13,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="brand/media/demo-dark.gif">
-  <img src="brand/media/demo-light.gif" alt="The demo car on a phone: Now, the Timeline, a drive on its map, Stats and Places" width="260">
+  <img src="brand/media/demo-light.gif" alt="The demo car on a phone: Now, the Timeline, a drive on its map, Stats and Places" width="220">
 </picture>
 
 <p>
@@ -27,14 +27,14 @@
 
 ## What it is
 
-Car Command is a logbook and dashboard for the electric cars in your household, running on a machine you own. It records every drive and every charge from the cars themselves: where each car went, the energy it took, what that cost at your own electricity rates, and how the battery is holding up. Everything is kept in your own database.
+Car Command is a logbook and dashboard for the electric cars in your household, running on a machine you own: a home server or NAS with Docker. It records every drive and every charge from the cars themselves: where each car went, the energy it took, what that cost at your own electricity rates, and how the battery is holding up. Everything is kept in your own database.
 
-- **Every car on one site**, of any make: Tesla directly (streaming live, about once a second), Lucid, and the other [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) brands (Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity).
+- **Every car on one site**, of several makes: Tesla directly (streaming live, about once a second), Lucid, and the other [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) brands (Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity). Tesla live data needs the [stream](docs/tesla-stream.md) (Docker Compose, a Tailscale account and a Tesla developer app billed per use), or a TeslaFi or TeslaMate you already run.
 - **Your history comes with you**: years of drives and charges import from TeslaFi or TeslaMate.
-- **Real costs**: each charge priced from your time-of-use plan by the hour the car drew power, a price you set for a place, or what Tesla billed for a Supercharger. Otherwise the regional average, marked `≈`.
+- **Real costs**: each charge priced from your time-of-use plan by the hour the car drew power, a price you set for a place, or what Tesla billed for a Supercharger. A home charge no plan covers falls back to the regional average, marked `≈`.
 - **Solar and Powerwall**: with a Tesla Powerwall at home, each home charge is split into sun, Powerwall and grid, and the sun counts as free.
 - **The rest of owning an EV**: battery health and parked drain, efficiency by temperature and speed, a service log with reminders and tire sets, alerts (Discord, Telegram, email, Pushover), CSV and JSON export.
-- **Phone widgets**: apps [connect](docs/api.md) with a sign-in inside the app and see each car's state but not where it is.
+- **Phone widgets and other apps**: any app can [connect](docs/api.md) with a sign-in and read each car's state, but not where it is.
 
 ## Quick start
 
@@ -44,18 +44,22 @@ Docker on an amd64 or arm64 machine:
 docker run -d --name carcommand --restart unless-stopped --stop-timeout 30 -p 3044:3044 -v carcommand:/data ghcr.io/epheterson/car-command
 ```
 
-Get the setup code with `docker exec carcommand carcommand web python3 setup_code.py`, open `http://<host>:3044`, choose a password with that code, and add your cars under **Settings › Cars and sources**. The first password needs the code unless the request comes from the machine itself or, in the first hour, a device on your home network (on Docker Desktop that is never, so use the code). Postgres, the site and the connector run in this one container, and everything it keeps is in the `carcommand` volume.
+1. Get the setup code: `docker exec carcommand carcommand web python3 setup_code.py`. Within the first hour, a device on your home network needs no code; after that, or on Docker Desktop, use the code.
+2. Open `http://<host>:3044`, choose a password, and add your cars under **Settings › Cars and sources**.
 
-To look around first, `docker exec carcommand carcommand demo` loads six weeks of a fictional car. `docker stop carcommand && docker rm carcommand && docker volume rm carcommand` removes it.
+Postgres, the site and the connector run in this one container. Everything it keeps is in the `carcommand` volume.
 
-Settings, backups and upgrades: [docs/install.md](docs/install.md).
+To look around first, run the demo in its own container on another port: `docker run -d --name carcommand-demo -p 3045:3044 -v carcommand-demo:/data ghcr.io/epheterson/car-command`, then `docker exec carcommand-demo carcommand demo`. The demo car and its rate plan stay in whatever install you load them into, so keep it out of your real one ([details](docs/install.md#try-it-with-demo-data)).
+
+What you need, settings, backups and upgrades: [docs/install.md](docs/install.md). Something wrong: [troubleshooting](docs/troubleshooting.md).
 
 ## Docker Compose
 
-Compose runs the same parts as separate containers, from a checkout. The [local maps add-on](docs/maps.md) and the [Tesla live stream](docs/tesla-stream.md) need it for now.
+Compose runs the same parts as separate containers, from a checkout. Tesla owners who want live data need Compose for now: the [Tesla live stream](docs/tesla-stream.md) runs only there, as does the [local maps add-on](docs/maps.md).
 
 ```sh
 git clone https://github.com/epheterson/car-command car-command && cd car-command
+git checkout "$(git describe --tags --abbrev=0)"         # the newest release, not unreleased main
 make setup                                                # writes stack/.env with generated passwords
 docker compose -f stack/docker-compose.yml up -d db web   # Postgres, the schema, and the site
 ```
@@ -83,7 +87,7 @@ Also: the same miles priced in gas, trip tags, an [API](docs/api.md), dark mode 
 
 | Source | Live data | Drive route and power | Charge curve | History before you connect |
 |---|---|---|---|---|
-| Tesla, direct | about once a second with the [stream](docs/tesla-stream.md) | both | yes | import from TeslaFi or TeslaMate |
+| Tesla, direct | about once a second with the [stream](docs/tesla-stream.md) (Compose only for now); none without it | both | yes | import from TeslaFi or TeslaMate |
 | TeslaFi (feed and export) | each minute | both | yes | the export |
 | TeslaMate (database) | as TeslaMate records | both | yes | its database |
 | Lucid ([connector](https://github.com/epheterson/CarConnectivity-connector-lucid)) | each minute, 15 s driving | route only | yes | none |
@@ -104,7 +108,7 @@ Your cars' data stays in your own database. What leaves your machine:
 
 ## Documentation
 
-[Install](docs/install.md) · [Sources](docs/sources.md) · [Tesla live stream](docs/tesla-stream.md) · [Costs](docs/costs.md) · [Local maps](docs/maps.md) · [API](docs/api.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[Install](docs/install.md) · [Sources](docs/sources.md) · [Tesla app](docs/tesla-app.md) · [Tesla live stream](docs/tesla-stream.md) · [Troubleshooting](docs/troubleshooting.md) · [Costs](docs/costs.md) · [Local maps](docs/maps.md) · [API](docs/api.md) · [Roadmap](docs/roadmap.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 <!-- Star history: hidden until there are stars to chart.
      To show it, delete this comment's first and last lines.

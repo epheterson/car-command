@@ -12,11 +12,11 @@ curl -H "Authorization: Bearer $TOKEN" http://your-host:3044/api/now
 
 **Admin tokens** also drive setup under `/api/admin/`: the same actions as the buttons on Connect Tesla, Cars and sources, Places and Money, through the same code. An admin token covers every car. Only a bearer admin token opens `/api/admin/`; a browser session doesn't, so those routes need no cross-site form token.
 
-Deleting a token on the same page stops it at once. `/api/whoami` says what a token is.
+Deleting a token on the same page stops it at once. `/api/whoami` says what a read or admin token is; a status token gets 403 there.
 
 ## Connecting an app
 
-An app signs in through the browser and is handed a **status token**, with nothing to copy. It is the authorization-code flow with PKCE, and any client can use it. **Sign-in must be on**: with `CC_AUTH=off` the connect page refuses, because otherwise anyone on the network could mint a token. Behind Cloudflare Access the sheet shares the system's cookie jar, so Cloudflare's own sign-in lets it through to the consent page and the install needs no Car Command password (see docs/install.md). The refusal page has a button to Settings › Sign-in and API, where one password turns it on without a restart, and the person is brought back to the connect page afterwards.
+An app signs in through the browser and is handed a **status token**, with nothing to copy. It is the authorization-code flow with PKCE, and any client can use it. **Sign-in must be on**: with `CC_AUTH=off` the connect page refuses, because otherwise anyone on the network could mint a token. Behind Cloudflare Access the sheet shares the system's cookie jar, so Cloudflare's own sign-in lets it through to the consent page and the install needs no Car Command password (see [Behind Cloudflare Access](install.md#behind-cloudflare-access)). The refusal page has a button to Settings › Sign-in and API, where one password turns it on without a restart, and the person is brought back to the connect page afterwards.
 
 1. The app makes a random `code_verifier` (43 to 128 characters of `A-Z a-z 0-9 - . _ ~`) and a random `state`, and opens `GET /connect` in a browser sheet (the platform's web-authentication sheet) with `client` (the app's name, 40 characters at most), `redirect_uri`, `state` (required, 256 characters at most), `code_challenge` (the unpadded base64url of the verifier's SHA-256) and `code_challenge_method=S256`. The `redirect_uri` must be the app's own callback, such as `example-app://connected` or `com.example.app:/callback`. Anything that could hand the code to a web page is refused (see the rule below), and so is an address with a fragment. A request with anything wrong shows an error page and never redirects.
 2. The owner signs in if they are not already, and sees "client wants to read your cars" with Allow and Cancel, and under it the name the app gave itself and the whole address it will open. The name is the app's own claim, so the address is what to check.
@@ -67,13 +67,14 @@ Car endpoints take `?vin=` for one car or `?vin=all` for the garage; without it,
 | `GET /api/charges` | the 50 most recent charges, newest first, with cost and its source (`cost_source`); a home charge whose energy has been split adds `src_status` (`ok`), `src_solar_kwh`, `src_battery_kwh`, `src_grid_kwh`, `src_sun_frac` (the share of the Powerwall's part that was solar), `src_grid_cost`, `src_battery_cost` and `src_approx` |
 | `GET /api/stream` | server-sent events: a `now` event per car when its state changes (see Live stream) |
 | `GET /api/energy` | the house's Powerwall now and its kWh today (see Energy) |
+| `GET /api/energy/hours?since=YYYY-MM-DD&until=YYYY-MM-DD` | the house's kWh per clock hour for those local days, `until` defaulting to tomorrow, at most 400 days (see Energy) |
 | `GET /api/health` | the hourly data checks per car |
 | `GET /api/driveprint` | every 100 m cell the car has reported from, as `[lat, lon, readings, car index]` |
 | `GET /api/month-routes?month=YYYY-MM` | each drive's route that month, downsampled |
 
 ## Energy
 
-`GET /api/energy` answers about the house, once Settings › Energy reads one. Read tokens and a signed-in session may call it. A status token may not (403): the house's power over time shows when nobody is home, and its grid state shows outages. A token for one car may not either: the house is not any car's.
+`GET /api/energy` answers about the house, once Settings › Energy reads one. Read tokens and a signed-in session may call it. A status token may not (403): the house's power over time shows when nobody is home, and its grid state shows outages. A token for one car may not either: the house is not any car's. `GET /api/energy/hours` has the same doors; its hours are UTC, so the fall-back night keeps both 1 a.m.s, each carries `coverage` (1.0 when every five-minute reading is there), and an hour with no readings is left out.
 
 ```json
 {"reading": {"solar_w": 4200.0, "home_w": 1800.0, "grid_w": -300.0, "battery_w": -2100.0,

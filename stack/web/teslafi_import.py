@@ -1,7 +1,6 @@
 """TeslaFi CSV import: one poll row a minute in, Car Command history out.
 
-Validated against two real full-history exports on 2026-09-04 (2.9M rows
-back to 2018, and 1.3M rows back to 2022). The real export is **151 columns**,
+Validated against full-history exports. The export is **151 columns**,
 not the ~90 the public API docs suggest, and it carries TeslaFi's own session
 counters, which is the single most useful thing in it:
 
@@ -73,8 +72,8 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 # TeslaFi writes naive local timestamps; the export is stamped in the account's
-# timezone. Verified: one export's last row is 2026-09-04 10:20:30 for an export
-# pulled at 10:20 PDT.
+# timezone. Verified: an export's last row carries the local
+# wall-clock time of the pull.
 DEFAULT_TZ = ZoneInfo("America/Los_Angeles")
 
 NULLISH = {"", "none", "null", "<invalid>", "nan"}
@@ -225,7 +224,7 @@ def parse(source, tz=DEFAULT_TZ) -> list[dict]:
     return sorted(iter_samples(lines, tz), key=lambda s: s["time"])
 
 
-# TeslaFi's car_type is the literal string "model" in both real exports, so the
+# TeslaFi's car_type is the literal string "model" in the exports, so the
 # model line comes from the VIN: position 4 is Tesla's model code.
 VIN_MODEL = {"S": "Model S", "3": "Model 3", "X": "Model X", "Y": "Model Y", "C": "Cybertruck", "R": "Roadster", "T": "Semi"}
 # Usable pack capacity in kWh, for "energy used = capacity x battery drop". Long Range

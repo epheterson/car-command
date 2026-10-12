@@ -78,7 +78,7 @@ docker run --rm -i --env-file "$keyfile" -v "$volume:/data" "$image" restore <"$
 stage=restored
 
 token="$here/stack/secrets/lucid-token.json"
-if [[ -f $token ]]; then
+if [[ -s $token ]]; then
     echo "move: copying secrets/lucid-token.json"
     docker run --rm -i -v "$volume:/data" --entrypoint /bin/sh "$image" \
         -c 'umask 077 && cat >/data/connector/lucid-token.json && chown 10001:10001 /data/connector/lucid-token.json' <"$token"

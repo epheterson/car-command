@@ -1,5 +1,5 @@
-"""A small averages file for tests: figures recorded from the real rates/averages.json
-built on 2026-10-04, for Springfield's state and Berlin's country and a few others."""
+"""A small averages file for tests: figures recorded from the shipped rates/averages.json,
+for Springfield's state and Berlin's country and a few others."""
 
 from __future__ import annotations
 

@@ -111,8 +111,8 @@ def test_the_make_target_exists():
 
 
 def test_the_deploy_targets_protect_host_only_files_from_delete():
-    """--delete plus a narrow exclude is how a host-only file disappears. It cost a .env
-    backup on 2026-09-05: --exclude .env spares a file named exactly that and nothing
+    """--delete plus a narrow exclude is how a host-only file disappears. It can cost a .env
+    backup: --exclude .env spares a file named exactly that and nothing
     else, so the backup beside it was removed on the next deploy."""
     makefile = (REPO / "Makefile").read_text()
     assert "--delete" in makefile

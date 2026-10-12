@@ -266,3 +266,27 @@ def test_every_stored_split_is_redone_once_when_the_model_changes():
     assert conn.sql == ["DELETE FROM cc_charge_sources", "COMMIT"] and state[energy.MODEL_KEY] == str(energy.MODEL)
     assert energy.reset_sources(state.get, state.put, conn) is False and len(conn.sql) == 2, "once"
     assert energy.MODEL >= 2
+
+
+class HourConn:
+    def __init__(self, rows):
+        self.rows, self.asked = rows, []
+
+    def execute(self, sql, params=()):
+        self.asked.append((sql, params))
+        return self
+
+    def fetchall(self):
+        return self.rows
+
+
+def test_hours_are_utc_clock_hours_with_how_much_of_each_the_readings_cover():
+    lo, hi = datetime(2026, 11, 1, 7, tzinfo=timezone.utc), datetime(2026, 11, 2, 8, tzinfo=timezone.utc)
+    base = {"solar_kwh": 0.0, "home_kwh": 1.23456, "grid_in_kwh": 1.2, "grid_out_kwh": -0.0, "battery_in_kwh": 0.0, "battery_out_kwh": 0.0}
+    # 08:00 and 09:00 UTC are both 01:00 in Pacific on the night the clocks fall back: two hours, not one
+    conn = HourConn([{"hour_utc": datetime(2026, 11, 1, 8), **base, "rows": 12}, {"hour_utc": datetime(2026, 11, 1, 9), **base, "rows": 6}])
+    got = energy.hours(conn, lo, hi)
+    assert [h["hour"] for h in got] == [datetime(2026, 11, 1, 8, tzinfo=timezone.utc), datetime(2026, 11, 1, 9, tzinfo=timezone.utc)]
+    assert got[0]["home_kwh"] == 1.235 and str(got[0]["grid_out_kwh"]) == "0.0" and got[0]["coverage"] == 1.0 and got[1]["coverage"] == 0.5
+    assert conn.asked[0][1] == ("home", lo, hi) and "GROUP BY 1" in energy.HOURS_SQL and "AT TIME ZONE 'UTC'" in energy.HOURS_SQL
+    assert energy.hours(HourConn([]), lo, hi) == []

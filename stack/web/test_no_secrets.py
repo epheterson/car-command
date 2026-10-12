@@ -1,9 +1,8 @@
 """Nothing personal and nothing secret in the tracked tree.
 
-History was rewritten once, on 2026-09-06, to take two real VINs and a handful of real
-coordinates out of 134 commits. That is a thing you get to do cheaply exactly once, while
-a repository is private and has one reader. Afterwards it costs a force-push everyone has
-to notice, or a new repository. So the cheaper thing is to never add another.
+Taking a VIN or a coordinate out of history is cheap only while a repository is private
+and has one reader. Afterwards it costs a force-push everyone has to notice, or a new
+repository. So never add one.
 
 This runs over `git ls-files`, not the working directory, because an untracked file is
 not the problem — `stack/.env` is supposed to exist and is supposed to hold secrets.

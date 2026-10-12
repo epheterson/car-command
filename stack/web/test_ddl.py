@@ -2,9 +2,9 @@
 
 On an installed system every table already exists, so a statement in the wrong order is
 invisible: `ALTER TABLE x` before `CREATE TABLE IF NOT EXISTS x` succeeds on a database
-that has run before and fails only on an empty one. That is exactly what happened —
-`cc_charge_facts` was altered a line before it was created, so the site could not start
-on a fresh install at all, and nothing noticed because no fresh install had been tried.
+that has run before and fails only on an empty one. One bad ordering —
+`cc_charge_facts` altered a line before it was created — would stop the site starting
+on a fresh install at all.
 
 These checks read the DDL as text. They need no database, which is the point: the bug
 only appears where there is no database to test against.
@@ -224,8 +224,8 @@ def test_the_geocoder_decision_is_written_before_the_warm_up():
 
 def test_the_startup_schema_cannot_hold_the_site_shut():
     """A CREATE or ALTER that cannot get its lock queues, and every reader queues behind
-    it. That turned a deploy into a site-wide outage twice — eight minutes on 2026-09-05
-    and six on 2026-09-06, both while a backfill held a table. The schema step gives up
+    it. That can turn a deploy into a site-wide outage while a backfill
+    holds a table. The schema step gives up
     instead of waiting."""
     src = (HERE / "app.py").read_text()
     body = src[src.index("def apply_schema(") : src.index("async def lifespan", src.index("def apply_schema("))]
@@ -312,7 +312,7 @@ def test_the_two_places_that_price_a_rated_mile_agree():
 def test_no_table_created_at_startup_references_another_with_a_foreign_key():
     """pg_restore --clean of a dump taken before a table existed drops the referenced
     table's primary key and fails on the dependency, so an upgrade-with-data restore
-    dies. Found by the staging run of 2026-09-17: cc_service_files pointed at cc_service.
+    dies. Found by a staging run: cc_service_files pointed at cc_service.
     Deletes are done by the routes instead."""
     import re
 

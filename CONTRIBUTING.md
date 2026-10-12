@@ -61,7 +61,7 @@ Screenshots, the README loop and the social card come only from the demo car aro
 | `make replay VIN=… FROM=…` | rebuild a TeslaFi car's drives and charges from its raw feed rows |
 | `make lucid-login`, `make secret-key`, `make tesla-net-key` | credentials, asked for on the host |
 
-`Makefile.local` (untracked) holds your host (`MINI`, `DEST`).
+`Makefile.local` (untracked) holds your host (`MINI`, `DEST`) and, for `make import-teslamate`, the car (`TM_VIN`, `TM_NAME`, `TM_MODEL`, `TM_CAPACITY`, `TM_MAKE`) and TeslaMate's database container and user (`TM_DB`, `TM_DB_USER`). `make staging`, `import`, `import-teslamate`, `discover`, `replay`, `teslafi-history`, `secret-key`, `tesla-net-key`, `tesla-up`, `signin-reset`, `setup-code`, `deploy` and `web` run over ssh on that host; on a local checkout use the `docker compose` commands in the docs.
 
 ## Releasing
 

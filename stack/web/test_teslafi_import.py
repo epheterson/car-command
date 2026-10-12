@@ -72,7 +72,7 @@ def csv_text(rows):
 
 def build():
     r = []
-    # asleep, no vin/name reported (real exports blank these while sleeping)
+    # asleep, no vin/name reported (exports blank these while sleeping)
     for i in range(5):
         r.append(row(f"2026-08-01 00:{i:02d}:00", display_name="", vin="", state="asleep", charging_state="", battery_level="80"))
     # drive 41: 10 min, 6 miles
@@ -110,7 +110,7 @@ def build():
                 longitude="-74.01",
             )
         )
-    # junk values a real export contains
+    # junk values an export can contain
     r.append(row("2026-08-01 11:00:00", shift_state="None", battery_level="89", outside_tempF="NULL", latitude="<invalid>", longitude=""))
     return csv_text(r)
 

@@ -16,7 +16,7 @@ cc_charge_sources beside the charge facts; pages read a join and never integrate
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import cost
 
@@ -364,6 +364,10 @@ WHERE c.vin = %s AND c.session_start_date IS NOT NULL AND c.session_end_date IS 
   AND (s.session_id IS NULL
        OR (s.status = 'none' AND (s.checked_at < now() - interval '1 day'
            OR EXISTS (SELECT 1 FROM cc_energy e1 WHERE e1.site = %s AND e1.at >= c.session_start_date - interval '5 minutes' AND e1.at < c.session_end_date AND e1.updated_at > s.checked_at)))
+       -- a charge whose kWh grew after it was split (a streamed session's meter catching up):
+       -- an ok split is scaled to the kWh, so its parts stop adding up to it
+       OR (s.status = 'ok' AND COALESCE(s.solar_kwh, 0) + COALESCE(s.battery_kwh, 0) + COALESCE(s.grid_kwh, 0) > 0
+           AND ABS(COALESCE(s.solar_kwh, 0) + COALESCE(s.battery_kwh, 0) + COALESCE(s.grid_kwh, 0) - f.kwh) > 0.05)
        -- a split made across a gap, once readings have landed in its window since
        OR (s.status = 'ok' AND s.approx
            AND EXISTS (SELECT 1 FROM cc_energy e1 WHERE e1.site = %s AND e1.at >= c.session_start_date - interval '5 minutes' AND e1.at < c.session_end_date AND e1.updated_at > s.checked_at)))
@@ -430,15 +434,20 @@ def fill_charge_sources(conn, vin: str, tz, batch: int = BATCH, site: str = SITE
 
 # ---- the day so far
 
-TOTALS_SQL = f"""
-SELECT SUM(GREATEST(COALESCE(solar_w, 0), 0) * h) / 1000 AS solar_kwh,
+KWH_KEYS = ("solar_kwh", "home_kwh", "grid_in_kwh", "grid_out_kwh", "battery_in_kwh", "battery_out_kwh")
+KWH_SUMS = """SUM(GREATEST(COALESCE(solar_w, 0), 0) * h) / 1000 AS solar_kwh,
        SUM(COALESCE(home_w, 0) * h) / 1000 AS home_kwh,
        SUM(GREATEST(COALESCE(grid_w, 0), 0) * h) / 1000 AS grid_in_kwh,
        SUM(GREATEST(-COALESCE(grid_w, 0), 0) * h) / 1000 AS grid_out_kwh,
        SUM(GREATEST(-COALESCE(battery_w, 0), 0) * h) / 1000 AS battery_in_kwh,
        SUM(GREATEST(COALESCE(battery_w, 0), 0) * h) / 1000 AS battery_out_kwh,
-       COUNT(*) AS rows
-FROM (SELECT e.*, {ROW_HOURS} AS h FROM cc_energy e WHERE e.site = %s AND e.at >= %s AND e.at < %s) q"""
+       COUNT(*) AS rows"""
+ROWS_IN = f"(SELECT e.*, {ROW_HOURS} AS h FROM cc_energy e WHERE e.site = %s AND e.at >= %s AND e.at < %s) q"
+TOTALS_SQL = f"SELECT {KWH_SUMS}\nFROM {ROWS_IN}"
+# By UTC hour: every hour of a day the clocks change is its own, and a whole hour is the same
+# hour in any zone with whole-hour offsets. The reader puts it on its own clock.
+HOURS_SQL = f"SELECT date_trunc('hour', at AT TIME ZONE 'UTC') AS hour_utc, {KWH_SUMS}\nFROM {ROWS_IN}\nGROUP BY 1 ORDER BY 1"
+HOUR_ROWS = 3600 // CLOUD_S  # rows in a whole hour
 
 
 def totals(conn, lo: datetime, hi: datetime, site: str = SITE) -> dict | None:
@@ -447,4 +456,17 @@ def totals(conn, lo: datetime, hi: datetime, site: str = SITE) -> dict | None:
     row = conn.execute(TOTALS_SQL, (site, lo, hi)).fetchone()
     if not row or not row["rows"]:
         return None
-    return {k: round(float(row[k] or 0), 3) for k in ("solar_kwh", "home_kwh", "grid_in_kwh", "grid_out_kwh", "battery_in_kwh", "battery_out_kwh")}
+    return {k: round(float(row[k] or 0), 3) for k in KWH_KEYS}
+
+
+def hours(conn, lo: datetime, hi: datetime, site: str = SITE) -> list[dict]:
+    """kWh per clock hour in [lo, hi), oldest first: the hour's UTC start, its kWh, and how
+    much of it the readings cover (1.0 is all twelve rows). An hour with no rows is left out,
+    so a gap reads as a gap and not as a house that used nothing. What /api/energy/hours
+    answers, for a reader that prices the house by the hour (the energy dashboard's bill)."""
+    out = []
+    for r in conn.execute(HOURS_SQL, (site, lo, hi)).fetchall():
+        hour = r["hour_utc"].replace(tzinfo=timezone.utc)
+        # + 0.0: a sum of negated zeros is -0.0, which JSON would print as such
+        out.append({"hour": hour, **{k: round(float(r[k] or 0), 3) + 0.0 for k in KWH_KEYS}, "coverage": round(min(r["rows"] / HOUR_ROWS, 1.0), 3)})
+    return out

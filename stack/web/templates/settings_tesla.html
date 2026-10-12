@@ -10,15 +10,15 @@
 {# What a step needs from you, or what it set up #}
 {% macro body(s) -%}
 {% if s.id == 'app' and s.state != 'done' %}
-<div class="set-s">Make a Fleet API app at <a href="https://developer.tesla.com" target="_blank" rel="noopener">developer.tesla.com</a> with these values {% call i.info("The app") %}Grant types: Authorization Code and Machine-to-Machine. Tesla bills API use; prices are on developer.tesla.com. Put its Client ID and Secret in stack/.env.{% endcall %}</div>
+<div class="set-s">Make a Fleet API app at <a href="https://developer.tesla.com" target="_blank" rel="noopener">developer.tesla.com</a> with these values {% call i.info("The app") %}Grant types: Authorization Code and Machine-to-Machine. Tesla bills API use; prices are on developer.tesla.com. Put its Client ID and Secret in stack/.env, or as -e on the one container, then recreate the site's container.{% endcall %}</div>
 <table class="pairs"><tbody>
   <tr><th>Allowed origin</th><td><code>{{ 'https://' ~ tesla_domain if tesla_domain else 'https://your.domain' }}</code> <button type="button" class="btn sm copy" data-copy="{{ 'https://' ~ tesla_domain if tesla_domain else '' }}">Copy</button></td></tr>
   <tr><th>Redirect URI</th><td><code>{{ tesla_redirect or 'https://your.domain/settings/sources/tesla/callback' }}</code> <button type="button" class="btn sm copy" data-copy="{{ tesla_redirect }}">Copy</button></td></tr>
   <tr><th>Scopes</th><td>{{ tesla_scopes|join(', ') }}</td></tr>
-  <tr><th>In <code>.env</code></th><td><code>TESLA_CLIENT_ID=…</code><br><code>TESLA_CLIENT_SECRET=…</code><br><code>TESLA_DOMAIN={{ tesla_domain or 'your.domain' }}</code></td></tr>
+  <tr><th>In <code>.env</code> or <code>-e</code></th><td><code>TESLA_CLIENT_ID=…</code><br><code>TESLA_CLIENT_SECRET=…</code><br><code>TESLA_DOMAIN={{ tesla_domain or 'your.domain' }}</code></td></tr>
 </tbody></table>
 {% elif s.id == 'app' %}
-<div class="set-s">Client ID and Secret in stack/.env · {{ tesla_domain }}</div>
+<div class="set-s">Client ID and Secret in the environment · {{ tesla_domain }}</div>
 {% endif %}
 {% if s.id == 'domain' %}
 <div class="set-s">The key at <code>https://{{ key_domain or tesla_domain }}/.well-known/appspecific/com.tesla.3p.public-key.pem</code> {% call i.info("The key") %}Public, with no sign-in in front of it.{% if key_domain and key_domain != tesla_domain %} Tesla allows one domain per app, so the key is served at the stream address and {{ tesla_domain }} stays the sign-in page.{% endif %} The private half is sealed here.{% endcall %}</div>

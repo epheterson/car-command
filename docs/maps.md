@@ -8,11 +8,11 @@ Place and street names can come from a public geocoder you turn on. This add-on 
 docker compose -f stack/docker-compose.yml --profile maps up -d maps
 ```
 
-Set `MAPS_URL=http://maps:8090` in `stack/.env` and restart the site. It is off by default, and the rest of the stack works the same without it.
+Set `MAPS_URL=http://maps:8090` in `stack/.env` and recreate the site so it reads it: `docker compose -f stack/docker-compose.yml up -d --no-deps web` (a plain restart keeps the old environment). It is off by default, and the rest of the stack works the same without it.
 
 ## How it gets its maps
 
-It downloads regions as your cars need them: the first drive into a new area queues that area's OpenStreetMap extract from Geofabrik, one at a time, and builds a local map and place index from it. Regions are capped at about 700 MB of source data, so a big state is split (California comes as NorCal and SoCal) and a small one comes whole. Settings › Maps shows the queue and what is built, and adds or removes a region by hand. `make maps-check` compares local names with public ones for the busiest stops, without printing a coordinate.
+It downloads regions as your cars need them: the first drive into a new area queues that area's OpenStreetMap extract from Geofabrik, one at a time, and builds a local map and place index from it. Regions are capped at about 700 MB of source data, so a big state is split (California comes as NorCal and SoCal) and a small one comes whole. Settings › Maps shows the queue and what is built, and adds or removes a region by hand. `make maps-check` (over ssh; locally `docker compose -f stack/docker-compose.yml exec -T web python3 maps_check.py`) compares local names with public ones for the busiest stops, without printing a coordinate.
 
 ## Drives drawn on the roads
 

@@ -4,6 +4,7 @@ MINI      ?= user@your-docker-host
 DEST      ?= ~/docker/carcommand/
 TM_DB     ?= teslamate-db
 TM_DB_USER ?= teslamate
+TM_MAKE   ?= Tesla
 
 .PHONY: setup backup restore staging wheel deploy web logs test secret-key tesla-net-key tesla-up tesla-restart tesla-logs connector-lock one-container one-container-run one-container-demo one-container-multiarch one-container-move media signin-reset setup-code
 
@@ -21,8 +22,8 @@ backup:
 restore:
 	./scripts/restore.sh $(FILE) $(ARGS)
 
-# A second stack on the host, holding a restored copy of production's data, to try a
-# deploy against before the real one. Both outages so far would have shown up here.
+# A second stack on the host, holding a restored copy of the live data, to try a
+# deploy against before the real one. Schema and backfill problems show up here first.
 #   make staging          bring it up from the newest dump and check every page
 #   make staging ARGS=down   remove it
 staging:
@@ -67,7 +68,7 @@ lucid-login:  ## mint the Lucid refresh token into stack/secrets/lucid-token.jso
 	mkdir -p stack/secrets && chmod 700 stack/secrets
 	cd stack && docker compose run --rm -it --no-deps -v "$$(pwd)/secrets:/out" cc python3 /app/lucid_login.py /out/lucid-token.json
 
-# Tesla's live stream (README › Tesla live stream). The auth key is typed on the host, unseen,
+# Tesla's live stream (docs/tesla-stream.md). The auth key is typed on the host, unseen,
 # into secrets/tailscale-authkey; it never passes through this machine's disk or the chat.
 tesla-net-key:  ## keep the Funnel node's Tailscale auth key on the host (asks once, not echoed)
 	rsync -a scripts/ $(MINI):$(DEST)scripts/
@@ -92,7 +93,7 @@ web:
 signin-reset:  ## locked out? forget the sign-in switch chosen in Settings and the Cloudflare Access pin (the password is kept), then restart the site
 	ssh $(MINI) 'cd $(DEST) && export PATH=$$PATH:/usr/local/bin && docker compose exec -T web python3 signin_reset.py && docker compose restart web'
 
-setup-code:  ## print the setup code: the first password, or turning sign-in on, needs it from anywhere but the machine itself
+setup-code:  ## print the setup code: the first password needs it after the first hour, and turning sign-in on always does
 	ssh $(MINI) 'cd $(DEST) && export PATH=$$PATH:/usr/local/bin && docker compose exec -T web python3 setup_code.py'
 
 logs:
@@ -163,4 +164,4 @@ maps-check:
 # Dumps six tables read-only from TeslaMate's database container (TM_DB, user and database TM_DB_USER),
 # copies them into web, loads. ARGS=--dry-run to look first.
 import-teslamate:
-	ssh $(MINI) 'set -e; mkdir -p /tmp/tm; for t in positions drives charging_processes charges states updates; do PATH=$$PATH:/usr/local/bin docker exec $(TM_DB) psql -U $(TM_DB_USER) -d $(TM_DB_USER) -At -c "\\copy (select * from $$t) to stdout with csv header" > /tmp/tm/$$t.csv; done; cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose cp /tmp/tm web:/tmp/tm && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 teslamate_load.py /tmp/tm --vin $(TM_VIN) --name $(TM_NAME) --model $(TM_MODEL) --capacity $(TM_CAPACITY) $(ARGS)'
+	ssh $(MINI) 'set -e; mkdir -p /tmp/tm; for t in positions drives charging_processes charges states updates; do PATH=$$PATH:/usr/local/bin docker exec $(TM_DB) psql -U $(TM_DB_USER) -d $(TM_DB_USER) -At -c "\\copy (select * from $$t) to stdout with csv header" > /tmp/tm/$$t.csv; done; cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose cp /tmp/tm web:/tmp/tm && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 teslamate_load.py /tmp/tm --vin $(TM_VIN) --name $(TM_NAME) --model $(TM_MODEL) --capacity $(TM_CAPACITY) --manufacturer $(TM_MAKE) $(ARGS)'

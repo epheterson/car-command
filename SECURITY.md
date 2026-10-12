@@ -10,7 +10,7 @@ Say what you found, how to reproduce it, and what an attacker could reach. You'l
 
 ## Supported versions
 
-The latest release. Fixes are not backported; upgrading is a `docker pull` (under compose, a `git pull` and a rebuild), and the database upgrades in place.
+The latest release. Fixes are not backported; upgrading is a `docker pull` (under compose, checking out the newest release tag and a rebuild), and the database upgrades in place.
 
 ## In scope
 

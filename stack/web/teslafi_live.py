@@ -272,7 +272,7 @@ class TeslaFiPoller:
         """Fill the hole between the newest thing any import wrote for this car and now
         from TeslaFi's history summaries, once per car per start. The feed only ever
         hands over the current reading, so a token added weeks after the last export
-        (one car, 2026-09-28: 24 days) would otherwise leave those weeks empty."""
+        (a gap of weeks) would otherwise leave those weeks empty."""
         import teslafi_history
 
         with self.connect() as conn:

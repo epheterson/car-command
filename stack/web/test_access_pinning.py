@@ -1,4 +1,4 @@
-"""The third review of sign-in: who may pin Cloudflare Access, verdicts that outlive their token, turning it off,
+"""Sign-in edges: who may pin Cloudflare Access, verdicts that outlive their token, turning it off,
 apps that skip the Allow page, and the smaller things."""
 
 import asyncio

@@ -1,7 +1,7 @@
 # The install path, exercised the way a stranger and an operator actually meet it.
 #
-# Every serious bug found on 2026-09-06 was in this path, and no unit test could see any
-# of them: a statement that succeeds on a database which has run before and fails on an
+# The serious install-time bugs lived in this path, and no unit test could see them:
+# a statement that succeeds on a database which has run before and fails on an
 # empty one stays invisible until something stands up an empty one. So CI does.
 #
 # Two ways in, and they fail differently:

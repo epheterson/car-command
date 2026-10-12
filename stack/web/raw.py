@@ -4,8 +4,8 @@ Drives, charges and facts are worked out from readings, and the working-out chan
 a threshold moves, a bug is found, a new figure is wanted for old days. With the raw
 readings kept, any of it can be run again over the whole history (`make replay`).
 Without them, what was derived wrongly is derived wrongly
-for ever — one car's erased weeks came back on 2026-09-28 only because the feed's raw
-rows were still there.
+for ever. A car's erased weeks can be recovered only because the feed's raw
+rows are still there.
 
 Three sources, three stores:
 - the TeslaFi feed: `cc_teslafi_rows`, one row a poll, written by `teslafi_live`; the

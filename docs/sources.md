@@ -6,7 +6,7 @@ Add sources on **Settings › Cars and sources**. Each is tested before it is ke
 
 | Source | Live data | Drive route and power | Charge curve | History before you connect | Setup |
 |---|---|---|---|---|---|
-| Tesla, direct | about once a second with the [stream](tesla-stream.md) | both | yes | import from TeslaFi or TeslaMate | a Tesla developer app, its key on your domain, a tap per car |
+| Tesla, direct | about once a second with the [stream](tesla-stream.md) (Compose only for now); none without it | both | yes | import from TeslaFi or TeslaMate | a [Tesla developer app](tesla-app.md), its key on your domain, a tap per car |
 | TeslaFi | each minute | both | yes | the export | a token per car |
 | TeslaMate | as TeslaMate records | both | yes | its database | its database address |
 | Lucid | each minute, every 15 s driving | route only | yes | none | e-mail and password, once |
@@ -22,7 +22,7 @@ Speed, tires, cabin temperature, Halo Secure, plug state, pack health and the up
 
 Pick one route per car.
 
-- **Direct.** **Settings › Cars and sources › Connect Tesla** walks through it: your own app at developer.tesla.com, its key published on your domain and registered with Tesla, Sign in with Tesla, and the key added to each car from your phone. Tesla bills its API per use and asks for a card; see developer.tesla.com for prices. The [live stream](tesla-stream.md) then needs one public address, with no port opened at home. The same sign-in reads what Tesla billed for each Supercharger session ([costs](costs.md)).
+- **Direct.** **Settings › Cars and sources › Connect Tesla** walks through it: your own app at developer.tesla.com, its key published on your domain and registered with Tesla, Sign in with Tesla, and the key added to each car from your phone. [Making the Tesla app](tesla-app.md) covers each field. It needs the site on HTTPS at a hostname you control, `TESLA_CLIENT_ID`, `TESLA_CLIENT_SECRET` and `TESLA_DOMAIN` in `stack/.env` (one container: `-e`, then recreate it), and the key's path open to the internet with no sign-in in front of it. Tesla bills its API per use and asks for a card; see developer.tesla.com for prices. Drives and charges come only from the [live stream](tesla-stream.md), which needs Docker Compose for now and one public address, with no port opened at home. Without the stream, this route gives the car list, what Tesla billed for each Supercharger session ([costs](costs.md)) and the Powerwall, but no drives or charges.
 - **TeslaMate, live.** Add its Postgres address (or `TESLAMATE_DB_URL` in `stack/.env`). Car Command reads positions, drives, charges, sleeps and software updates: the newest position every minute, and a rolling window replayed every ten minutes. It writes nothing to TeslaMate. Its database must be reachable from this stack: publish its port, or join the two compose networks.
 - **TeslaFi feed.** A TeslaFi API token per car (TeslaFi › Settings › Advanced › API). It polls once a minute and replays the last 36 hours every hour through the same code as the export.
 - **History only.** Import a TeslaFi export or a TeslaMate database once; add live data later.
@@ -91,16 +91,45 @@ make import FILE=path/to/TeslaFiData.csv.gz          # over ssh, on the host in 
 # or, on the machine running the stack:
 docker compose -f stack/docker-compose.yml cp TeslaFiData.csv.gz web:/tmp/TeslaFiData.csv.gz
 docker compose -f stack/docker-compose.yml exec -T web python3 teslafi_load.py /tmp/TeslaFiData.csv.gz
+# or, in the one container:
+docker cp TeslaFiData.csv.gz carcommand:/tmp/TeslaFiData.csv.gz
+docker exec carcommand carcommand web python3 teslafi_load.py /tmp/TeslaFiData.csv.gz
 ```
+
+Add `--dry-run` (with `make import`, `ARGS=--dry-run`) to read the file and print what it would load, without writing.
 
 The loader streams the file and rebuilds drives, charges, positions, firmware history and state the way the live logger would. Loading the same file twice changes nothing. How the columns are read is at the top of `stack/web/teslafi_import.py`.
 
-When a TeslaFi feed starts weeks after its last export, the first poll fills the gap from TeslaFi's drive and charge summaries (endpoints, odometer, levels, energy, max speed, temperature; no routes or curves). `make teslafi-history VIN=… FROM=… [TO=…]` does the same by hand.
+When a TeslaFi feed starts weeks after its last export, the first poll fills the gap from TeslaFi's drive and charge summaries (endpoints, odometer, levels, energy, max speed, temperature; no routes or curves). `make teslafi-history VIN=… FROM=… [TO=…]` (over ssh) does the same by hand; locally, `docker compose -f stack/docker-compose.yml exec -T web python3 teslafi_history.py VIN FROM [TO]`, with dates as `2026-09-04`.
 
-**TeslaMate.** `make import-teslamate` copies a car's history out of a running TeslaMate (read-only dumps; set `TM_VIN`, `TM_NAME`, `TM_MODEL`, `TM_CAPACITY` in `Makefile.local`) and stops where Car Command's own logging began.
+**TeslaMate.** Dump six tables from TeslaMate's database as CSV (read-only), copy them in, and load them. It stops where Car Command's own logging of that car began, so the two never overlap. Find TeslaMate's database container with `docker ps`: its own compose file names it `teslamate-database-1`, with user and database `teslamate`.
 
-**Naming places.** `make discover` clusters trip and charge endpoints and names each cluster once: from the [local maps add-on](maps.md) when it runs, or the public Nominatim geocoder if you turned it on (one request a second, coordinates rounded to three decimals). A name you set on the Places page is not replaced.
+```sh
+mkdir tm
+for t in positions drives charging_processes charges states updates; do
+  docker exec teslamate-database-1 psql -U teslamate -d teslamate -At \
+    -c "\copy (select * from $t) to stdout with csv header" > tm/$t.csv
+done
+# compose:
+docker compose -f stack/docker-compose.yml cp tm web:/tmp/tm
+docker compose -f stack/docker-compose.yml exec -T web python3 teslamate_load.py /tmp/tm \
+  --vin <VIN> --name <name> --model "Model 3" --capacity 75
+# the one container:
+docker cp tm carcommand:/tmp/tm
+docker exec carcommand carcommand web python3 teslamate_load.py /tmp/tm \
+  --vin <VIN> --name <name> --model "Model 3" --capacity 75
+```
+
+- `--vin` and `--name`: the car's VIN and the name the site shows. Both are required.
+- `--manufacturer`: the default is `Tesla`; name the make for a car logged through a bridge (for example `Lucid`).
+- `--model`: free text, shown on the site. `--capacity`: the usable pack in kWh, used to work out a drive's energy from its charge levels; Settings can change it later. Both optional.
+- `--dry-run`: read and count, write nothing. `--until 2026-09-04T05:06:29Z` cuts at a time of your choosing instead of where live logging began.
+- The dump reads every car in TeslaMate as one. With several cars, dump one at a time: add `where car_id = N` to each table's select, and for `charges`, `where charging_process_id in (select id from charging_processes where car_id = N)`.
+
+`make import-teslamate` (over ssh) does the same on the host in `Makefile.local`, with `TM_VIN`, `TM_NAME`, `TM_MODEL` and `TM_CAPACITY` set there (and `TM_MAKE` for a make other than Tesla); `TM_DB` (default `teslamate-db`) names TeslaMate's database container and `TM_DB_USER` (default `teslamate`) its user and database.
+
+**Naming places.** `make discover` (over ssh; locally `docker compose -f stack/docker-compose.yml exec -T web python3 discover.py`, or `docker exec carcommand carcommand web python3 discover.py`) clusters trip and charge endpoints and names each cluster once: from the [local maps add-on](maps.md) when it runs, or the public Nominatim geocoder if you turned it on (one request a second, coordinates rounded to three decimals). A name you set on the Places page is not replaced.
 
 ## Raw readings
 
-Every reading is kept as it arrived, so drives and charges can be worked out again after a fix (`make replay` for a TeslaFi feed), and a day's readings are a page and a CSV. Once an hour per car, a data check looks for readings that arrived but weren't logged, odometer miles in no drive, a failed rebuild, or a quiet source. Findings show in the footer and on Settings › Data, and go out once a day as an alert.
+Every reading is kept as it arrived, so drives and charges can be worked out again after a fix (`make replay VIN=… FROM=…` over ssh for a TeslaFi feed, or locally `docker compose -f stack/docker-compose.yml exec -T web python3 teslafi_live.py VIN FROM`), and a day's readings are a page and a CSV. Once an hour per car, a data check looks for readings that arrived but weren't logged, odometer miles in no drive, a failed rebuild, or a quiet source. Findings show in the footer and on Settings › Data, and go out once a day as an alert.

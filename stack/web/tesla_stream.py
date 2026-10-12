@@ -147,8 +147,8 @@ FILL_ASLEEP = timedelta(minutes=15)
 KM = 0.621371
 # The car reports pack current negative while the pack discharges: two cars, parked and
 # unplugged (DetailedChargeState Disconnected), read -0.2 to -0.9 A for half an hour, their
-# electronics' draw of about 150 W, and never above 0 (2026-10-05, test_tesla_units.py). So
-# power drawn is -volts x amps: positive at the wheels, negative regenerating. A first real
+# electronics' draw of about 150 W, and never above 0 (see test_tesla_units.py). So
+# power drawn is -volts x amps: positive at the wheels, negative regenerating. A real
 # drive is the last check.
 PACK_SIGN = -1.0
 

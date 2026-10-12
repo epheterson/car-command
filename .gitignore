@@ -5,17 +5,10 @@ __pycache__/
 .pytest_cache/
 Makefile.local
 backups/
+.venv/
+.ruff_cache/
+.DS_Store
+*.profraw
+*.dump
+uv.lock
 
-# Playwright MCP output (screenshots, snapshots)
-.playwright-mcp/
-.superpowers/
-
-# Planning and working notes live outside the repository and are linked in here
-# so the paths in CLAUDE.md still open; the repository carries code, tests and the README.
-/PLAN.md
-/docs/plans
-/docs/status.md
-/docs/release-readiness.md
-/docs/tesla-plan.md
-/docs/teslafi-*.md
-/docs/ideas-from-elsewhere.md

@@ -2,7 +2,13 @@
 
 ## What you need
 
-Docker on an amd64 or arm64 host: a small server, a NAS that runs containers, a Mac mini, a Raspberry Pi 5 with an SSD. Only the optional [local maps add-on](maps.md) needs much disk.
+Docker on an amd64 or arm64 host: a small server, a NAS that runs containers, a Mac mini, a Raspberry Pi 5 with an SSD.
+
+- **Docker.** Compose installs also need Docker Compose v2 (`docker compose`, not `docker-compose`), `git`, `make`, `bash` and `openssl`.
+- **Memory:** about 650 MB for the site, the database and the connector together (site 330 MB, database 170 MB, connector 125 MB). The [local maps add-on](maps.md) uses about 2.5 GB more.
+- **Disk:** three cars with eight years of history take 1.2 GB of database. The maps add-on needs several GB more ([sizing](maps.md#sizing)).
+- **Port 3044** free on the host. It is the only port published. Move it with `-p 8080:3044` (one container) or `CC_PORT` in `stack/.env` (compose).
+- **Per source:** Lucid needs only the account. Tesla direct needs a developer.tesla.com account with a card on file and a hostname you control serving the site over HTTPS ([Tesla app](tesla-app.md)); its live stream also needs a Tailscale account with Funnel. TeslaFi needs an API token per car; TeslaMate, its database reachable from this stack.
 
 The one container is the simple way. Docker Compose runs the same parts as separate containers, and is needed for the local maps add-on and the [Tesla live stream](tesla-stream.md) for now.
 
@@ -12,11 +18,11 @@ The one container is the simple way. Docker Compose runs the same parts as separ
 docker run -d --name carcommand --restart unless-stopped --stop-timeout 30 -p 3044:3044 -v carcommand:/data ghcr.io/epheterson/car-command
 ```
 
-Get the setup code with `docker exec carcommand carcommand web python3 setup_code.py`, open port 3044 and choose a password with it. Add a source on **Settings › Cars and sources**, or import a TeslaFi export or a TeslaMate database. Units, currency, time zone and rates are in Settings.
+Get the setup code with `docker exec carcommand carcommand web python3 setup_code.py`, open `http://<host>:3044` and choose a password with it. Add a source on **Settings › Cars and sources**, or [import](sources.md#importing-history) a TeslaFi export or a TeslaMate database. Units, currency, time zone and rates are in Settings.
 
 The first start generates the database password, the connector's passwords and the key that seals your sources (`CC_SECRET_KEY`), creates the database, and starts the site and the connector.
 
-`docker exec carcommand carcommand demo` loads six weeks of a fictional car ([demo data](#try-it-with-demo-data)). `docker stop carcommand && docker rm carcommand && docker volume rm carcommand` removes it all.
+To look around before adding your own cars, run the [demo](#try-it-with-demo-data) in a container of its own. `docker stop carcommand && docker rm carcommand && docker volume rm carcommand` removes the install and all its data.
 
 `--stop-timeout 30` gives Postgres time for a clean shutdown after the site and connector stop; Docker's default is ten seconds. A database killed mid-write is not lost, but its next start replays its log. Stop the container before removing it; don't use `docker rm -f`.
 
@@ -38,7 +44,9 @@ The settings a compose install keeps in `stack/.env` are environment variables h
 
 Not used here: `DB_USER`, `DB_NAME`, `CC_PORT`, `CC_SUBNET`, `CC_TESLA_SUBNET` and `COMPOSE_PROJECT_NAME`. Publish a different port with `-p 8080:3044`.
 
-The passwords and `CC_SECRET_KEY` are read from the environment only on the first start. After that the file in `/data/secrets` wins and a different value in the environment is ignored with a warning, so a changed flag can't lock you out. To change one, change its file and restart.
+A changed `-e` takes a new container, since `docker restart` keeps the old environment: `docker stop carcommand && docker rm carcommand`, then the run line again with the new value. The data stays in the volume.
+
+The passwords and `CC_SECRET_KEY` are read from the environment only on the first start. After that the file in `/data/secrets` wins and a different value in the environment is ignored with a warning, so a changed flag can't lock you out. To change one, change its file and restart. A different `CC_SECRET_KEY` leaves every source kept in the app unreadable, and each has to be entered again.
 
 `CC_CONNECTORS` names connectors built into the image, so it is a build argument: `make one-container CC_CONNECTORS='...'`. Brands added on **Settings › Cars and sources** need no rebuild.
 
@@ -81,7 +89,19 @@ docker stop carcommand && docker rm carcommand
 docker run -d --name carcommand --restart unless-stopped --stop-timeout 30 -p 3044:3044 -v carcommand:/data ghcr.io/epheterson/car-command
 ```
 
-The data stays in the volume, and the schema upgrades at startup. An image with a newer major Postgres refuses an older database; move across with a backup from the old image and a restore with the new one.
+The data stays in the volume, and the schema upgrades at startup.
+
+An image with a newer major Postgres refuses an older database. Move across with a backup from the old image and a restore into a new volume with the new one, since the old volume holds the old major's database:
+
+```sh
+docker exec carcommand carcommand backup > carcommand.dump
+docker exec carcommand cat /data/secrets/CC_SECRET_KEY > carcommand.key
+docker stop carcommand && docker rm carcommand
+docker run --rm -i -e CC_SECRET_KEY="$(cat carcommand.key)" -v carcommand-new:/data ghcr.io/epheterson/car-command restore < carcommand.dump
+docker run -d --name carcommand --restart unless-stopped --stop-timeout 30 -p 3044:3044 -v carcommand-new:/data ghcr.io/epheterson/car-command
+```
+
+Keep the old volume until the new install looks right, then `docker volume rm carcommand`.
 
 ### Moving a compose install into the one container
 
@@ -105,19 +125,32 @@ Sign in with the same password. To go back: `docker stop carcommand` and `docker
 
 ## Docker Compose
 
+Commands here run from the checkout's root. The `make` targets marked "over ssh" run on the host named in `Makefile.local` ([another host](#running-it-on-another-host)); on the machine that runs the stack, use the `docker compose` command beside each.
+
 ```sh
 git clone https://github.com/epheterson/car-command car-command && cd car-command
+git checkout "$(git describe --tags --abbrev=0)"         # the newest release, not unreleased main
 make setup                                                # writes stack/.env with generated passwords
 docker compose -f stack/docker-compose.yml up -d db web   # Postgres, the schema, and the site
 ```
 
-The site is on port 3044. Its first page asks you to choose a password and for the setup code: run `docker compose exec web python3 setup_code.py` in the `stack` directory (`make setup-code` does the same on a remote deploy host). `make setup` never overwrites an existing `stack/.env`, which holds your database password.
+The site is on port 3044. Its first page asks you to choose a password and for the setup code: run `docker compose -f stack/docker-compose.yml exec web python3 setup_code.py` (`make setup-code` does the same over ssh). `make setup` never overwrites an existing `stack/.env`, which holds your database password.
 
 Bringing up `web` also runs a one-shot `schema` container that creates the tables, so an install can run with no connector. The connector (`cc`) starts with `docker compose -f stack/docker-compose.yml up -d` once a live source needs it ([sources](sources.md)).
 
 ## Try it with demo data
 
-`make demo` (in the one container, `docker exec carcommand carcommand demo`) generates six weeks of a fictional Model 3 around Springfield, Illinois as a TeslaFi export, imports it, and names its five places. The README's screenshots are of it. To start over: `docker compose -f stack/docker-compose.yml down -v`, or remove the container and its volume.
+`make demo` (in the one container, `docker exec carcommand carcommand demo`) generates six weeks of a fictional Model 3 around Springfield, Illinois as a TeslaFi export, imports it, and names its five places. The README's screenshots are of it.
+
+The demo car and, on an install with no plan of its own, the demo's rate plan stay in whatever install you load them into, and there is no button to remove them. Look around in a throwaway container on another port:
+
+```sh
+docker run -d --name carcommand-demo -p 3045:3044 -v carcommand-demo:/data ghcr.io/epheterson/car-command
+docker exec carcommand-demo carcommand demo        # then open http://<host>:3045
+docker stop carcommand-demo && docker rm carcommand-demo && docker volume rm carcommand-demo
+```
+
+To start a compose install over on the data only: `docker compose -f stack/docker-compose.yml down`, then `docker volume rm carcommand_pgdata`. `down -v` also removes the built maps, the brand plugins and the Tesla stream's node identity (a new node needs a new auth key).
 
 ## Signing in
 
@@ -128,19 +161,58 @@ The first password on `/setup` needs no code from this machine (loopback) or fro
 In `stack/.env` or the one container's environment:
 
 - `CC_PASSWORD` sets the password from the environment, for a scripted install.
-- `CC_AUTH=off` turns sign-in off, when a reverse proxy already decides who gets in. Cross-site request tokens are still checked. The proxy then has to be the only way in: anything that reaches the port directly, the whole LAN by default, reads every page and `/api/` without a password or token, live locations included. Publish the port on loopback (`CC_PORT=127.0.0.1:3044`) when the proxy runs on the same host, or keep sign-in on. The switch in Settings overrides this: once sign-in is turned on or off there, that choice is kept and `CC_AUTH` is no longer consulted.
+- `CC_AUTH=off` turns sign-in off, when a reverse proxy already decides who gets in. Cross-site request tokens are still checked. The proxy then has to be the only way in: anything that reaches the port directly, the whole LAN by default, reads every page and `/api/` without a password or token, live locations included. Publish the port on loopback (`CC_PORT=127.0.0.1:3044`; one container: `-p 127.0.0.1:3044:3044`) when the proxy runs on the same host, or keep sign-in on. The switch in Settings overrides this: once sign-in is turned on or off there, that choice is kept and `CC_AUTH` is no longer consulted.
 - `CF_ACCESS_TEAM` names your Cloudflare Access team and `CF_ACCESS_AUD` its application's audience tag; see Behind Cloudflare Access. `CC_ACCESS_PROXY` and `CC_ACCESS_EMAILS` narrow who may present the Access token and who counts.
 - `CC_SECRET` pins the session cookie's signing key. Unset, one is generated and kept in the database.
-- `CC_SECRET_KEY` seals the sources kept in the app (TeslaFi tokens, a TeslaMate address, the Lucid and Tesla tokens). The one container generates it; under compose, `make setup` writes one and `make secret-key` adds one to an older install. It is in no database backup: lose it and those sources have to be entered again.
+- `CC_SECRET_KEY` seals the sources kept in the app (TeslaFi tokens, a TeslaMate address, the Lucid and Tesla tokens). The one container generates it; under compose, `make setup` writes one and `make secret-key` (over ssh; locally `scripts/secret-key.sh`) adds one to an older install. It is in no database backup: lose it and those sources have to be entered again.
 
 Everything else (alert channels, other brands, Connect Tesla, the network) is in [`stack/.env.example`](../stack/.env.example).
 
+
+## Behind a reverse proxy
+
+- The proxy must add `X-Forwarded-For`. Without a proxy header, during the first hour a request from the internet could look like a home device ([Signing in](#signing-in)).
+- The site answers at `/`, `/carcommand` or `/cc`, with the prefix left on the path. Any other prefix breaks its links.
+- Live updates (`/stream` and `/api/stream`) are server-sent events; the proxy must not buffer them.
+- Keep the published port off the internet: `CC_PORT=127.0.0.1:3044` (one container: `-p 127.0.0.1:3044:3044`) when the proxy runs on the same host.
+
+nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name carcommand.your-domain.example;
+    # ssl_certificate and ssl_certificate_key as usual
+
+    location / {
+        proxy_pass http://127.0.0.1:3044;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+}
+```
+
+Caddy (it adds `X-Forwarded-For` and gets the certificate itself):
+
+```caddy
+carcommand.your-domain.example {
+    reverse_proxy 127.0.0.1:3044 {
+        flush_interval -1
+    }
+}
+```
+
+Under a path on a shared domain, proxy `/carcommand/` to `http://127.0.0.1:3044` without stripping the prefix (nginx: `location /carcommand/` with the same `proxy_pass` line, no path after the port). For [Connect Tesla](tesla-app.md), also proxy `/.well-known/appspecific/com.tesla.3p.public-key.pem` at the domain's root to the site, and set `TESLA_REDIRECT_URI` to the callback under the prefix.
 
 ## Behind Cloudflare Access
 
 If the site is published through a Cloudflare tunnel with an Access application in front of it, Cloudflare can be the sign-in, with no Car Command password at all. Setup is one line and one tap.
 
-1. Put your team and your own e-mail in `stack/.env`: `CF_ACCESS_TEAM=your-team` (the name before `.cloudflareaccess.com`; the full domain or URL works too) and `CC_ACCESS_EMAILS=you@example.com`, and restart the site.
+1. Put your team and your own e-mail in `stack/.env`: `CF_ACCESS_TEAM=your-team` (the name before `.cloudflareaccess.com`; the full domain or URL works too) and `CC_ACCESS_EMAILS=you@example.com`, and recreate the site: `docker compose -f stack/docker-compose.yml up -d --no-deps web` (one container: `-e`, then a new container).
 2. Open the site through its Cloudflare address, go to **Settings › Sign-in and API** and press **Use Cloudflare Access**. The page reads the signed token Cloudflare put on that very request, checks its signature against your team's published keys, and keeps the application's audience tag. Your team has other Access applications whose tokens are just as valid, so the tap works only for a person listed in `CC_ACCESS_EMAILS`, or with the setup code (type it beside the button), or from a password session; a service token never pins. The page learns nothing else from the request, and no host or link from it is ever kept. Sign-in is on from that moment, with no restart. **Stop using Cloudflare Access** on the same page undoes it. For a scripted install put `CF_ACCESS_AUD` (the tag, on the application's Overview page in Cloudflare) in `.env` too, and sign-in is on at start.
 
 The team is never learned from a request. Anyone can run a Cloudflare team and sign a valid token with it, so the team must already be configured, in `.env` or typed into Settings by someone signed in with the password. The tap pins only the application, only from a token of that team, and never replaces a pin.
@@ -159,7 +231,15 @@ How a request is judged:
 
 ## Locked out
 
-If you cannot get in: run `make signin-reset` on the machine you deploy from. It forgets the sign-in switch chosen in Settings and the Cloudflare Access pin, keeps the password, and restarts the site, which then starts as `.env` says. For the one container: `docker exec carcommand carcommand web python3 signin_reset.py && docker restart carcommand`. Or set `CC_PASSWORD` in `.env` and restart; it replaces the stored password.
+If you cannot get in, reset the sign-in. It forgets the sign-in switch chosen in Settings and the Cloudflare Access pin, keeps the password, and restarts the site, which then starts as `.env` says.
+
+```sh
+docker compose -f stack/docker-compose.yml exec web python3 signin_reset.py && docker compose -f stack/docker-compose.yml restart web
+docker exec carcommand carcommand web python3 signin_reset.py && docker restart carcommand   # the one container
+make signin-reset                                                                             # over ssh
+```
+
+Or set `CC_PASSWORD` and recreate the site; it replaces the stored password. Under compose: set it in `stack/.env`, then `docker compose -f stack/docker-compose.yml up -d --no-deps web`. In the one container: a new container with `-e CC_PASSWORD=...` (see [Settings](#settings)). A plain restart keeps the old environment.
 
 ## Backups under compose
 
@@ -175,9 +255,13 @@ make restore FILE=backups/carcommand-....dump
 ## Upgrades under compose
 
 ```sh
-git pull
+make backup
+git fetch --tags
+git checkout "$(git describe --tags --abbrev=0 origin/main)"   # the newest release
 docker compose -f stack/docker-compose.yml up -d --build
 ```
+
+The one container gets releases only, and a compose install should too: `git pull` on `main` runs whatever was merged last.
 
 Tables are created and columns added at startup; nothing is dropped or renamed, so an older dump restores into a newer build. A newer dump into an older build is not supported. CI upgrades an install with data in it on every change, for compose and the one container.
 

@@ -254,7 +254,7 @@ class Account:
 
 
 def worker(db, account, token, cleared):
-    db.state.setdefault(billed.BASE_KEY, "1")  # learned already (test_review_b2 learns it)
+    db.state.setdefault(billed.BASE_KEY, "1")  # learned already (test_place_bills learns it)
     return billed.BilledWorker(connect=lambda: db, access=lambda: (token, tesla_fleet.NA), fleet=lambda: account, vins=lambda conn: [ALPHA], clear=lambda conn, ids: cleared.extend(ids))
 
 

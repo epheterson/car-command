@@ -73,7 +73,7 @@ def test_the_entrypoint_does_not_hide_repeated_logs() -> None:
     carconnectivity's DuplicateFilter does self._last_log[module][levelno] before checking
     that levelno is there, so the first message a module logs at a new level raises
     KeyError inside logging.Handler.handle. The exception unwinds into whatever was
-    logging. On 2026-09-07 that was the database plugin's trip agent, which logs
+    logging. In practice that was the database plugin's trip agent, which logs
     "Starting new trip" as its first INFO after a WARNING: every drive died on its own
     log line and no trip was ever written.
     """

@@ -62,6 +62,12 @@ done <"$example"
 
 mkdir -p "$secrets"
 chmod 700 "$secrets"
+# The connector bind-mounts this file. A missing source makes Docker create a root-owned
+# directory in its place, which then breaks `make lucid-login`. Empty means no token.
+if [[ ! -e $secrets/lucid-token.json ]]; then
+    : >"$secrets/lucid-token.json"
+    chmod 600 "$secrets/lucid-token.json"
+fi
 
 cat <<EOF
 Wrote stack/.env (mode 600) with generated passwords, and stack/secrets/ (mode 700).
@@ -71,8 +77,8 @@ Next:
       The site on http://localhost:3044. It will ask you to choose a password.
       That is enough to import history from TeslaFi or TeslaMate.
 
-  To log a car live, put its credentials in stack/secrets/, adjust the connector
-  block in stack/config/carconnectivity.json.template, and add the cc service:
+  For Lucid or another brand, start the connector too, then add the car on
+  Settings › Cars and sources:
       docker compose -f stack/docker-compose.yml up -d
 
 Nothing in stack/.env or stack/secrets/ is ever committed or copied by make deploy.

@@ -223,8 +223,8 @@ RATED_MILE_BAND = (0.15, 0.6)
 # A year with fewer charges than this keeps the all-time figure. The drift being
 # corrected is about 3 % end to end over eight years, and a year measured on a handful
 # of sessions wobbles by more than that, so below this line the correction would add
-# noise rather than remove bias. The years that qualify on the real data carry 67 to 240
-# sessions each, so nothing near the threshold is actually in play.
+# noise rather than remove bias. In practice the years that qualify carry tens to hundreds
+# of sessions each, so nothing near the threshold is in play.
 YEAR_MIN_CHARGES = 25
 
 
@@ -590,8 +590,8 @@ def fill_charge_facts(
     A batch at a time, and not for tidiness. The power intervals are read for the span
     from the first session in the batch to the last, so an unbounded batch that happened
     to include a 2018 charge and a 2026 one would read eight years of them into memory
-    at once. Both outages this project has had came from a backfill that took longer
-    than anyone expected while holding something every reader wanted.
+    at once. A backfill that runs longer than expected while holding
+    a lock every reader needs takes the site down.
     """
     covered = averages.covered("electricity") if averages is not None else []
     sessions = conn.execute(
@@ -625,6 +625,10 @@ def fill_charge_facts(
           AND (f.session_id IS NULL OR (f.at_home AND f.cost IS NOT NULL AND f.off_peak_kwh IS NULL AND f.plan IS DISTINCT FROM 'entered by hand'
                                         AND COALESCE(f.cost_source, 'plan') NOT IN ('average', 'place', 'billed'))
                OR (COALESCE(f.kwh, 0) = 0 AND (c.real_charged > 0 OR c.session_end_date > now() - interval '2 days'))
+               -- a meter that kept counting after the facts were taken: a streamed session
+               -- is first read minutes in (one 24 to 78 charge stored 0.1 of its 36 kWh);
+               -- converges, as the stored figure becomes the meter's
+               OR c.real_charged > COALESCE(f.kwh, 0) + 0.05
                -- a fast charge with no price yet, once a rate for its network exists to price
                -- it at; converges as each gets a cost
                OR (f.cost IS NULL AND NOT f.at_home AND c.charging_type = 'DC' AND COALESCE(f.kwh, 0) > 0
@@ -662,15 +666,17 @@ def fill_charge_facts(
                ON CONFLICT (session_id) DO UPDATE SET off_peak_kwh = EXCLUDED.off_peak_kwh,
                    part_peak_kwh = EXCLUDED.part_peak_kwh, peak_kwh = EXCLUDED.peak_kwh, period_kwh = EXCLUDED.period_kwh,
                    region = EXCLUDED.region, at_home = EXCLUDED.at_home,
-                   -- Energy and cost too, but only over the zero: a stored figure that
-                   -- is not zero was integrated from a power the car did report, and is
-                   -- the better of the two.
-                   kwh = CASE WHEN COALESCE(cc_charge_facts.kwh, 0) = 0 THEN EXCLUDED.kwh ELSE cc_charge_facts.kwh END,
-                   cost = CASE WHEN COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL THEN EXCLUDED.cost ELSE cc_charge_facts.cost END,
-                   plan = CASE WHEN COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL THEN EXCLUDED.plan ELSE cc_charge_facts.plan END,
-                   cost_source = CASE WHEN COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL THEN EXCLUDED.cost_source ELSE cc_charge_facts.cost_source END,
-                   rate_month = CASE WHEN COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL THEN EXCLUDED.rate_month ELSE cc_charge_facts.rate_month END
-               WHERE cc_charge_facts.off_peak_kwh IS NULL OR COALESCE(cc_charge_facts.kwh, 0) = 0 OR (cc_charge_facts.cost IS NULL AND (EXCLUDED.cost IS NOT NULL OR cc_charge_facts.cost_source IS NULL))""",
+                   -- Energy and cost too, over the zero or where the new figure is
+                   -- larger: a stored figure was taken from as much of the charge as had
+                   -- been seen, so a bigger one saw more of it. A price typed in or
+                   -- billed is a total, and stands whatever the energy.
+                   kwh = CASE WHEN COALESCE(cc_charge_facts.kwh, 0) = 0 OR EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 THEN EXCLUDED.kwh ELSE cc_charge_facts.kwh END,
+                   cost = CASE WHEN (COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed'))) THEN EXCLUDED.cost ELSE cc_charge_facts.cost END,
+                   plan = CASE WHEN (COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed'))) THEN EXCLUDED.plan ELSE cc_charge_facts.plan END,
+                   cost_source = CASE WHEN (COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed'))) THEN EXCLUDED.cost_source ELSE cc_charge_facts.cost_source END,
+                   rate_month = CASE WHEN (COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed'))) THEN EXCLUDED.rate_month ELSE cc_charge_facts.rate_month END
+               WHERE cc_charge_facts.off_peak_kwh IS NULL OR COALESCE(cc_charge_facts.kwh, 0) = 0 OR EXCLUDED.kwh > cc_charge_facts.kwh + 0.05
+                     OR (cc_charge_facts.cost IS NULL AND (EXCLUDED.cost IS NOT NULL OR cc_charge_facts.cost_source IS NULL))""",
             facts,
         )
     return len(facts)
@@ -790,7 +796,7 @@ def drop_orphans(conn) -> None:
 
 def ensure_tables(conn) -> None:
     """Run once at startup and by the loaders. Never per tick: an ALTER TABLE queues behind any long
-    statement and, while it waits, blocks every reader of the table (the whole site, 2026-09-05)."""
+    statement and, while it waits, blocks every reader of the table (the whole site)."""
     conn.execute(DDL)
     conn.execute(billed.DDL)
 
@@ -831,8 +837,8 @@ def fill_facts(
         fill_vehicle_year_facts(conn, vin, tz)
     # Once a day, and on its own stamp. Thirteen seconds a car, which is affordable
     # daily and would not be per tick — and is only safe at all because the schema lock
-    # is let go before any of this runs. That was not true on 2026-09-11 and it took the
-    # site down.
+    # is let go before any of this runs. If the lock were held through the backfill, every
+    # reader of the table (the whole site) would wait on it.
     if not fresh_parked:
         fill_parked_facts(conn, vin)
     conn.commit()

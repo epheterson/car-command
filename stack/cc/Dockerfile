@@ -27,7 +27,7 @@ COPY render_config.py entrypoint.sh healthcheck.py init_db.py lucid_login.py sup
 ENV PYTHONPATH=/app
 RUN chmod +x entrypoint.sh
 
-# Two users. The supervisor runs as root, only to read the vault key and the passwords the
+# Two users. The supervisor runs as root, only to read the sealing key and the passwords the
 # entrypoint moves into root-only files, and to write CarConnectivity's config. Everything
 # that runs code from elsewhere (CarConnectivity, its connectors and plugins, pip, the
 # import check of a new connector) runs as `carcommand`, without them (privsep.py).

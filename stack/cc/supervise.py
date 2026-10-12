@@ -671,8 +671,8 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s supervise: %(message)s")
     # No --hide-repeated-log. Its DuplicateFilter indexes self._last_log[module][levelno]
     # before checking that levelno is present, so the first message a module logs at a new
-    # level raises KeyError inside logging. The exception unwinds through the caller, and on
-    # 2026-09-07 that caller was the database plugin's trip agent: every attempt to start a
+    # level raises KeyError inside logging. The exception unwinds through the caller, and in
+    # practice that caller was the database plugin's trip agent: every attempt to start a
     # trip died on its own log line. Reported upstream.
     privsep.load_secrets(os.environ)  # the entrypoint moved them out of the environment
     run_dir = privsep.RUN_DIR

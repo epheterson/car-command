@@ -37,7 +37,7 @@ def _now():
 
 # A download that stalls or meets a busy mirror is tried again at once, on a new connection,
 # before the step fails: one failed step costs an hour's backoff, and Geofabrik's servers drop
-# or stall single requests when they are loaded (seen 2026-10-06) while the next one answers.
+# or stall single requests when they are loaded, while the next one answers.
 TRIES, TRY_PAUSE_S = 3, 10
 
 

@@ -2,7 +2,11 @@
 
 Planned after 0.1, roughly in order, with no dates. Each item ships when it works on real cars. Ideas and votes go to [Discussions › Ideas](https://github.com/epheterson/car-command/discussions/categories/ideas); a thumbs-up on an issue counts.
 
-## 0.2: commands
+## Next: the Tesla stream in the one container
+
+The Tesla live stream runs only under Docker Compose today. The receiver and its Tailscale Funnel move into the one container, switched on by a Tailscale auth key, so a Tesla owner gets live drives and charges without a second stack.
+
+## Then: commands
 
 Commands to the car, in three tiers, so the owner decides how much the site can do.
 
@@ -14,13 +18,10 @@ Commands to the car, in three tiers, so the owner decides how much the site can 
 
 Not planned: anything that moves the car, software updates, PIN or speed-limit changes, key management.
 
-- **Tesla:** signed commands through Tesla's signing proxy, run inside the one container with the virtual key Connect Tesla already paired. The web process doesn't hold the key.
+- **Tesla:** signed commands with the virtual key Connect Tesla already paired.
 - **Lucid:** through the CarConnectivity connector, which already holds the token.
+- **Powerwall:** backup reserve and mode.
 - Every command is logged and shown on the car's page; tier 2 and 3 also send an alert. Commands are rate limited, POST-only with a CSRF token, and one switch turns them all off. A new install starts with commands off.
-
-## 0.2: Powerwall
-
-A Powerwall card on Now and, for each home charge, how much came from solar and the battery. Built: see [Sources](sources.md#powerwall). Still to come: commands (backup reserve, mode). The gateway on the home network is not read: Tesla's newer firmware removed its web login.
 
 ## An MCP server
 

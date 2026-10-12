@@ -1,7 +1,6 @@
 """psycopg reads every % in a query as a placeholder, comments included.
 
-A SQL comment in facts.py that said "40→90 %" took the snapshot hook down for twenty
-minutes on 2026-09-17: facts, summaries and the feed rebuild all failed with
+A SQL comment in facts.py that said "40→90 %" took the snapshot hook down: facts, summaries and the feed rebuild all failed with
 "incomplete placeholder: '%'". A render test cannot see it and the unit tests mock the
 connection, so the source is checked instead: on a `--` comment line, the only percent
 signs allowed are the ones psycopg accepts.

@@ -45,7 +45,7 @@ def test_the_bundled_file_is_valid_and_covers_the_places_the_tests_use():
 
 
 def test_a_download_is_due_when_the_copy_is_old_or_lacks_a_home_region_at_most_daily():
-    bundled = Averages(averages_data(), "bundled")  # built 2026-10-04
+    bundled = Averages(averages_data(), "bundled")
     assert due(bundled, NOW, None, []) is None
     assert due(bundled, NOW + timedelta(days=46), None, []) == "older than 45 days"
     assert due(bundled, NOW + timedelta(days=46), NOW + timedelta(days=45, hours=1), []) is None, "at most once a day"

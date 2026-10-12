@@ -81,7 +81,7 @@ def test_car_card_leads_with_state_and_greys_what_did_not_happen():
 
 def test_a_car_record_missing_optional_fields_still_renders():
     """A history-only car's record has no charge limit and may lack a place or an age;
-    the card crashed on the first missing key (2026-09-30)."""
+    the card crashed on the first missing key."""
     html = render("{{ parts.car_card(c, '', {}, u, None, []) }}", c={"vin": "A", "name": "Alpha", "status": "Idle"})
     assert ">Parked<" in html and "None" not in html and "—" in html
 

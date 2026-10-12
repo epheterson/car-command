@@ -8,9 +8,9 @@
 # and so does the rate-averages download URL, which names the repository too.
 #
 # What stays behind: the private planning docs (PLAN.md, docs/status.md, docs/teslafi-*.md, docs/ideas-from-elsewhere.md,
-# docs/plans/, docs/release-readiness.md, docs/tesla-plan.md) — those live in the vault —
+# docs/plans/, docs/release-readiness.md, docs/tesla-plan.md), which are kept elsewhere,
 # and every untracked file. What is checked: the secrets test runs on the result, so no
-# real VIN, coordinate, host or password rides along. Nothing is pushed; that is Eric's.
+# real VIN, coordinate, host or password rides along. Nothing is pushed; the maintainer does that.
 set -eu
 DEST="${1:?destination directory}"; REPO="${2:-epheterson/car-command}"
 case "$REPO" in */*) ;; *) echo "owner/repo, like epheterson/car-command" >&2; exit 1 ;; esac
@@ -23,6 +23,8 @@ cd "$DEST"
 rm -rf PLAN.md docs/status.md docs/teslafi-*.md docs/ideas-from-elsewhere.md docs/plans docs/release-readiness.md docs/tesla-plan.md
 # The project's own instructions file refers to those docs; the public one is the README.
 rm -f CLAUDE.md
+# The .gitignore lines for those docs and the maintainer's tools stay behind too.
+sed -i.snapshot '/^# Private: from here down/,$d' .gitignore && rm -f .gitignore.snapshot
 # The public path, everywhere a link or a badge names it. This script is left alone: it says OWNER/REPO to explain itself.
 grep -rlI --exclude-dir=.git -e 'OWNER/REPO' -e 'epheterson/car-command' . | grep -v '^./scripts/publish-snapshot.sh$' | while read -r f; do
   sed -i.snapshot "s#OWNER/REPO#$REPO#g; s#epheterson/car-command#$REPO#g" "$f" && rm -f "$f.snapshot"

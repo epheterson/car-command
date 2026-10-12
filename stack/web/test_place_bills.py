@@ -1,4 +1,4 @@
-"""Review fixes for per-place prices and Tesla bills: the charge page shows the stored
+"""Per-place prices and Tesla bills: the charge page shows the stored
 price, Home is a whole word, a typed-in price beats a bill, and the price inputs do not
 zoom a phone."""
 

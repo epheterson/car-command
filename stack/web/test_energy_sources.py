@@ -132,6 +132,7 @@ def test_the_candidate_query_takes_only_finished_home_charges_that_have_readings
     sql = " ".join(conn.asked[0][0].split())
     assert "f.at_home" in sql and "session_end_date < now() - interval '5 minutes'" in sql and "s.session_id IS NULL" in sql and "s.status = 'none'" in sql and "EXISTS (SELECT 1 FROM cc_energy" in sql
     assert "ORDER BY c.session_start_date DESC" in sql and "LIMIT %s" in sql and conn.asked[0][1] == ("V", "home", "home", "home", "home", 17) and "MIN(e0.at)" in sql
+    assert "ABS(COALESCE(s.solar_kwh, 0) + COALESCE(s.battery_kwh, 0) + COALESCE(s.grid_kwh, 0) - f.kwh) > 0.05" in sql, "a split whose charge grew is redone"
     assert conn.written == []
 
 

@@ -910,7 +910,7 @@ def _app(monkeypatch):
 
 
 def test_every_json_endpoint_can_serialise_what_the_pages_hold(monkeypatch):
-    """/api/now?vin=<the Tesla> answered 500 for weeks.
+    """/api/now?vin=<the Tesla> answered 500 and no page showed it.
 
     That car's payload carries a nested "meters" dict, and its "at" is a datetime one
     level below where the conversion used to stop. The HTML pages render a datetime
@@ -1403,8 +1403,8 @@ def test_single_car_now_small_things():
 
 
 def test_the_garage_now_route_builds_its_page(monkeypatch):
-    """The route referenced a module name app.py never imported and answered 500 in
-    production (2026-09-30); the template tests could not see it. Run the route itself."""
+    """The route referenced a module name app.py never imported and answered 500
+    when deployed; the template tests could not see it. Run the route itself."""
     from datetime import datetime, timedelta, timezone
 
     app_module = _app(monkeypatch)
@@ -1704,7 +1704,7 @@ def test_row_marks_a_fast_charge_and_tells_kinds_apart():
 
 
 def test_the_site_opens_on_every_car_when_there_is_more_than_one(monkeypatch):
-    """Eric 2026-10-09: "Always start the site on all cars / now". No ?vin, two cars: the garage.
+    """The site starts on all cars, now. No ?vin, two cars: the garage.
     One car, or a car asked for by name, keeps its own page."""
     app_module = _app(monkeypatch)
     picked = []

@@ -1,6 +1,6 @@
-# Car Command — the garage logged by CarConnectivity. Source of truth is
-# the carcommand repo's stack/; this directory on the host is an rsync
-# copy plus .env and secrets/ which exist only here.
+# Car Command — the garage logged by CarConnectivity. Run from a checkout:
+#   docker compose -f stack/docker-compose.yml up -d
+# .env and secrets/ exist only on the host that runs it and are never committed.
 #
 # This stack publishes 3044 (Car Command web) and nothing else. carcommand-cc holds
 # the only Lucid credential and is deliberately unpublished.
@@ -51,9 +51,9 @@ services:
       - CC_SECRET_KEY=${CC_SECRET_KEY:-}
     volumes:
       - ./config:/config:ro
-      # READ-ONLY on purpose: the refresh token does not rotate. Mint/replace
-      # it on the host with
-      #   the python-lucidmotors login example (username + password once, save the refresh_token)
+      # READ-ONLY on purpose: the refresh token does not rotate. Sign in on
+      # Settings › Cars and sources, or mint it with `make lucid-login`.
+      # `make setup` creates it empty (no token), so Docker never makes a directory here.
       - ./secrets/lucid-token.json:/secrets/lucid-token.json:ro
       # Connectors for other brands, installed when one is added in Settings › Cars and sources.
       - cc_plugins:/plugins
@@ -174,8 +174,8 @@ services:
     networks: [carcommand]
 
   # Tesla's live stream (optional): `make tesla-net-key`, then
-  # `docker compose --profile tesla up -d tesla-net tesla-telemetry`. See the README's
-  # "Tesla live stream". No port opens at home: this node joins your tailnet, tagged, and
+  # `docker compose --profile tesla up -d tesla-net tesla-telemetry`. See docs/tesla-stream.md.
+  # No port opens at home: this node joins your tailnet, tagged, and
   # Tailscale Funnel carries exactly two things to it from the internet: HTTPS 443 for the
   # app's public key (one path, proxied to the site; nothing else of it), and TCP 8443
   # passed straight through to the receiver, which does the cars' mutual TLS itself.
@@ -256,7 +256,7 @@ services:
 
 volumes:
   # Explicit name: Compose would otherwise double the prefix
-  # (carcommand_carcommand_pgdata), and docker-backup.sh looks this volume up by
+  # (carcommand_carcommand_pgdata), and a host backup can look this volume up by
   # its exact name. Keyed on the project so a second stack — a test install, a
   # staging copy — gets its own volume instead of attaching to the live one.
   carcommand_pgdata:
@@ -278,9 +278,8 @@ secrets:
 
 networks:
   carcommand:
-    # A pinned subnet, because this host's Docker pool is fully allocated and the
-    # default picker fails. Anywhere else the default is fine; override CC_SUBNET
-    # in .env if this range collides with something on your network.
+    # A pinned subnet, so the stack does not depend on Docker's default pool having
+    # room. Change CC_SUBNET in .env if this range collides with your network.
     ipam:
       config:
         - subnet: ${CC_SUBNET:-192.168.61.0/24}
