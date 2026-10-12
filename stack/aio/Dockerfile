@@ -8,7 +8,7 @@
 #
 # Dockerfile.dockerignore beside this keeps .env, secrets/ and the tests out of the context.
 # python:3.12-slim, pinned by digest; Dependabot (docker) moves the digest with the tag.
-FROM python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
 ARG PG_MAJOR=18
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 PATH=/usr/lib/postgresql/18/bin:$PATH
