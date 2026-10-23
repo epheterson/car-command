@@ -332,6 +332,7 @@ def test_a_profile_of_charging_prices_like_the_charges_themselves(no_plan):
 
 def seasonal(part_peak_late):
     """A plan as OpenEI files one: summer and winter periods side by side, six in all."""
+
     def row(off, part, peak):
         return [off] * 15 + [part] + [peak] * 5 + [part] * 3 if part_peak_late else [off] * 15 + [part] + [peak] * 5 + [off] * 3
 
@@ -343,8 +344,14 @@ def seasonal(part_peak_late):
 
 def test_hours_in_a_different_role_are_found_and_said_by_month():
     late = [{"period": "peak", "days": "all", "start": 16, "end": 21, "months": None}, {"period": "part_peak", "days": "all", "start": 15, "end": 16, "months": None}]
-    mine = compile_rows("Springfield EV", [{"from": "2026-01-01", "off_peak": 0.3, "part_peak": 0.49, "peak": 0.52}], late + [{"period": "part_peak", "days": "all", "start": 21, "end": 22, "months": [1, 2, 3, 4, 5, 10, 11, 12]}])["versions"][0]
+    mine = compile_rows(
+        "Springfield EV",
+        [{"from": "2026-01-01", "off_peak": 0.3, "part_peak": 0.49, "peak": 0.52}],
+        late + [{"period": "part_peak", "days": "all", "start": 21, "end": 22, "months": [1, 2, 3, 4, 5, 10, 11, 12]}],
+    )["versions"][0]
     assert cost.hours_differ(mine, seasonal(True)) == ["off-peak here, part-peak there: 10pm–12am Jan–May, Oct–Dec; 9pm–12am Jun–Sep"]
-    right = compile_rows("Springfield EV", [{"from": "2026-01-01", "off_peak": 0.3, "part_peak": 0.49, "peak": 0.52}], late + [{"period": "part_peak", "days": "all", "start": 21, "end": 24, "months": None}])["versions"][0]
+    right = compile_rows(
+        "Springfield EV", [{"from": "2026-01-01", "off_peak": 0.3, "part_peak": 0.49, "peak": 0.52}], late + [{"period": "part_peak", "days": "all", "start": 21, "end": 24, "months": None}]
+    )["versions"][0]
     assert cost.hours_differ(right, seasonal(True)) == []  # six seasonal periods rank within each month, so winter's peak is still peak
     assert cost.hours_differ(right, seasonal(False)) == ["part-peak here, off-peak there: 9pm–12am every month"]

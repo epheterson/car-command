@@ -17,7 +17,11 @@ def test_summary_text_reads_like_a_person_wrote_it():
     ]
     assert daily_summary_text("Alpha", date(2026, 9, 4), None, [], [], 74.0, 286.0) is None, "nothing happened: nothing sent"
     parked = {"known_h": 24, "asleep_pct": 100, "hours": {"sleeping": 24, "idle": 0}, "wakeups": 0}
-    assert daily_summary_text("Alpha", date(2026, 9, 4), parked, [], [], None, None).splitlines()[1:] == ["- No drives.", "- No charging.", "- Asleep 100% of the day (24.0 h), idle awake 0.0 h, 0 wake-ups."], "no '?%' without a reading"
+    assert daily_summary_text("Alpha", date(2026, 9, 4), parked, [], [], None, None).splitlines()[1:] == [
+        "- No drives.",
+        "- No charging.",
+        "- Asleep 100% of the day (24.0 h), idle awake 0.0 h, 0 wake-ups.",
+    ], "no '?%' without a reading"
     one = daily_summary_text("Alpha", date(2026, 9, 4), None, [{"miles": 3.0}], [], 50.0, None)
     assert one.splitlines()[-1] == "- Now 50%."
 

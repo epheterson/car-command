@@ -31,6 +31,13 @@ def test_an_empty_install_with_no_zone_set_is_sent_to_the_questions(client):  # 
     assert "o.value === zone" in page, "the browser's zone is taken only when the list has it"
 
 
+def test_an_install_with_places_but_no_car_is_never_asked(bare, client, monkeypatch):  # noqa: F811
+    """Moved or upgraded, with places kept and no car yet: not a first run."""
+    monkeypatch.setattr(bare, "nothing_kept", lambda: False)
+    r = client.get("/")
+    assert r.status_code == 200 and "/hello" not in r.headers.get("location", "")
+
+
 def test_an_install_whose_zone_is_set_is_never_asked(bare, client):  # noqa: F811
     _set(bare, timezone="Europe/Paris")
     assert client.get("/").status_code == 200

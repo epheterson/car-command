@@ -184,7 +184,7 @@ def test_a_drive_heads_along_the_road_and_its_odometer_is_the_road_length():
 
 def test_the_newest_full_saturday_has_a_road_charge_and_the_night_before_a_home_charge():
     """So a timeline of the demo shows both kinds of charge in its newest week, on any date."""
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     rows = generate(days=42, seed=7, end=datetime(2026, 9, 17, 6, 0))
     fast = [r for r in rows if r["fast_charger_present"] == "True"]
@@ -197,7 +197,7 @@ def test_years_of_history_put_a_long_life_in_front_of_the_six_weeks():
     """The pages that need years (the battery's lifetime, range per version, records) get a
     lighter history: updates every month or so, the pack fading with the miles, winters on
     their own tires, now and then a long Sunday loop."""
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     import demo
 
@@ -224,7 +224,7 @@ def test_years_of_history_put_a_long_life_in_front_of_the_six_weeks():
 
 
 def test_the_six_weeks_are_the_same_six_weeks_whatever_history_comes_before():
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     import demo
 

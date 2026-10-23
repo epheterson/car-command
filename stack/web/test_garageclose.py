@@ -229,5 +229,3 @@ def test_another_car_leaving_while_ours_stays_parked_closes_behind_it():
     ev, d = play(steps, sights=[45])
     closes = [(s, i) for s, k, i in ev if k == "close"]
     assert len(closes) == 1 and closes[0][0] == 50 and closes[0][1]["car"] is False
-
-

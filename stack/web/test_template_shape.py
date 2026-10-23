@@ -901,7 +901,10 @@ def test_a_phones_header_carries_the_pages_title_and_the_h1_gives_its_row_up():
 def test_the_title_and_the_car_name_share_the_bar_and_the_version_line_is_muted():
     # a long title (a route's two ends) wraps to two lines; the picker keeps its width (squeezed, it once went empty)
     css = _css()
-    assert ".ptitle { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; margin-left:auto; flex:0 1 auto; min-width:0;" in css and "text-overflow:ellipsis" in css[css.index(".carsheet .cn") :]
+    assert (
+        ".ptitle { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; margin-left:auto; flex:0 1 auto; min-width:0;" in css
+        and "text-overflow:ellipsis" in css[css.index(".carsheet .cn") :]
+    )
     assert ".carsheet { position:relative; flex:0 0 auto; min-width:0; max-width:44%; }" in css
     assert ".ver a { color:inherit; text-decoration:none; }" in css
     assert 'class="muted small ver"' in (Path(__file__).parent / "templates" / "settings_index.html").read_text()

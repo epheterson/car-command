@@ -344,4 +344,3 @@ def test_a_vehicle_out_while_the_car_stays_parked_still_closes_and_says_a_car(ba
     monkeypatch.setattr(bare.recorder, "notify", lambda text, *a, **k: sent.append(text))
     closed, _ = depart(bare, monkeypatch, {"seen": True, "leaving": True, "people": 0}, moves=False, status=("Sleeping", "Sleeping"))
     assert closed and any(t == "Closing the garage behind a car." for t in sent), sent
-

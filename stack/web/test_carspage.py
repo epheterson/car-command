@@ -132,6 +132,16 @@ def test_a_refused_lucid_sign_in_is_in_words_with_a_way_to_sign_in_again():
 def test_a_brand_left_out_of_the_connector_says_it_is_kept_but_not_running():
     """A plugin the connector took out after it failed keeps its settings here to try again; the
     row must not say "kept in the app" beside "taken out" as if the two disagreed."""
-    row = {"id": 9, "kind": "carconnectivity", "vin": None, "label": "Tronity", "config": {"brand": "Tronity"}, "readable": True, "status": None, "last_ok_at": None, "last_error": "CarConnectivity stopped while starting with it (exit 1), so it was taken out and the rest started without it."}
+    row = {
+        "id": 9,
+        "kind": "carconnectivity",
+        "vin": None,
+        "label": "Tronity",
+        "config": {"brand": "Tronity"},
+        "readable": True,
+        "status": None,
+        "last_ok_at": None,
+        "last_error": "CarConnectivity stopped while starting with it (exit 1), so it was taken out and the rest started without it.",
+    }
     (acct,) = accounts([row], [], False, {}, [], [], None)
     assert acct["state"] == "bad" and acct["kept"] == "kept here, not running" and acct["retry"]

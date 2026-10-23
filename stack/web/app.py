@@ -3171,13 +3171,25 @@ def favicon():
     return Response((HERE / "static" / "favicon-32.png").read_bytes(), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
+def nothing_kept() -> bool:
+    """A truly new install: no place and no drive in the database. An install moved or upgraded
+    with places but no car yet is not asked the first-run questions; it only reaches here with no
+    car, so the query is never on a live install's path."""
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT EXISTS (SELECT 1 FROM cc_places) OR EXISTS (SELECT 1 FROM trips) AS kept").fetchone()
+    except Exception:  # noqa: BLE001 - no tables yet: as new as it gets
+        return True
+    return not row or not (row["kept"] if isinstance(row, dict) else row[0])
+
+
 @site.get("/", response_class=HTMLResponse)
 def now(request: Request):
     # The site opens on the whole garage: a household with more than one car lands on all of them.
     vehicles = all_vehicles() if "vin" not in request.query_params else []
     car = garage_car() if len(vehicles) > 1 else pick(request)
     if car.get("empty"):
-        if current_settings().get("timezone") is None:
+        if current_settings().get("timezone") is None and nothing_kept():
             return to_site(request, "/hello")  # first run: the zone, units and currency come before the first look
         return page(request, "welcome.html", car=car, active="now", connector=connector_down(), install=os.environ.get("CC_INSTALL") or "compose")
     if car.get("garage"):

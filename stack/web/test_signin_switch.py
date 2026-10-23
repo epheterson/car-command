@@ -569,7 +569,7 @@ def test_a_small_chunked_form_still_reaches_its_route(world):
 
 
 def test_every_sign_in_switch_alert_reads_as_a_sentence():
-    """"Sign-in was turned set to use…" went out once: each caller now says the whole verb."""
+    """ "Sign-in was turned set to use…" went out once: each caller now says the whole verb."""
     import re
     from pathlib import Path
 

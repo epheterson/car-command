@@ -259,7 +259,10 @@ def test_a_file_over_rows_another_file_loaded_replaces_them_instead_of_colliding
             pass
 
     conn = Rec()
-    out = {k: [] for k in ("states", "connection_states", "charging_states", "outside_temperatures", "charging_powers", "drive_levels", "drive_ranges", "trips", "charging_sessions", "positions", "software")}
+    out = {
+        k: []
+        for k in ("states", "connection_states", "charging_states", "outside_temperatures", "charging_powers", "drive_levels", "drive_ranges", "trips", "charging_sessions", "positions", "software")
+    }
     out.update(first=T0, last=T0 + 10 * H, rows=1, vehicle={})
     write_history(conn, "VIN1", "Alpha", "Tesla", "Model 3", 75.0, out, "widerfile", "wide.csv", timezone.utc)
     sql = [(s, p) for s, p in conn.calls if s.startswith("DELETE")]
