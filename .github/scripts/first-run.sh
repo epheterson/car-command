@@ -21,3 +21,16 @@ status=$(curl -sS -b "$JAR" -c "$JAR" -o /dev/null -w '%{http_code}' \
     exit 1
 }
 echo "password set on $BASE"
+
+# Then the first-run questions a new install asks (0.2.0 on): time zone, units, currency. A build without
+# the page answers 404 here and has nothing to ask.
+if [ "$(curl -sS -b "$JAR" -c "$JAR" -o /dev/null -w '%{http_code}' "$BASE/hello")" = "200" ]; then
+    status=$(curl -sS -b "$JAR" -c "$JAR" -o /dev/null -w '%{http_code}' \
+        --data-urlencode "timezone=America/New_York" --data-urlencode "units=imperial" --data-urlencode "currency=\$" \
+        --data-urlencode "csrf_token=$(token_from /hello)" "$BASE/hello")
+    [ "$status" = "303" ] || {
+        echo "::error::answering the first-run questions answered $status, expected 303"
+        exit 1
+    }
+    echo "first-run questions answered on $BASE"
+fi

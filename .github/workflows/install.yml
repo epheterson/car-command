@@ -89,8 +89,9 @@ jobs:
       - name: Set up, the way the README says to
         run: |
           make setup
-          # A port nothing else on the runner uses, and a subnet clear of Docker's default.
-          printf 'CC_PORT=3055\nCC_SUBNET=192.168.63.0/24\n' >> stack/.env
+          # A port nothing else on the runner uses, and a subnet clear of Docker's default and of
+          # the stack's own four (192.168.61-64: the site, Tesla, commands, the proxy's way out).
+          printf 'CC_PORT=3055\nCC_SUBNET=192.168.81.0/24\n' >> stack/.env
 
       - name: Bring up the database, the schema and the site
         run: docker compose -f stack/docker-compose.yml up -d --build db web
@@ -179,7 +180,7 @@ jobs:
           git worktree add /tmp/shipping "$BASE_REF"
           cd /tmp/shipping
           make setup
-          printf 'CC_PORT=3056\nCC_SUBNET=192.168.64.0/24\n' >>stack/.env
+          printf 'CC_PORT=3056\nCC_SUBNET=192.168.82.0/24\n' >>stack/.env
           docker compose -f stack/docker-compose.yml up -d --build db web
 
       - uses: ./.github/actions/wait-for-site
