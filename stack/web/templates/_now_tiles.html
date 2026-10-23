@@ -1,0 +1,79 @@
+{# The car card's tiles: one fact each, with its control inside when the car takes the command
+   (cmd.allowed). A tile shows only when its fact is known or its control exists. Included by
+   _now_hero.html, so the stream sends them with the card. #}
+{% import "_icons.html" as ic %}
+{% import "_commands.html" as cmds %}
+{% set a = (cmd.allowed if cmd and not cmd.reason else none) or [] %}
+{% set ins = car.get('inside_f') if car.get('inside_f') is not none else (car.get('meters') or {}).get('inside_f') %}
+{% set outs = car.get('outside_f') if car.get('outside_f') is not none else (car.get('meters') or {}).get('outside_f') %}
+{% set charging = car.status == 'Charging' %}
+{% set vq = (q ~ '&') if q else '?' %}
+{# A tile with a control is a box; one without is a link to where its fact is kept. A switch the
+   car has said the state of is the tile itself: tap it to turn the other way. #}
+{% macro tile(icon, label, cls="", href=none, switch=none) -%}
+{% if switch %}{% set on, on_key, off_key, what = switch %}<button type="button" class="ft tap{{ ' ' ~ cls if cls }}" data-cmd="{{ off_key if on else on_key }}" aria-pressed="{{ 'true' if on else 'false' }}" aria-label="Turn {{ 'off' if on else 'on' }} {{ what }}"><span class="ft-h">{{ ic.icon(icon) }}{{ label }}</span>{{ caller() }}</button>
+{%- elif href %}<a class="ft go{{ ' ' ~ cls if cls }}" href="{{ href }}"><span class="ft-h">{{ ic.icon(icon) }}{{ label }}</span>{{ caller() }}</a>
+{%- else %}<div class="ft{{ ' ' ~ cls if cls }}"><span class="ft-h">{{ ic.icon(icon) }}{{ label }}</span>{{ caller() }}</div>{% endif %}
+{%- endmacro %}
+{# One button that says what it will do, when the car has said which way it is; both when it has not. #}
+{% macro toggle(on, on_key, off_key, what) -%}
+<span class="ft-c">{% if on is true %}{{ cmds.btn(off_key, 'Turn off ' ~ what) }}{% elif on is false %}{{ cmds.btn(on_key, 'Turn on ' ~ what) }}{% else %}<span class="cmd-pair" role="group" aria-label="{{ what }}">{{ cmds.btn(on_key, 'On') }}{{ cmds.btn(off_key, 'Off') }}</span>{% endif %}</span>
+{%- endmacro %}
+<div class="fts">
+  {% if charging or car.get('plugged') is not none or 'charge_start' in a %}
+  {% call tile('charge', 'Charging' if charging else 'Charge', 'on' if charging else '') %}
+    <span class="ft-b">{% if charging and car.get('charging_power_kw') %}{{ car.charging_power_kw|num(1) }} kW{% elif charging %}Charging{% elif car.get('plugged') is true %}Plugged in{% elif car.get('plugged') is false %}Unplugged{% else %}—{% endif %}</span>
+    {# the car's own meter for this charge when it has one; then when it reaches the limit #}
+    <span class="ft-s">{% if charging and car.get('charge_session_kwh') %}<span title="Added this charge, by the car's meter">{{ car.charge_session_kwh|num(1) }} kWh</span>{% if car.get('charge_full_at') %} · {% endif %}{% endif %}{% if charging and car.get('charge_full_at') %}{% set m = car.charge_minutes_left|int %}<span title="In {% if m >= 60 %}{{ m // 60 }} h {% endif %}{{ m % 60 }} min">full at {{ car.charge_full_at|local('%-I:%M %p') }}</span>{% elif charging and car.get('charge_minutes_left') %}{% set m = car.charge_minutes_left|int %}full in {% if m >= 60 %}{{ m // 60 }} h {% endif %}{{ m % 60 }} min{% endif %}</span>
+    {% if 'charge_start' in a and (charging or car.get('plugged') is not false) %}<span class="ft-c">{{ cmds.btn('charge_stop', 'Stop charging') if charging else cmds.btn('charge_start', 'Start charging') }}</span>{% endif %}
+  {% endcall %}{% endif %}
+  {% set cw = (car.get('climate') or '')|string|lower %}{% set clim = cmd.climate if cmd and cmd.climate is not none else (none if cw in ('', 'unknown', 'invalid') else cw != 'off') %}
+  {% if ins is not none or outs is not none or 'climate_on' in a %}{% set on = clim is true %}
+  {% set sw = (clim, 'climate_on', 'climate_off', 'climate') if 'climate_on' in a and clim is not none else none %}
+  {% call tile('climate', 'Climate', 'on' if on else '', switch=sw) %}
+    {# On or Off first when the car has said; the temperatures under it #}
+    <span class="ft-b" data-say>{% if clim is not none %}{{ 'On' if clim else 'Off' }}{% elif ins is not none %}{{ ins|temp }}°{% elif outs is not none %}{{ outs|temp }}°{% else %}—{% endif %}</span>
+    <span class="ft-s">{% if clim is not none %}{% if ins is not none %}{{ ins|temp }}° inside{% endif %}{% if ins is not none and outs is not none %} · {% endif %}{% if outs is not none %}{{ outs|temp }}° outside{% endif %}{% elif ins is not none and outs is not none %}{{ outs|temp }}° outside{% elif ins is not none %}inside{% elif outs is not none %}outside{% endif %}</span>
+    {% if 'climate_on' in a and not sw %}{{ toggle(clim, 'climate_on', 'climate_off', 'climate') }}{% endif %}
+  {% endcall %}{% endif %}
+  {% set locked = car.get('locked') %}{# None unless the car said, live or on a fresh stream #}
+  {% if locked is not none or 'lock' in a %}
+  {% set port_left = car.get('port_open') is true and car.get('plugged') is false %}{# open for every charge: said only once the cable is out #}
+  {% set inside, alarm = occupant_level(car), alarm_word(car.get('alarm_status')) %}{# connector 0.4.0's; none for any other car #}
+  {% call tile('lock' if locked is not false else 'unlock', 'Doors', 'warn' if locked is false or car.get('doors_open') or port_left or inside or alarm else '') %}
+    <span class="ft-b">{% if locked is true %}Locked{% elif locked is false %}Unlocked{% else %}—{% endif %}</span>
+    <span class="ft-s">{% if inside %}someone left inside{% elif alarm %}{{ alarm }}{% elif car.get('trunk_open') %}trunk open{% elif car.get('frunk_open') %}frunk open{% elif car.get('doors_open') %}a door is open{% elif port_left %}charge port open{% elif car.get('keyfob_low') is true %}key fob battery low{% elif locked is none %}not reported{% endif %}</span>
+    {% if 'lock' in a %}<span class="ft-c">{% if locked is true %}{% if 'unlock' in a %}{{ cmds.btn('unlock', 'Unlock', cls='guarded') }}{% endif %}{% else %}{{ cmds.btn('lock', 'Lock') }}{% endif %}</span>{% endif %}
+  {% endcall %}{% endif %}
+  {% set guard = car.get('sentry') if car.live or car.get('source') == 'stream' else none %}
+  {% if guard is not none or 'sentry_on' in a %}
+  {% set paused = paused_word(car.get('sentry_paused')) if guard is true else none %}{% set no_usb = guard is true and car.get('sentry_usb') is false %}
+  {% set sw = (guard, 'sentry_on', 'sentry_off', guard_name(car.get('make'))) if 'sentry_on' in a and guard is not none else none %}
+  {% call tile('guard', guard_name(car.get('make')), 'warn' if no_usb else ('on' if guard is true and not paused else ''), switch=sw) %}
+    <span class="ft-b" data-say>{% if paused %}Paused{% elif guard is true %}On{% elif guard is false %}Off{% else %}—{% endif %}</span>
+    <span class="ft-s">{% if guard is true and car.get('sentry_threat') is true %}reacting to something{% elif no_usb %}no USB drive{% elif paused %}{{ paused }}{% elif guard is true and state_word(car.status)[1] == 'driving' %}when parked{% elif guard is true %}watching{% endif %}</span>
+    {% if 'sentry_on' in a and not sw %}{{ toggle(guard, 'sentry_on', 'sentry_off', guard_name(car.get('make'))) }}{% endif %}
+  {% endcall %}{% endif %}
+  {% if car.tires_psi or tread_last %}
+  {% call tile('tire', 'Tires', 'warn' if car.tire_warning else '', root ~ '/service' ~ q) %}
+    {% if car.tires_psi %}<span class="ft-b ft-tires">{{ car.tires_psi.front_left|num }} · {{ car.tires_psi.front_right|num }}<br>{{ car.tires_psi.rear_left|num }} · {{ car.tires_psi.rear_right|num }}</span>
+    <span class="ft-s">psi{% if tread_last %} · tread {{ tread_last.front_left|tread }}{% endif %}</span>
+    {% else %}<span class="ft-b ft-tires">{{ tread_last.front_left|tread }} · {{ tread_last.front_right|tread }}<br>{{ tread_last.rear_left|tread }} · {{ tread_last.rear_right|tread }}</span>
+    <span class="ft-s">tread, {{ tread_last.measured_on|dfmt('%b %-d') }}</span>{% endif %}
+  {% endcall %}{% endif %}
+  {% if car.odometer_mi %}
+  {% call tile('drive', 'Odometer', '', root ~ '/stats' ~ vq ~ 'period=all#odometer') %}
+    <span class="ft-b">{{ car.odometer_mi|dist }} {{ u.dist }}</span>
+    <span class="ft-s">{% if car.get('meters') and car.meters.get('fsd') is not none and car.meters.share %}FSD {{ (car.meters.share * 100)|num }}% since reset{% endif %}</span>
+  {% endcall %}{% endif %}
+  {% if car.software %}
+  {% call tile('update', 'Software', 'warn' if car.live and car.update_available is true else '', root ~ '/software' ~ q) %}
+    <span class="ft-b ft-ver">{{ car.software }}</span>
+    <span class="ft-s">{% if car.live and car.update_available is true %}{% if car.get('update_version') %}<span{% if car.get('update_install_min') %} title="About {{ car.update_install_min }} min to install"{% endif %}>{{ car.update_version }} waiting</span>{% else %}update waiting{% endif %}{% endif %}</span>
+  {% endcall %}{% endif %}
+  {% if car.live and car.pack_capacity_kwh %}
+  {% call tile('charge', 'Pack', '', root ~ '/battery' ~ q) %}
+    <span class="ft-b">{{ car.pack_energy_kwh|num(1) }} kWh</span>
+    <span class="ft-s">of {{ car.pack_capacity_kwh|num(1) }}{% if car.get('battery_f') is not none %} · {{ car.battery_f|temp }}°{% endif %}</span>
+  {% endcall %}{% endif %}
+</div>

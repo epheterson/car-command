@@ -1,11 +1,11 @@
 """/api/energy: the current reading and today's totals. A status token may read it (it carries no location);
 a token for one car may not (it is the house's, not that car's)."""
 
-import pytest
-
+import sys
 from datetime import datetime, timedelta, timezone
 
 import energy
+import pytest
 from test_connect import status_client, world  # noqa: F401 - fixtures
 
 READING = {"solar_w": 4200.0, "home_w": 1800.0, "grid_w": -300.0, "battery_w": -2100.0, "soe_pct": 61.0, "grid_status": "SystemGridConnected"}
@@ -123,6 +123,7 @@ HOUR = {
     "battery_out_kwh": 0.0,
     "coverage": 1.0,
 }
+HOURS_BACK = [HOUR]  # what the faked energy.hours answers
 
 
 @pytest.fixture
@@ -132,7 +133,7 @@ def hours(world, monkeypatch):  # noqa: F811
 
     def fake(conn, lo, hi, site=energy.SITE):
         asked.append((lo, hi))
-        return [HOUR]
+        return [dict(h) for h in HOURS_BACK]
 
     monkeypatch.setattr(app.energy, "hours", fake)
     yield app, client, asked
@@ -142,9 +143,23 @@ def test_hours_answer_local_days_as_utc_hours(hours):
     app, client, asked = hours
     body = client.get("/api/energy/hours?since=2026-10-01&until=2026-10-02").json()
     assert body["since"] == "2026-10-01" and body["until"] == "2026-10-02" and body["tz"] == app.TZ.key
-    assert body["hours"] == [{**HOUR, "hour": "2026-10-01T07:00:00+00:00"}]
+    assert body["hours"] == [{**HOUR, "hour": "2026-10-01T07:00:00+00:00", "period": None, "rate": None}], "no plan: no period, no price"
     lo, hi = asked[0]
     assert lo.isoformat() == "2026-10-01T00:00:00-07:00" and hi.isoformat() == "2026-10-02T00:00:00-07:00", "local midnights"
+
+
+def test_each_hour_says_its_period_and_all_in_price_under_the_home_plan(hours, monkeypatch):
+    app, client, _ = hours
+    late = dict(HOUR, hour=datetime(2026, 10, 2, 4, tzinfo=timezone.utc))  # 21:00 on Oct 1, local
+    monkeypatch.setattr(sys.modules[__name__], "HOURS_BACK", [HOUR, late])
+    rows = [{"from": "2026-01-01", "off_peak": 0.3, "part_peak": 0.49, "peak": 0.52}]
+    schedule = [{"period": "peak", "days": "all", "start": 16, "end": 21, "months": None}, {"period": "part_peak", "days": "all", "start": 21, "end": 24, "months": None}]
+    app.cost.use_plan(app.cost.compile_rows("Springfield EV", rows, schedule))
+    try:
+        got = client.get("/api/energy/hours?since=2026-10-01&until=2026-10-02").json()["hours"]
+    finally:
+        app.cost.use_plan(None)
+    assert [(h["period"], h["rate"]) for h in got] == [("off_peak", 0.3), ("part_peak", 0.49)]
 
 
 def test_hours_until_defaults_to_tomorrow_and_bad_ranges_are_400(hours):

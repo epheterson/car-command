@@ -11,7 +11,7 @@
   <h2 class="sec">Local maps</h2>
   <div class="group-b">
     {% if not status %}
-    <div class="set-row"><span class="set-l">Local maps {% call info("Turning on local maps") %}Run <code>docker compose --profile maps up -d maps</code> on the host and set <code>MAPS_URL=http://maps:8090</code> in .env, then restart the site.{% endcall %}<span class="set-s">Turn on local maps for place names from this box</span></span><span class="set-v">Not running</span></div>
+    <div class="set-row"><span class="set-l">Local maps {% call info("Turning on local maps") %}Run <code>docker compose --profile maps up -d maps</code> on the host and set <code>MAPS_URL=http://maps:8090</code> in .env, then restart the site.{% endcall %}<span class="set-s"><code>docker compose --profile maps up -d maps</code></span></span><span class="set-v">Not running</span></div>
     {% elif status.building == "failed" %}
     <div class="set-row"><span class="set-l">Local maps<span class="set-s">{{ waiting or 'Version ' ~ status.version }}</span></span><div class="set-c"><span class="sstate"><span class="sdot bad" aria-hidden="true"></span>Build failed</span>{% if status.error %}{% call info("What failed") %}{{ status.error }}{% endcall %}{% endif %}<button type="submit" class="btn sm" form="maps-retry">Try again</button></div></div>
     {% elif status.building in ("downloading", "building") %}
@@ -49,17 +49,37 @@
 </section>
 {% endif %}
 
+{% if terrain %}
+<section class="group" id="terrain">
+  <h2 class="sec">Terrain</h2>
+  <div class="group-b">
+    <div class="set-row"><span class="set-l">Ground elevation{% call info("Ground elevation") %}Climb and descent from a terrain model kept on this box (Terrain Tiles on AWS: SRTM, USGS 3DEP, EU-DEM and others), the same ground for every car. Drives the model does not cover keep their GPS heights.{% endcall %}<span class="set-s">{{ terrain.regions[:3]|join(' · ') or 'Where your cars drive' }}{% if terrain.left %} · up to {{ terrain.mb_left }} MB to fetch{% endif %}</span></span>
+      <span class="set-v wrapv">{% if terrain.error %}<span class="sstate"><span class="sdot bad" aria-hidden="true"></span>{{ 'Can\'t download' if terrain.disk else ('Gave up on ' ~ terrain.gave_up ~ ' square' ~ ('' if terrain.gave_up == 1 else 's') if terrain.gave_up else 'Retrying') }}</span>{% call info("What failed") %}{{ terrain.error }}{% endcall %} · {{ terrain.have }} of {{ terrain.need }}{% elif terrain.state == 'ready' %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>Ready</span> · {{ terrain.have }} square{{ '' if terrain.have == 1 else 's' }} · {{ terrain.disk_mb }} MB{% elif terrain.need %}{% if terrain.state == 'waiting' %}<span class="sstate"><span class="sdot wait" aria-hidden="true"></span>Downloading</span>{% else %}Off{% endif %} · {{ terrain.have }} of {{ terrain.need }} squares · {{ terrain.disk_mb }} MB{% elif terrain.state == 'waiting' %}Starts shortly{% else %}Off{% endif %}</span></div>
+  </div>
+</section>
+{% endif %}
+
 <section class="group">
   <h2 class="sec">What leaves this box</h2>
   <div class="group-b">
     <input type="hidden" name="public_tiles_shown" value="1">
     <div class="set-row"><span class="set-l"><label for="public-tiles">Map backgrounds from OpenFreeMap</label> {% call info("Map backgrounds") %}Off: maps draw routes and places on a plain background. Local backgrounds aren't built yet.{% endcall %}<span class="set-s">OpenFreeMap sees which area you view</span></span><div class="set-c">{{ s.switch('public_tiles', st.public_tiles, 'Map backgrounds from OpenFreeMap', id='public-tiles') }}</div></div>
+    <input type="hidden" name="satellite_shown" value="1">
+    <div class="set-row"><span class="set-l"><label for="satellite">Satellite close-ups from Esri</label> {% call info("Satellite imagery") %}Off: close-ups use the map background above, or none. On: the drive page's start and end close-ups and the parked and charge map strips show Esri World Imagery, with Esri's credit. It needs your own ArcGIS API key, below; your browser asks Esri for the tiles with that key.{% endcall %}<span class="set-s">Esri sees the area you view and your key</span></span><div class="set-c">{{ s.switch('satellite', st.satellite and esri.ready, 'Satellite close-ups from Esri', id='satellite', disabled=not esri.ready) }}</div></div>
+    {% if esri.ready %}
+    <div class="set-row"><span class="set-l">ArcGIS API key<span class="set-s">saved, ends {{ esri.hint }}</span></span><div class="set-c"><button type="submit" class="btn sm danger" form="esri-key" name="remove" value="1">Remove</button></div></div>
+    {% else %}
+    <div class="set-row under"><label class="set-l" for="esri-key-in">ArcGIS API key <a href="{{ esri_sign_up }}" target="_blank" rel="noopener">Get a key</a><span class="set-s">Free tier; scope it to basemap tiles{% if esri_error %} · <span class="bad">{{ esri_error }}</span>{% endif %}</span></label><div class="set-c"><input class="field" id="esri-key-in" type="password" name="key" form="esri-key" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="AAPK…"><button type="submit" class="btn sm" form="esri-key">Save key</button></div></div>
+    {% endif %}
     <input type="hidden" name="public_geocoder_shown" value="1">
     <div class="set-row"><span class="set-l"><label for="public-geocoder">{{ 'Public place names outside your regions' if maps_on else 'Place names from OpenStreetMap' }}</label> {% call info("Place names") %}{% if maps_on %}Used when local maps can't name a stop.{% else %}OpenStreetMap's public geocoder names each stop.{% endif %}{% endcall %}<span class="set-s">Nominatim sees {{ 'that' if maps_on else 'each' }} stop, rounded to about 100 m</span></span><div class="set-c">{{ s.switch('public_geocoder', st.public_geocoder, 'Public place names', id='public-geocoder') }}</div></div>
+    {% if terrain %}<input type="hidden" name="terrain_shown" value="1">
+    <div class="set-row"><span class="set-l"><label for="terrain-on">Terrain tiles from Amazon (AWS)</label> {% call info("Terrain tiles") %}Off: heights come from the car's GPS, or are missing. On: tiles of the elevation model are downloaded, one square at a time. Your drives, positions and heights are never sent.{% endcall %}<span class="set-s">AWS sees each 1&deg; square (about 100 km) your cars have ever been to</span></span><div class="set-c">{{ s.switch('terrain', st.terrain, 'Terrain tiles from Amazon', id='terrain-on') }}</div></div>{% endif %}
   </div>
 </section>
 {{ s.savebar() }}
 </form>
+<form id="esri-key" method="post" action="{{ root }}/settings/maps/esri-key{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
 {% if status %}
 <form id="region-add" method="post" action="{{ root }}/settings/maps/regions/add{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
 <form id="region-rm" method="post" action="{{ root }}/settings/maps/regions/remove{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>

@@ -31,7 +31,7 @@ def run(checkout, docker_prints=None):
 
 def test_before_the_site_has_run_it_says_how_to_get_the_code(checkout):
     r = run(checkout)
-    assert r.returncode == 0 and "Open http://localhost:3044 and, if asked for a setup code, get it with:" in r.stdout
+    assert r.returncode == 0 and "Open http://localhost" not in r.stdout, "a hint to open a site that is not running yet, on a port that may still change"
     assert "docker compose -f stack/docker-compose.yml exec web python3 setup_code.py" in r.stdout
 
 

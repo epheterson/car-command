@@ -1,0 +1,6 @@
+{# One plan in Find my plan's list (r), a link to it beside yours: its name and one mark (yours,
+   on your bill, the code it matches, or EV), whether a new customer can take it, its kind. #}
+<li class="find-row{% if not r.open %} old{% endif %}{% if r.mine or r.like %} like{% endif %}" data-name="{{ r.name|lower }}"><a class="set-row set-nav" href="{{ root }}{{ link(label=r.label) }}" data-no-prefetch>
+  <span class="set-l"><span class="find-nm">{{ r.family if short else r.shown or r.name }}</span>{% if r.mine %}<span class="badge like">Your plan</span>{% elif r.like %}<span class="badge like">{{ 'On your bill' if bill else 'Matches ' ~ (r.match or 'your plan') }}</span>{% elif r.ev and 'electric vehicle' not in r.name|lower %}<span class="badge">EV</span>{% endif %}
+    {% if r.status %}<span class="set-s find-st">{{ r.status }}</span>{% endif %}
+    <span class="set-s">{{ r.kind }}{% if r.tiered %}, tiered{% endif %} · {% if short and r.variants > 1 %}{{ r.variants }} variants{% elif r.versions > 1 %}{{ r.versions }} price changes since {{ r.first.year }}{% else %}since {{ r.since }}{% endif %}{% if find.utilities and find.utilities|length > 1 %} · {{ r.utility }}{% endif %}</span></span></a></li>

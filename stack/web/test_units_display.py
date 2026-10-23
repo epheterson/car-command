@@ -178,16 +178,16 @@ def test_a_drive_page_reads_correctly_in_both_systems(env):
 
     units.use_units(False)
     imperial = tpl.render(**ctx)
-    assert "100.0 mi" in imperial and "65<small>mph</small>" in imperial and "300 Wh/mi" in imperial
-    assert "1,000<small>ft</small>" in imperial and "500 ft down" in imperial and "32<small>°F</small>" in imperial
+    assert "100.0 mi" in imperial and "average <b>65</b>" in imperial and "300 Wh/mi" in imperial
+    assert "↑1,000 ↓500<small>ft</small>" in imperial and "32 °F" in imperial
 
     units.use_units(True)
     metric = tpl.render(**ctx)
     assert "160.9 km" in metric, "100 miles is 160.9 km"
-    assert "105<small>km/h</small>" in metric, "65 mph is 104.6 km/h"
+    assert "average <b>105</b>" in metric, "65 mph is 104.6 km/h"
     assert "186 Wh/km" in metric, "300 Wh/mi is 186 Wh/km"
-    assert "305<small>m</small>" in metric and "152 m down" in metric
-    assert "0<small>°C</small>" in metric, "32°F is freezing"
+    assert "↑305 ↓152<small>m</small>" in metric
+    assert "0 °C" in metric, "32°F is freezing"
     assert "mph" not in metric and "Wh/mi" not in metric and "°F" not in metric, "no imperial label survives a metric render"
 
 

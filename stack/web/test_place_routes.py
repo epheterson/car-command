@@ -66,6 +66,18 @@ def test_a_places_page_has_its_map_its_fields_merge_and_remove(placed, client, m
     assert client.get("/places/99").status_code == 404
 
 
+def test_a_place_offers_to_be_home_and_the_home_does_not(placed, client, monkeypatch):  # noqa: F811
+    r = client.get("/places/5")
+    assert 'class="pd-home"' in r.text and 'name="icon" value="home"' in r.text and "This is home" in r.text
+    monkeypatch.setattr(placed, "places_detail", lambda: [dict(x, icon="home") if x["id"] == 5 else dict(x) for x in ROWS])
+    home = client.get("/places/5").text
+    assert 'class="pd-home"' not in home and "Home</span>" in home
+    got = []
+    monkeypatch.setattr(placed, "rename_place", lambda *a: got.append(a))
+    client.post("/places/6/edit", data={"csrf_token": token(placed), "icon": "home"})
+    assert got and got[0][0] == 6 and got[0][2] == "home" and got[0][1] is None, "one tap: the icon, nothing else touched"
+
+
 def test_the_add_page_starts_where_it_was_asked_or_among_the_places(placed, client):  # noqa: F811
     r = client.get("/places/new?lat=39.81&lon=-89.64")
     assert r.status_code == 200 and 'name="lat" value="39.81"' in r.text and 'action="/places/new"' in r.text and "Merge with" not in r.text
@@ -236,6 +248,17 @@ def test_resizing_queues_both_circles_and_a_new_icon_only_when_home_changes(bare
     assert [x["id"] for x in db.queued()] == [5], "becoming home re-prices its charges"
 
 
+def test_one_home_only_the_newest_takes_the_house_and_the_old_one_is_re_priced(bare, monkeypatch):  # noqa: F811
+    db = Db([dict(ROWS[0], icon="home"), dict(ROWS[1], icon="work")])
+    monkeypatch.setattr(bare, "db", lambda *a, **k: db)
+    bare.rename_place(6, None, "home")
+    assert db.row(6)["icon"] == "home" and db.row(5)["icon"] == "none", "the old home is no longer one, and its name's guess does not bring it back"
+    assert sorted(x["id"] for x in db.queued()) == [5, 6]
+    db.state.clear()
+    bare.rename_place(6, None, "star")
+    assert db.row(5)["icon"] == "none" and [x["id"] for x in db.queued()] == [6], "leaving the house leaves no home, and only its own charges move"
+
+
 def test_removing_a_home_removes_its_parts_and_re_prices_them(bare, monkeypatch):  # noqa: F811
     db = Db([dict(ROWS[0], icon="home"), dict(ROWS[1], merged_into=5)])
     monkeypatch.setattr(bare, "db", lambda *a, **k: db)
@@ -348,7 +371,7 @@ def test_around_reads_the_drives_that_end_or_start_there(placed, client, monkeyp
 
     monkeypatch.setattr(placed, "db", lambda *a, **k: Conn())
     assert client.get("/places/5/around").json() == {"traces": [[[39.8003, -89.65], [39.8, -89.65]]]}
-    assert "FROM cc_positions WHERE vin = %s AND at BETWEEN" in asked[2], "by car and time: the table's index"
+    assert "FROM cc_positions p WHERE vin = %s AND at BETWEEN" in asked[2], "by car and time: the table's index"
     assert client.get("/places/99/around").status_code == 404
 
 

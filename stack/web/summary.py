@@ -9,7 +9,10 @@ def _n(x, nd=0):
     return "?" if x is None else f"{x:,.{nd}f}"
 
 
-def daily_summary_text(name: str, day: date, breakdown: dict | None, drives: list[dict], charges: list[dict], soc_now: float | None, range_now: float | None) -> str:
+def daily_summary_text(name: str, day: date, breakdown: dict | None, drives: list[dict], charges: list[dict], soc_now: float | None, range_now: float | None) -> str | None:
+    """None when the day left nothing to report: no drive, no charge, no sleep record."""
+    if not drives and not charges and not (breakdown and breakdown.get("known_h", 0) > 0):
+        return None
     lines = [f"{name}, {day:%A %b %-d}:"]
     if drives:
         miles = sum(d.get("miles") or 0 for d in drives)
@@ -31,7 +34,8 @@ def daily_summary_text(name: str, day: date, breakdown: dict | None, drives: lis
         lines.append(
             f"- Asleep {_n(breakdown['asleep_pct'])}% of the day ({_n(h['sleeping'], 1)} h), idle awake {_n(h['idle'], 1)} h, {breakdown['wakeups']} wake-up{'s' if breakdown['wakeups'] != 1 else ''}."
         )
-    lines.append(f"- Now {_n(soc_now)}% and {_n(range_now)} mi.")
+    if soc_now is not None:
+        lines.append(f"- Now {_n(soc_now)}%" + (f" and {_n(range_now)} mi." if range_now is not None else "."))
     return "\n".join(lines)
 
 
@@ -63,3 +67,13 @@ def drive_announcement_due(latest: dict | None, announced: str | None, now: date
     if now - latest["destination_date"] > quiet_after:
         return False
     return (latest.get("miles") or 0) >= min_miles
+
+
+def drive_whole(latest: dict, status: str | None, last_driving: datetime | None, slack: timedelta = timedelta(minutes=2)) -> bool:
+    """Whether a drive from a feed's replay is the whole drive yet. The hourly replay writes a drive still
+    under way, ended at its last sample; announced then, the 4 miles so far stand for the drive and the
+    real one never goes out. Whole: the car is not driving, and the drive ends no earlier than the last
+    moment the car was seen driving (less `slack`, the feed's own lag behind the stop)."""
+    if status == "Driving":
+        return False
+    return last_driving is None or latest["destination_date"] >= last_driving - slack

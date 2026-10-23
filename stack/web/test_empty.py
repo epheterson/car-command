@@ -98,11 +98,28 @@ def test_the_failure_is_remembered_so_every_page_does_not_pay_the_timeout(bare, 
     assert calls == [], "a connector known to be down is not asked again for a quarter minute"
 
 
-def test_with_no_connector_and_no_history_the_front_page_says_what_to_do(client):
+@pytest.fixture
+def zoned(bare):
+    """An install whose time zone is already set: the first-run questions are behind it."""
+    from datetime import datetime, timezone
+
+    bare._cache["settings"] = (datetime.now(timezone.utc), {**bare.settings_mod.DEFAULTS, "timezone": "America/Chicago"})
+
+
+def test_with_no_connector_and_no_history_the_front_page_says_what_to_do(client, zoned):
     r = client.get("/")
     assert r.status_code == 200
     assert "Nothing here yet" in r.text
-    assert "make import" in r.text and "connector" in r.text.lower()
+    assert "connector" in r.text.lower()
+    assert 'href="/settings/cars#import"' in r.text and "Import history" in r.text
+    assert "make import" not in r.text and "teslafi_load.py" not in r.text and "docker" not in r.text, "the import is a button, not commands"
+    assert "make demo" not in r.text and "carcommand demo" not in r.text, "the demo car would stay in this install"
+
+
+def test_the_one_container_is_pointed_at_the_same_import(client, monkeypatch, zoned):
+    monkeypatch.setenv("CC_INSTALL", "one-container")
+    text = client.get("/").text
+    assert 'href="/settings/cars#import"' in text and "docker" not in text and "make import" not in text
 
 
 @pytest.mark.parametrize(
@@ -131,7 +148,7 @@ def test_with_no_connector_and_no_history_the_front_page_says_what_to_do(client)
         "/charging",
     ],
 )
-def test_every_page_renders_on_an_empty_install(client, path):
+def test_every_page_renders_on_an_empty_install(client, zoned, path):
     r = client.get(path)
     assert r.status_code == 200, f"{path} answered {r.status_code}: {r.text[:300]}"
 

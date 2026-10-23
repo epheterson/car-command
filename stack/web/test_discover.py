@@ -451,3 +451,41 @@ def test_local_cells_go_back_to_the_namer_once():
 
     assert "source = 'local'" in RENAME_LOCAL_ONCE and "requeue = TRUE" in RENAME_LOCAL_ONCE
     assert "NOT EXISTS (SELECT 1 FROM cc_state" in RENAME_LOCAL_ONCE and "ON CONFLICT (key) DO NOTHING" in RENAME_LOCAL_ONCE
+
+
+# ---- where a parked car is, in words: its town from the cells the namer already named
+
+
+def test_locality_is_the_town_and_its_state():
+    from discover import locality_of
+
+    assert locality_of("Oak Avenue, Springfield", "Oak Avenue, Springfield, Sangamon County, Illinois, 62701, United States") == "Springfield, IL"
+    assert locality_of("Bravo Market", "Bravo Market, 12, Elm Street, Springfield, Sangamon County, Illinois, 62701, United States") == "Springfield, IL"
+    assert locality_of("Elm Street, Shelbyville", None) == "Shelbyville", "no display name: the town alone"
+    assert locality_of("Rue Haute, Charlieville", "Rue Haute, Charlieville, Namur, Wallonie, 5000, Belgique") == "Charlieville", "outside the US: the town"
+    assert locality_of("Unnamed", None) is None and locality_of(None, None) is None
+
+
+def test_a_spot_no_cell_names_takes_the_town_around_it():
+    from discover import locality_at, locality_index
+
+    rows = [
+        (39.801, -89.654, "Oak Avenue, Springfield", "Oak Avenue, Springfield, Sangamon County, Illinois, 62701, United States"),
+        (39.802, -89.651, "Elm Street, Springfield", "Elm Street, Springfield, Sangamon County, Illinois, 62701, United States"),
+        (39.900, -89.500, "Main Street, Shelbyville", "Main Street, Shelbyville, Shelby County, Illinois, 62565, United States"),
+    ]
+    idx = locality_index(rows)
+    assert locality_at(39.8012, -89.6533, idx) == "Springfield, IL", "its own square kilometre"
+    assert locality_at(39.8099, -89.6533, idx) == "Springfield, IL", "a neighbouring one"
+    assert locality_at(40.5, -88.0, idx) is None, "nothing named nearby: no guess"
+    assert locality_at(None, None, idx) is None
+
+
+def test_pending_cells_names_where_each_car_is_now():
+    from discover import pending_cells
+
+    conn = FakeConn(rows=[])
+    pending_cells(conn, 10)
+    sql = " ".join(conn.log[0].split())
+    assert "FROM cc_positions" in sql and "ORDER BY at DESC LIMIT 1" in sql, "each car's newest fix, by the table's (vin, at) index"
+    assert "IS DISTINCT FROM 'DRIVING'" in sql, "never a moving car's cell: the namer does not follow a drive"

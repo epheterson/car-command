@@ -6,7 +6,7 @@ TM_DB     ?= teslamate-db
 TM_DB_USER ?= teslamate
 TM_MAKE   ?= Tesla
 
-.PHONY: setup backup restore staging wheel deploy web logs test secret-key tesla-net-key tesla-up tesla-restart tesla-logs connector-lock one-container one-container-run one-container-demo one-container-multiarch one-container-move media signin-reset setup-code
+.PHONY: setup backup restore staging wheel deploy web logs test refacts secret-key tesla-net-key tesla-up tesla-restart tesla-logs connector-lock one-container one-container-run one-container-demo one-container-multiarch one-container-move media signin-reset setup-code elevation-fit
 
 # First run: stack/.env with generated passwords, and stack/secrets/. Refuses to
 # overwrite an existing .env, which holds the password to the database volume.
@@ -29,9 +29,11 @@ restore:
 staging:
 	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin ./scripts/staging.sh $(or $(ARGS),up)'
 
+# A wheel of the connector checkout at CONNECTOR, for CC_CONNECTORS to pin before it is on PyPI;
+# VERSION=0.4.0.dev1 names it, otherwise the checkout's tag does.
 wheel:
-	$(RM) -r stack/cc/wheels && mkdir -p stack/cc/wheels
-	cd $(CONNECTOR) && $(RM) -r dist && .venv/bin/python -m build --wheel -o $(CURDIR)/stack/cc/wheels
+	$(RM) stack/cc/wheels/*.whl
+	cd $(CONNECTOR) && $(RM) -r dist && $(if $(VERSION),SETUPTOOLS_SCM_PRETEND_VERSION=$(VERSION)) .venv/bin/python -m build --wheel -o $(CURDIR)/stack/cc/wheels
 	ls -1 stack/cc/wheels
 
 # Never ships .env or secrets/: those exist only on the host that runs the stack.
@@ -93,6 +95,9 @@ web:
 signin-reset:  ## locked out? forget the sign-in switch chosen in Settings and the Cloudflare Access pin (the password is kept), then restart the site
 	ssh $(MINI) 'cd $(DEST) && export PATH=$$PATH:/usr/local/bin && docker compose exec -T web python3 signin_reset.py && docker compose restart web'
 
+elevation-fit:  ## fit the Lucid's raw GPS height to metres, against the Teslas on shared roads and the terrain model (a check, changes nothing)
+	ssh $(MINI) 'cd $(DEST) && export PATH=$$PATH:/usr/local/bin && docker compose exec -T web python3 elevfit.py'
+
 setup-code:  ## print the setup code: the first password needs it after the first hour, and turning sign-in on always does
 	ssh $(MINI) 'cd $(DEST) && export PATH=$$PATH:/usr/local/bin && docker compose exec -T web python3 setup_code.py'
 
@@ -138,6 +143,18 @@ one-container-move:
 # Run the working-out again over the raw feed rows from a date, after a fix: make replay VIN=5YJ... FROM=2026-09-04
 replay:
 	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 teslafi_live.py $(VIN) $(FROM)'
+
+# Work drive and charge facts out again where they disagree with the readings, after a fix: make refacts FROM=2026-09-04 [VIN=...] [ARGS=--dry-run]
+refacts:
+	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 refacts.py $(FROM) $(if $(VIN),--vin $(VIN)) $(ARGS)'
+
+# Work a connector car's drives out again from its states and readings (the site also does this in the background for the last three days): make rebuild-drives FROM=2026-09-04 [VIN=...] [ARGS=--dry-run]
+rebuild-drives:
+	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 driverebuild.py $(FROM) $(if $(VIN),--vin $(VIN)) $(ARGS)'
+
+# Fill a connector car's charges that have an end and no start, from its CHARGING states: make charge-starts FROM=2026-09-28 [VIN=...] [ARGS=--dry-run]
+charge-starts:
+	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 chargestart.py $(FROM) $(if $(VIN),--vin $(VIN)) $(ARGS)'
 
 # Fill a hole from TeslaFi's drive and charge summaries (no routes or curves; the export has those): make teslafi-history VIN=5YJ... FROM=2026-09-04 [TO=2026-09-28]
 teslafi-history:

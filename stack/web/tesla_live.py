@@ -26,6 +26,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
 
+import fleet_usage
 import history_writer
 import identity
 import tesla_nav
@@ -63,7 +64,37 @@ LIVE_FIELDS = (
     "FpWindow",
     "RdWindow",
     "RpWindow",
+    # charging and plugged, and the charge limit, for Now's command row and the charging hold
+    "DetailedChargeState",
+    "ChargeState",
+    "ChargeLimitSoc",
+    # the cabin and outside, for Now and the API while the car is awake
+    "InsideTemp",
+    "OutsideTemp",
+    # range, charging power and energy, climate, the port, a waiting update, the driver: the rest of Now
+    "RatedRange",
+    "EstBatteryRange",
+    "ACChargingPower",
+    "DCChargingPower",
+    "ChargerVoltage",
+    "ChargeAmps",
+    "ACChargingEnergyIn",
+    "DCChargingEnergyIn",
+    "HvacPower",
+    "ClimateKeeperMode",
+    "DefrostMode",
+    "HvacLeftTemperatureRequest",
+    "PreconditioningEnabled",
+    "ChargePortDoorOpen",
+    "ChargePortLatch",
+    "ChargeRateMilePerHour",
+    "TimeToFullCharge",
+    "ChargeCurrentRequest",
+    "DriverSeatOccupied",
+    "SoftwareUpdateVersion",
+    "Version",
 )
+RESTORE = timedelta(days=3)  # how far back a restart reads the stream to know each car's last word
 
 DDL = """
 CREATE TABLE IF NOT EXISTS cc_tesla_raw (
@@ -215,6 +246,8 @@ class TeslaStream:
         if got is None:
             return False
         kind, vin, at, record = got
+        if kind == "V":
+            fleet_usage.METER.signals(vin, len(record.get("data") or []))  # billed per signal, a car not chosen here too
         if vin not in self.vins:
             if not self.dropped[vin]:
                 LOG.info("tesla stream: records from a car not chosen on Connect Tesla are dropped")
@@ -435,8 +468,24 @@ class TeslaStream:
         self.backoff = 1
         return True
 
+    def restore(self, now: datetime | None = None) -> int:
+        """Each car's last word from the stored stream, so a restart does not forget a sleeping car's
+        lock, doors, windows and charge limit until it next wakes. Writes nothing."""
+        since, n = (now or self.clock()) - RESTORE, 0
+        with self.connect() as conn:
+            for vin in sorted(self.vins):
+                for at, record in (tuple(_t(r)) for r in conn.execute("SELECT at, record FROM cc_tesla_raw WHERE vin = %s AND kind = 'V' AND at >= %s ORDER BY at", (vin, since)).fetchall()):
+                    self.carry(vin, at, record if isinstance(record, dict) else json.loads(record))
+                    n += 1
+        self.moved.clear()  # nothing restored is a new position to write
+        return n
+
     def run(self) -> None:
         self.backoff = 1
+        try:
+            LOG.info("tesla stream: %d stored records restore what each car last said", self.restore())
+        except Exception as err:  # noqa: BLE001 - a fresh install has no table yet; the cars say it again when they wake
+            LOG.warning("tesla stream: restore: %s", err)
         while not self.stopped.is_set():
             try:
                 self.serve()

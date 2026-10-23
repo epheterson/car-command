@@ -197,9 +197,15 @@ def test_the_page_suggests_narrowing_the_proxy_while_it_is_unset():
     assert "CC_ACCESS_PROXY" not in render_access(auth_enabled=True, cf_team=TEAM, cf_pinned=True, cf_proxy_unset=False)
 
 
-def test_the_setup_page_names_the_command_for_each_kind_of_install(app_module, fresh):  # noqa: F811
+def test_the_setup_page_names_only_the_command_for_this_install(app_module, fresh, monkeypatch):  # noqa: F811
+    monkeypatch.delenv("CC_INSTALL", raising=False)
     page = client_from(app_module, "203.0.113.9").get("/setup").text
-    assert "docker compose exec web python3 setup_code.py" in page and "docker exec carcommand carcommand web python3 setup_code.py" in page and "make setup-code" in page
+    assert "docker compose -f stack/docker-compose.yml exec web python3 setup_code.py" in page
+    assert "carcommand web python3" not in page and "make setup-code" not in page
+    monkeypatch.setenv("CC_INSTALL", "one-container")
+    page = client_from(app_module, "203.0.113.9").get("/setup").text
+    assert "docker exec carcommand carcommand web python3 setup_code.py" in page
+    assert "docker compose" not in page and "make setup-code" not in page
 
 
 # ---- 10. /setup counts the attempt first

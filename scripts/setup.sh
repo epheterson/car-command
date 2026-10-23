@@ -18,8 +18,8 @@ die() {
 
 [[ -f $example ]] || die "cannot find stack/.env.example — run this from a checkout"
 
-# Where to open the site and, if it asks, the setup code. The code is derived from the signing key the site makes at
-# its first start, so it can be printed only once the site has run; before that, this says how to get it.
+# Where to open the site and, if it asks, the setup code. The code is derived from the signing key and asked of the
+# running site, so it can be printed only once the site has run; before that, this says how to get it.
 open_hint() {
     local port code
     port=$(sed -n 's/^CC_PORT=//p' "$env_file" 2>/dev/null | tail -1)
@@ -30,6 +30,8 @@ open_hint() {
     fi
     if [[ -n $code ]]; then
         echo "Open http://localhost:${port:-3044} and, if asked, use setup code $code"
+    elif [[ ${1:-} == fresh ]]; then
+        : # a first run before the site exists: the steps above say how to start it and get the code
     else
         echo "Open http://localhost:${port:-3044} and, if asked for a setup code, get it with:"
         echo "  docker compose -f stack/docker-compose.yml exec web python3 setup_code.py"
@@ -57,6 +59,10 @@ while IFS= read -r line; do
     if [[ $line == *GENERATE_KEY* ]]; then
         line="${line/GENERATE_KEY/$(openssl rand -base64 32 | tr '+/' '-_')}"
     fi
+    # The key that signs sessions, here rather than in the database, so a dump alone cannot mint a session.
+    if [[ $line == "CC_SECRET=" ]]; then
+        line="CC_SECRET=$(openssl rand -hex 32)"
+    fi
     printf '%s\n' "$line" >>"$env_file"
 done <"$example"
 
@@ -74,8 +80,11 @@ Wrote stack/.env (mode 600) with generated passwords, and stack/secrets/ (mode 7
 
 Next:
   docker compose -f stack/docker-compose.yml up -d db web
-      The site on http://localhost:3044. It will ask you to choose a password.
-      That is enough to import history from TeslaFi or TeslaMate.
+      The site comes up on the port in CC_PORT (3044 unless you set it in stack/.env) and asks you to
+      choose a password. That is enough to import history from TeslaFi or TeslaMate.
+
+  If it asks for a setup code, the running site prints it:
+      docker compose -f stack/docker-compose.yml exec web python3 setup_code.py
 
   For Lucid or another brand, start the connector too, then add the car on
   Settings › Cars and sources:
@@ -83,4 +92,4 @@ Next:
 
 Nothing in stack/.env or stack/secrets/ is ever committed or copied by make deploy.
 EOF
-open_hint
+open_hint fresh

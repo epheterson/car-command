@@ -8,9 +8,13 @@ stack/config), started in order and kept running by this file:
     schema     stack/cc/init_db.py, once, before anything reads the tables
     web        the site on port 3044, as the user `web`
     cc         the connector, through stack/cc/entrypoint.sh, as compose runs it
+    tesla-net  Tesla's live stream, only with a Tailscale auth key (or a node that signed in
+    receiver   before): the Funnel node and Tesla's receiver, each as its own user
+    tesla-proxy  Tesla's signing proxy, on localhost only, when a Tesla app is set (commands)
 
 Everything kept is under /data: postgres/, secrets/ (made on the first start, one file per
-value, root's alone), logs/ (bounded), plugins/ and connector/ (the connector's files).
+value, root's alone), logs/ (bounded), plugins/ and connector/ (the connector's files), and
+tesla/ when the stream runs (the node's identity and the receiver's certificate).
 Settings come from the environment under the names stack/.env uses; the passwords and the
 key are generated here instead, and once written, the files win over the environment.
 
@@ -24,6 +28,7 @@ connector, then gives Postgres a fast shutdown.
     carcommand demo             six weeks of a fictional car, the same steps as `make demo`
     carcommand backup > FILE    a pg_dump of the database (custom format)
     carcommand restore [--force] < FILE   into a stopped container's volume (docs/install.md)
+    carcommand tesla-proxy      the signing proxy's start, as the supervisor runs it
 
 Only the Python standard library: this runs before anything else is up.
 """
@@ -80,10 +85,19 @@ def _fernet() -> str:
     return base64.urlsafe_b64encode(os.urandom(32)).decode()
 
 
-# What the first start generates, under the names stack/.env gives them.
-GENERATED = {"DB_PASSWORD": _hex, "WEBUI_PASSWORD": _hex, "REST_PASSWORD": _hex, "CC_SECRET_KEY": _fernet}
+def _signing() -> str:
+    return rnd.token_urlsafe(32)
+
+
+# What the first start generates, under the names stack/.env gives them. CC_SECRET signs the site's sessions; kept
+# here rather than in the database, a dump alone cannot mint a session or the setup code.
+GENERATED = {"DB_PASSWORD": _hex, "WEBUI_PASSWORD": _hex, "REST_PASSWORD": _hex, "CC_SECRET_KEY": _fernet, "CC_SECRET": _signing}
+# A volume made before CC_SECRET was generated keeps the key the site stored in its database: a new one here would
+# sign everyone out. Written by hand or seeded from the environment, it is used (docs/install.md says how).
+NOT_ON_OLD_VOLUMES = {"CC_SECRET"}
+PLACEHOLDER = "CHANGE_ME"  # stack/.env.example's stand-in for a password; make setup replaces every one
 # What the site never needs to see, whatever the container was started with.
-NOT_FOR_WEB = {"DB_PASSWORD", "WEBUI_PASSWORD", "DB_HOST", "DB_USER", "DB_NAME", "PYTHONPATH", "PYTHONUSERBASE", "PYTHONNOUSERSITE", "CC_DATA", "CC_AIO_RUN"}
+NOT_FOR_WEB = {"DB_PASSWORD", "WEBUI_PASSWORD", "DB_HOST", "DB_USER", "DB_NAME", "PYTHONPATH", "PYTHONUSERBASE", "PYTHONNOUSERSITE", "CC_DATA", "CC_AIO_RUN", "TS_AUTHKEY", "TS_AUTH_KEY"}
 
 
 # ---------------------------------------------------------------- secrets
@@ -114,9 +128,14 @@ def ensure_secrets(directory: Path, env, make=GENERATED) -> dict:
     because a container was started with different flags."""
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
+    fresh = not (directory / "DB_PASSWORD").exists()
     out = {}
     for name, gen in make.items():
         path, given = directory / name, (env.get(name) or "").strip()
+        if not path.exists() and given == PLACEHOLDER:
+            raise SystemExit(f"{name} is still {PLACEHOLDER}, the placeholder from stack/.env.example. Leave it unset and one is generated, or run make setup.")
+        if not path.exists() and not given and not fresh and name in NOT_ON_OLD_VOLUMES:
+            continue
         if path.exists():
             value = path.read_text().strip()
             if given and given != value:
@@ -144,10 +163,12 @@ def _polls(env) -> dict:
     return {"CC_POLL_IDLE_S": env.get("CC_POLL_IDLE_S") or "60", "CC_POLL_DRIVING_S": env.get("CC_POLL_DRIVING_S") or "15"}
 
 
-def web_env(env, s: dict) -> dict:
-    """The container's settings (the names stack/.env uses), plus what compose wired in."""
+def web_env(env, s: dict, stream: dict | None = None) -> dict:
+    """The container's settings (the names stack/.env uses), plus what compose wired in, plus
+    where the stream's receiver is when it runs here (stream_web_settings)."""
     out = {k: v for k, v in env.items() if k not in NOT_FOR_WEB}
     out.update(_polls(env))
+    out.update(stream or {})
     out.update(
         PATH=f"{WEB_BIN}:{BASE_PATH}",
         HOME="/tmp",
@@ -156,7 +177,13 @@ def web_env(env, s: dict) -> dict:
         REST_USER=env.get("REST_USER") or "admin",
         REST_PASSWORD=s["REST_PASSWORD"],
         CC_SECRET_KEY=s["CC_SECRET_KEY"],
+        TERRAIN_DIR=str(DATA / "terrain"),
+        CC_IMPORT_DIR=str(DATA / "imports"),
+        CC_INSTALL="one-container",  # the site shows this install's commands (welcome.html)
     )
+    if s.get("CC_SECRET"):
+        out["CC_SECRET"] = s["CC_SECRET"]
+    out.update(proxy_env(env))
     return out
 
 
@@ -271,9 +298,11 @@ def backoff(failures: int) -> int:
 class Proc:
     """One long-running program: started, watched, started again after a pause, stopped."""
 
-    def __init__(self, name, argv, env, cwd="/", user=None, stop_signal=signal.SIGTERM, whole_group=True, hint=""):
+    def __init__(self, name, argv, env, cwd="/", user=None, stop_signal=signal.SIGTERM, whole_group=True, hint="", gate=None, gate_hint="", umask=-1):
         self.name, self.argv, self.env, self.cwd, self.user = name, argv, env, cwd, user
         self.stop_signal, self.whole_group, self.hint = stop_signal, whole_group, hint
+        # gate: a check that must pass before each start; until it does, status shows gate_hint.
+        self.gate, self.gate_hint, self.umask = gate, gate_hint, umask
         self.child, self.started, self.failures, self.restarts = None, None, 0, 0
         self.next_start, self.last_exit, self.state = 0.0, None, "stopped"
 
@@ -296,7 +325,7 @@ class Proc:
         return True
 
     def due(self, now: float) -> bool:
-        return self.state == "waiting" and now >= self.next_start
+        return self.state == "waiting" and now >= self.next_start and (self.gate is None or self.gate())
 
     def signal(self, sig) -> None:
         if self.child is None or self.child.poll() is not None:
@@ -318,11 +347,15 @@ class Proc:
             out.update(pid=self.child.pid, up_s=int(now - self.started))
         if self.state == "waiting":
             out["next_start_in_s"] = max(0, int(self.next_start - now))
+            if self.gate is not None and not self.gate():
+                out["held"] = self.gate_hint
         return out
 
 
 def spawn(proc: Proc):
-    return subprocess.Popen(proc.argv, env=proc.env, cwd=proc.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, **as_user(proc.user))
+    return subprocess.Popen(
+        proc.argv, env=proc.env, cwd=proc.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True, umask=proc.umask, **as_user(proc.user)
+    )
 
 
 def stop_all(procs: list[Proc], timeout: float, clock=time.monotonic, sleep=time.sleep) -> None:
@@ -356,9 +389,10 @@ def web_answers(timeout: float = 5) -> bool:
 class Supervisor:
     """Starts what is due, notices what stopped, restarts the site when it stops answering."""
 
-    def __init__(self, procs: list[Proc], logs: Logs, spawn=spawn, check_web=web_answers, status_path: Path | None = None):
+    def __init__(self, procs: list[Proc], logs: Logs, spawn=spawn, check_web=web_answers, status_path: Path | None = None, watchers=()):
         self.procs, self.logs, self.spawn, self.check_web, self.status_path = procs, logs, spawn, check_web, status_path
         self.web_fails, self.web_checked, self.web_term_at = 0, 0.0, None
+        self.watchers = list(watchers)  # called each tick with the time, after the starts
 
     def get(self, name: str) -> Proc:
         return next(p for p in self.procs if p.name == name)
@@ -368,6 +402,8 @@ class Supervisor:
             p.exited(now)
             if p.due(now):
                 p.start(now, self.spawn, self.logs)
+        for watch in self.watchers:
+            watch(now)
         self._watch_web(now)
         self._write_status(now)
 
@@ -437,6 +473,8 @@ def prepare_dirs() -> None:
         (DATA / "postgres", "postgres", 0o700),
         (DATA / "plugins", "carcommand", 0o700),
         (DATA / "connector", "carcommand", 0o700),
+        (DATA / "terrain", "web", 0o700),  # elevation tiles, written by the site
+        (DATA / "imports", "web", 0o700),  # history exports uploaded in Settings, kept while an import runs
         (Path(PG_SOCKET), "postgres", 0o750),  # the socket is Postgres's own: nobody else reaches it
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -575,6 +613,178 @@ def role_sql(password: str) -> str:
     )
 
 
+# ---------------------------------------------------------------- Tesla's live stream
+#
+# What compose runs as tesla-net and tesla-telemetry (docs/tesla-stream.md), from the same
+# images' binaries: containerboot brings up tailscaled in userspace networking and Funnel
+# per serve.json, stack/tesla/net.sh beside it keeps the receiver's certificate current,
+# and Tesla's receiver hands each record to the site over a socket only the site may open.
+# It runs only with a Tailscale auth key, or a node that has signed in before.
+
+TS_HOSTNAME, TS_TAG = "carcommand-stream", "tag:carcommand-tesla"  # as in docker-compose.yml
+NET_USER, RECEIVER_USER = "tsnet", "telemetry"
+NET_RUN = Path("/run/tesla-net")  # the node's socket and its auth key file: the node's alone
+STREAM_RUN = Path("/run/tesla-stream")  # the receiver's socket: the receiver's, and the site's through the group
+STREAM_ZMQ = "ipc:///run/tesla-stream/zmq.sock"
+TESLA_SRC = "/srv/tesla"
+TS_KEY_FILE = "tailscale-authkey"  # in /data/secrets, the name compose's secrets/ gives it
+
+
+def stream_dirs() -> tuple[Path, Path]:
+    """The node's state (its identity: lose it and the cars' address goes with it) and the
+    receiver's certificate."""
+    return DATA / "tesla" / "net", DATA / "tesla" / "certs"
+
+
+def tailscale_key(env, secrets_dir: Path) -> str | None:
+    """TS_AUTHKEY on the run line (or file:PATH, as compose passes it), else the file
+    /data/secrets/tailscale-authkey."""
+    given = (env.get("TS_AUTHKEY") or env.get("TS_AUTH_KEY") or "").strip()
+    if given.startswith("file:"):
+        path = Path(given[len("file:") :])
+        try:
+            given = path.read_text().strip()
+        except OSError as err:
+            raise SystemExit(f"TS_AUTHKEY names {path}, which cannot be read ({err.strerror})")
+    if not given and (secrets_dir / TS_KEY_FILE).exists():
+        given = (secrets_dir / TS_KEY_FILE).read_text().strip()
+    return given or None
+
+
+def stream_wanted(key: str | None, state_dir: Path) -> bool:
+    return bool(key) or (state_dir / "tailscaled.state").exists()
+
+
+def stream_host(certs: Path) -> str:
+    """The node's public name, which net.sh writes beside the certificate it gets for it."""
+    try:
+        return (certs / "host").read_text().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def stream_web_settings(env, certs: Path) -> dict:
+    """The receiver's socket, and the stream's name: the run line's, or the node's once known."""
+    out = {"TESLA_STREAM_ZMQ": STREAM_ZMQ}
+    host = (env.get("TESLA_STREAM_HOST") or "").strip() or stream_host(certs)
+    if host:
+        out["TESLA_STREAM_HOST"] = host
+    return out
+
+
+def net_env(key_file: Path | None) -> dict:
+    """containerboot's settings, as compose gives them, with the state in the volume."""
+    state, certs = stream_dirs()
+    out = {
+        "PATH": BASE_PATH,
+        "HOME": "/tmp",
+        "TS_HOSTNAME": TS_HOSTNAME,
+        "TS_EXTRA_ARGS": f"--advertise-tags={TS_TAG}",
+        "TS_AUTH_ONCE": "true",
+        "TS_STATE_DIR": str(state),
+        "TS_SOCKET": str(NET_RUN / "tailscaled.sock"),
+        "TS_USERSPACE": "true",
+        "TS_SERVE_CONFIG": f"{TESLA_SRC}/serve.json",
+        # net.sh: certificates here, readable by the receiver through the directory's group;
+        # the supervisor restarts the receiver on a new one (StreamWatch).
+        "TS_CERT_DIR": str(certs),
+        "RECEIVER_UID": "",
+    }
+    if key_file:
+        out["TS_AUTHKEY"] = f"file:{key_file}"  # tailscale up sees a path, never the key
+    return out
+
+
+def cert_stamp(certs: Path):
+    """What identifies the certificate now, or None while there is no certificate and key."""
+    try:
+        st = (certs / "tls.crt").stat()
+        (certs / "tls.key").stat()
+    except FileNotFoundError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def stream_procs(key_file: Path | None) -> tuple[Proc, Proc]:
+    certs = stream_dirs()[1]
+    net = Proc("tesla-net", ["/bin/sh", f"{TESLA_SRC}/net.sh"], net_env(key_file), cwd="/tmp", user=NET_USER)
+    receiver = Proc(
+        "receiver",
+        ["/usr/local/bin/fleet-telemetry", "-config", f"{TESLA_SRC}/telemetry.json"],
+        {"PATH": BASE_PATH, "HOME": "/tmp"},
+        cwd="/tmp",
+        user=RECEIVER_USER,
+        whole_group=False,
+        gate=lambda: cert_stamp(certs) is not None,
+        gate_hint="for its certificate",
+        # Its socket is made group-writable, and /run/tesla-stream gives it the site's group.
+        umask=0o007,
+    )
+    receiver.state = "waiting"  # started by the supervisor once the certificate is there
+    return net, receiver
+
+
+def own(path: Path, user: str, group: str, mode: int, deep: bool = False) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    uid, gid = ids(user)[0], ids(group)[1]
+    st = path.stat()
+    if (st.st_uid, st.st_gid) != (uid, gid):
+        if deep:
+            subprocess.run(["chown", "-R", f"{uid}:{gid}", str(path)], check=True)
+        else:
+            os.chown(path, uid, gid)
+    os.chmod(path, mode)
+
+
+def prepare_stream(key: str | None) -> Path | None:
+    """The stream's directories, each its part's own, and the auth key where only the node
+    reads it. Returns that file, or None when no key was given."""
+    state, certs = stream_dirs()
+    own(DATA / "tesla", "root", "root", 0o711)
+    own(state, NET_USER, NET_USER, 0o700, deep=True)  # a node's state copied in from compose is root's
+    own(certs, NET_USER, RECEIVER_USER, 0o2750)  # files made here take the receiver's group
+    own(NET_RUN, NET_USER, NET_USER, 0o700)
+    own(STREAM_RUN, RECEIVER_USER, "web", 0o2750)
+    key_file = NET_RUN / "authkey"
+    if not key:
+        key_file.unlink(missing_ok=True)
+        return None
+    write_secret(key_file, key)
+    if os.geteuid() == 0:
+        os.chown(key_file, *ids(NET_USER))
+    return key_file
+
+
+class StreamWatch:
+    """On a new certificate, restarts the receiver, which reads it only when it starts; and
+    once the node's name is known, gives it to a site that was started without one."""
+
+    def __init__(self, receiver: Proc, web: Proc, certs: Path):
+        self.receiver, self.web, self.certs = receiver, web, certs
+        self.stamp = cert_stamp(certs)
+
+    def __call__(self, now: float) -> None:
+        stamp = cert_stamp(self.certs)
+        if stamp == self.stamp:
+            return
+        renewed, self.stamp = self.stamp is not None, stamp
+        if stamp is None:
+            return
+        # A first certificate needs no restart: the receiver was waiting for it.
+        if renewed and self.receiver.state == "running":
+            LOG.info("the receiver's certificate is new; restarting the receiver on it")
+            self.receiver.signal(signal.SIGTERM)
+        host, given = stream_host(self.certs), self.web.env.get("TESLA_STREAM_HOST", "")
+        if not host or host == given:
+            return
+        if given:
+            LOG.warning("TESLA_STREAM_HOST is %s, but the node's name is %s; the cars stream only to the name the node has", given, host)
+            return
+        LOG.info("the stream's address is %s; restarting the site so it uses it", host)
+        self.web.env["TESLA_STREAM_HOST"] = host
+        self.web.signal(signal.SIGTERM)
+
+
 # ---------------------------------------------------------------- start
 
 
@@ -657,13 +867,19 @@ def start() -> int:
         signal.signal(sig, lambda *_: stopping.set())
     s, db = bring_up_database(logs)
     env = dict(os.environ)
+    certs = stream_dirs()[1]
     try:
         if run_logged(["python3", f"{CC_DIR}/init_db.py"], logs, "schema", env=schema_env(env, s), cwd=CC_DIR, **as_user("carcommand")):
             raise SystemExit("the schema step failed; its lines above say why")
+        key = tailscale_key(env, DATA / "secrets")
+        stream = stream_wanted(key, stream_dirs()[0])
+        tesla = list(stream_procs(prepare_stream(key))) if stream else []
     except BaseException:
         shutdown([db])
         raise
-    web = Proc("web", web_argv(), web_env(env, s), cwd=WEB_DIR, user="web")
+    if stream:
+        LOG.info("Tesla's live stream: on (%s)", "signing the node in with the auth key" if key else "the node signed in before")
+    web = Proc("web", web_argv(), web_env(env, s, stream_web_settings(env, certs) if stream else None), cwd=WEB_DIR, user="web")
     cc = Proc(
         "cc",
         [f"{CC_DIR}/entrypoint.sh"],
@@ -675,10 +891,13 @@ def start() -> int:
         user=None,
         hint="With no car source yet that is expected: add one on Settings › Cars and sources and it starts by itself.",
     )
-    sup = Supervisor([db, web, cc], logs, status_path=RUN / "status.json")
+    proxy = [p for p in (tesla_proxy_proc(env, s),) if p]
+    watchers = [StreamWatch(tesla[1], web, certs)] if tesla else []
+    sup = Supervisor([db, web, cc, *tesla, *proxy], logs, status_path=RUN / "status.json", watchers=watchers)
     now = time.monotonic()
     try:
-        for p in (web, cc):
+        # The receiver waits for its certificate; StreamWatch starts it.
+        for p in (web, cc, *tesla[:1], *proxy):
             p.start(now, spawn, logs)
     except BaseException:
         shutdown(sup.procs)
@@ -689,13 +908,101 @@ def start() -> int:
     return 0
 
 
+# ---------------------------------------------------------------- Tesla's signing proxy
+# tesla-http-proxy (teslamotors/vehicle-command, pinned in the Dockerfile) signs the site's
+# Tesla commands with the app's key. It runs as its own user, listens on localhost only,
+# and reads the key from a file only that user can read. The key lives sealed in the
+# database; the site opens it (`tesla_proxy.py export`, run as the site) and this writes the
+# files and becomes the proxy. Until Connect Tesla has made the key it waits, quietly.
+
+PROXY_BIN = "/usr/local/bin/tesla-http-proxy"
+PROXY_USER = "teslaproxy"
+PROXY_PORT = 4443
+PROXY_DIR = RUN / "tesla-proxy"
+PROXY_WAIT_S = 60
+PROXY_NO_KEY = 3  # tesla_proxy.py export: no key yet
+
+
+def proxy_wanted(env) -> bool:
+    """Nobody pointed the site at a proxy of their own. A Tesla app can now be entered on the
+    Connect Tesla page as well as in the environment, so the proxy cannot wait on
+    TESLA_CLIENT_ID; it waits, quietly, for the key Connect Tesla makes (PROXY_NO_KEY)."""
+    return not (env.get("TESLA_PROXY_URL") or "").strip()
+
+
+def proxy_env(env) -> dict:
+    """Where the site finds the proxy, and the certificate it pins."""
+    if not proxy_wanted(env):
+        return {}
+    return {"TESLA_PROXY_URL": f"https://localhost:{PROXY_PORT}", "TESLA_PROXY_CERT": str(PROXY_DIR / "tls.crt")}
+
+
+def proxy_argv(directory: Path = PROXY_DIR) -> list[str]:
+    return [PROXY_BIN, "-key-file", str(directory / "key.pem"), "-cert", str(directory / "tls.crt"), "-tls-key", str(directory / "tls.key"), "-host", "localhost", "-port", str(PROXY_PORT)]
+
+
+def tesla_proxy_proc(env, s: dict) -> Proc | None:
+    if not proxy_wanted(env) or not Path(PROXY_BIN).exists():
+        return None
+    return Proc(
+        "tesla-proxy", ["python3", "/srv/aio/carcommand.py", "tesla-proxy"], {"PATH": BASE_PATH, "HOME": "/tmp", "LANG": "en_US.UTF-8"}, hint="Tesla commands are unavailable until it stays up."
+    )
+
+
+def write_proxy_files(files: dict, directory: Path, owner: tuple[int, int]) -> None:
+    """The keys 0600 for the proxy's user alone; the certificate readable, for the site to pin."""
+    directory.mkdir(mode=0o711, parents=True, exist_ok=True)
+    os.chmod(directory, 0o711)
+    for name in ("key.pem", "tls.key", "tls.crt"):
+        path, tmp = directory / name, directory / f".{name}.tmp"
+        mode = 0o644 if name == "tls.crt" else 0o600
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+        with os.fdopen(fd, "w") as fh:
+            if os.geteuid() == 0:
+                os.fchown(fh.fileno(), *owner)
+            os.fchmod(fh.fileno(), mode)
+            fh.write(files[name])
+        os.replace(tmp, path)
+
+
+def export_proxy_files(env) -> tuple[int, str]:
+    """(exit code, stdout) of the site's export, run as the site with its settings."""
+    p = subprocess.run([f"{WEB_BIN}/python3", "tesla_proxy.py", "export"], env=web_env(env, read_secrets()), cwd=WEB_DIR, capture_output=True, text=True, timeout=60, **as_user("web"))
+    if p.returncode not in (0, PROXY_NO_KEY) and p.stderr:
+        print(p.stderr.strip()[-300:], flush=True)
+    return p.returncode, p.stdout
+
+
+def tesla_proxy(env=None, export=export_proxy_files, sleep=time.sleep, execve=os.execve) -> int:
+    """The proxy's start, as root: the key from the site, the files for the proxy's user, then
+    the proxy itself in this process's place, as that user."""
+    env = dict(os.environ if env is None else env)
+    said = False
+    while True:
+        code, out = export(env)
+        if code == 0:
+            break
+        if code == PROXY_NO_KEY and not said:
+            print("waiting for Connect Tesla to make the app's key", flush=True)
+            said = True
+        sleep(PROXY_WAIT_S)
+    owner = ids(PROXY_USER) if os.geteuid() == 0 else (os.getuid(), os.getgid())
+    write_proxy_files(json.loads(out), PROXY_DIR, owner)
+    if os.geteuid() == 0:
+        os.setgroups([])
+        os.setgid(owner[1])
+        os.setuid(owner[0])
+    execve(PROXY_BIN, proxy_argv(), {"PATH": BASE_PATH, "HOME": "/tmp"})
+    return 0
+
+
 # ---------------------------------------------------------------- the other commands
 
 
 def read_secrets() -> dict:
     d = DATA / "secrets"
     try:
-        return {n: (d / n).read_text().strip() for n in GENERATED}
+        return {n: (d / n).read_text().strip() for n in GENERATED if n not in NOT_ON_OLD_VOLUMES or (d / n).exists()}
     except PermissionError:
         raise SystemExit("run this as root (docker exec runs as root unless told otherwise)")
     except FileNotFoundError:
@@ -734,9 +1041,10 @@ def status() -> int:
         print("not started yet")
         return 1
     age = int(time.time()) - body["at"]
+    width = max((len(n) for n in body["processes"]), default=0) + 1
     for name, p in body["processes"].items():
-        extra = f"up {p['up_s']} s" if p["state"] == "running" else (f"next start in {p.get('next_start_in_s', 0)} s" if p["state"] == "waiting" else "")
-        print(f"{name:<9}{p['state']:<9}{extra:<22}restarts {p['restarts']}" + (f", last exit {p['last_exit']}" if p["last_exit"] is not None else ""))
+        extra = f"up {p['up_s']} s" if p["state"] == "running" else (p.get("held") or f"next start in {p.get('next_start_in_s', 0)} s" if p["state"] == "waiting" else "")
+        print(f"{name:<{width}}{p['state']:<9}{extra:<22}restarts {p['restarts']}" + (f", last exit {p['last_exit']}" if p["last_exit"] is not None else ""))
     if age > 30:
         print(f"(this was written {age} s ago: the supervisor is not keeping it current)")
         return 1
@@ -854,6 +1162,8 @@ def main(argv: list[str]) -> int:
         return backup()
     if cmd == "restore":
         return restore(force="--force" in rest)
+    if cmd == "tesla-proxy":
+        return tesla_proxy()
     print(__doc__, file=sys.stderr)
     return 2
 

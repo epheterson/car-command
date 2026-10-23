@@ -255,9 +255,9 @@ def test_power_runs_end_when_charging_stops():
 
 def test_fast_charger_flag_in_both_spellings():
     r = [
-        row("2026-08-01 10:00:00", charging_state="Charging", chargeNumber="1", fast_charger_present="1", fast_charger_type="Tesla"),
-        row("2026-08-01 11:00:00", charging_state="Charging", chargeNumber="2", fast_charger_present="0", fast_charger_type="MCSingleWireCAN"),
-        row("2026-08-01 12:00:00", charging_state="Charging", chargeNumber="3", fast_charger_present="True", fast_charger_type=""),
+        row(f"2026-08-01 {h}:{m}:00", charging_state="Charging", chargeNumber=n, fast_charger_present=present, fast_charger_type=kind, charge_energy_added=kwh)
+        for n, h, present, kind in (("1", 10, "1", "Tesla"), ("2", 11, "0", "MCSingleWireCAN"), ("3", 12, "True", ""))
+        for m, kwh in (("00", "0"), ("20", "5"))
     ]
     out = replay(parse(csv_text(r), tz=PT))
     assert [c["charging_type"] for c in out["charging_sessions"]] == ["DC", "AC", "DC"]
@@ -272,7 +272,7 @@ def test_modes_inside_temperature_and_elevation_ride_along():
         row("2026-08-01 09:00:00", state="asleep", sentry_mode="", is_climate_on="", inside_tempF=""),
     ]
     out = replay(parse(csv_text(r), tz=PT))
-    assert [v for _, _, v in out["modes"]] == [(True, False), (True, True)]  # asleep rows do not assert a mode
+    assert [v for _, _, v in out["modes"]] == [(True, False), (True, True), (False, False)]  # asleep: neither
     assert [v for _, _, v in out["inside_temperatures"]] == [95.0, 90.0, 85.0]
     assert [p[8] for p in out["positions"]] == [120.5, 131.0, 140.0]
 
@@ -283,10 +283,10 @@ def test_mode_encoding_switches_eras_when_a_3_or_2_appears():
         row("2024-08-01 08:01:00", sentry_mode="0", is_climate_on="0", fan_status="0"),
         row("2025-08-01 08:00:00", sentry_mode="3", is_climate_on="2", fan_status="4"),  # new era begins
         row("2025-08-01 08:01:00", sentry_mode="1", is_climate_on="1", fan_status="0"),  # now 1 is idle
-        row("2025-08-01 08:02:00", sentry_mode="1", is_climate_on="1", fan_status="2"),
-    ]  # unless the fan is running
+        row("2025-08-01 08:02:00", sentry_mode="1", is_climate_on="1", fan_status="2", inside_tempF="110"),
+    ]  # a 1 with the fan running is Cabin Overheat Protection: not climate
     out = replay(parse(csv_text(r), tz=PT))
-    assert [v for _, _, v in out["modes"]] == [(True, True), (False, False), (True, True), (False, False), (False, True)]
+    assert [v for _, _, v in out["modes"]] == [(True, True), (False, False), (True, True), (False, False)]
 
 
 def test_charging_electrics_run_while_charging_only():
@@ -341,3 +341,54 @@ def test_charge_limit_reads_the_target_off_the_row():
     assert charge_limit("80") == 80.0 and charge_limit("90.0") == 90.0
     for v in (None, "", "  ", "0", "-5", "101", "abc"):
         assert charge_limit(v) is None, v
+
+
+def test_a_charge_that_added_nothing_in_a_few_minutes_is_not_a_charge():
+    """A car woken for its scheduled charge reads Charging for half a minute, stops, and
+    starts for real ten minutes later. The blip added nothing, so it is not a session; a
+    short charge that did add something, and a long one whose meter never moved, stay."""
+    r = [
+        row("2026-08-01 01:30:00", charging_state="Charging", chargeNumber="7", charge_energy_added="0", battery_level="40"),
+        row("2026-08-01 01:31:00", charging_state="Stopped", chargeNumber="7", charge_energy_added="0.03", battery_level="40"),
+        row("2026-08-01 01:40:00", charging_state="Charging", chargeNumber="8", charge_energy_added="0", battery_level="40"),
+        row("2026-08-01 01:42:00", charging_state="Charging", chargeNumber="8", charge_energy_added="0.3", battery_level="40"),
+        row("2026-08-01 09:00:00", charging_state="Charging", chargeNumber="9", battery_level="50"),
+        row("2026-08-01 09:30:00", charging_state="Charging", chargeNumber="9", battery_level="60"),
+    ]
+    out = replay(parse(csv_text(r), tz=PT))
+    assert [(c["session_start_date"].astimezone(PT).strftime("%H:%M"), c["real_charged"] and round(c["real_charged"], 2)) for c in out["charging_sessions"]] == [("01:40", 0.3), ("09:00", None)]
+
+
+def test_sentry_aware_is_on_and_the_live_feed_reads_the_new_codes_from_its_first_row():
+    """A day and a half of the feed with no 3 or 2 in it is still the 2025 encoding: idle and
+    the climate's 1 with the fan still were read as on, ten hours of climate a parked day."""
+    r = [
+        row("2026-10-15 09:00:00", sentry_mode="1", is_climate_on="1", fan_status="0"),
+        row("2026-10-15 09:01:00", sentry_mode="3", is_climate_on="1", fan_status="0"),
+        row("2026-10-15 09:02:00", sentry_mode="4", is_climate_on="1", fan_status="0"),  # aware: someone walked past
+        row("2026-10-15 09:03:00", sentry_mode="0", is_climate_on="2", fan_status="3"),
+    ]
+    live = replay(parse(csv_text(r), tz=PT), new_modes=True)
+    assert [v for _, _, v in live["modes"]] == [(False, False), (True, False), (False, True)]
+    export = replay(parse(csv_text(r), tz=PT))
+    assert [v for _, _, v in export["modes"]][0] == (True, True), "an export still learns its era from what it holds"
+
+
+def test_a_drive_takes_its_first_and_last_minutes_from_the_readings_either_side():
+    """Polled once a minute, a drive's first driving row is already 0.6 mi down the road and
+    its last is short of where it parked: the reading just before and just after are its edges."""
+    r = [
+        row("2026-10-16 11:09:00", odometer="63371.49", latitude="40.700", longitude="-74.000", shift_state="P"),
+        row("2026-10-16 11:10:00", odometer="63372.11", latitude="40.705", longitude="-74.000", shift_state="D", driveNumber="7127", speed="51"),
+        row("2026-10-16 11:11:00", odometer="63373.00", latitude="40.715", longitude="-74.000", shift_state="D", driveNumber="7127", speed="54"),
+        row("2026-10-16 11:12:00", odometer="63373.10", latitude="40.716", longitude="-74.000", shift_state="P"),
+        row("2026-10-16 11:30:00", odometer="63373.10", latitude="40.716", longitude="-74.000", shift_state="P"),
+        row("2026-10-16 12:00:00", odometer="63380.00", latitude="40.800", longitude="-74.000", shift_state="D", driveNumber="7128"),  # 30 min on: no edge
+        row("2026-10-16 12:01:00", odometer="63380.50", latitude="40.805", longitude="-74.000", shift_state="D", driveNumber="7128"),
+    ]
+    first, second = replay(parse(csv_text(r), tz=PT), edges=True)["trips"]
+    assert (first["start_odometer"], first["destination_odometer"]) == (63371.49, 63373.10)
+    assert first["start_position_latitude"] == 40.700 and first["destination_position_latitude"] == 40.716
+    assert first["start_date"].minute == 10, "the start time is the first driving row's: a replay keeps the drive's id by it"
+    assert second["start_odometer"] == 63380.00, "a reading half an hour before is not this drive's edge"
+    assert replay(parse(csv_text(r), tz=PT))["trips"][0]["start_odometer"] == 63372.11, "a dense logger's own drive edges stand"

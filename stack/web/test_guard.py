@@ -24,13 +24,15 @@ def app_module():
 
 
 @pytest.fixture
-def client(app_module):
+def client(app_module, monkeypatch):
     # No `with`: the lifespan would want the database. The middleware runs either way.
     from fastapi.testclient import TestClient
 
     import auth
 
     app_module.AUTH.update(enabled=True, secret=auth.new_secret(), password=auth.hash_password("a good long password", n=2**10))
+    monkeypatch.setitem(app_module.AUTH, "epoch", 0)
+    monkeypatch.setitem(app_module.AUTH, "revoked", {})
     return TestClient(app_module.app, follow_redirects=False)
 
 
@@ -128,9 +130,10 @@ def test_a_token_minted_for_another_session_does_not_travel(app_module, client):
     assert r.status_code == 400
 
 
-def test_signing_out_clears_the_cookie(app_module, client):
+def test_signing_out_clears_the_cookie(app_module, client, monkeypatch):
     import auth
 
+    _store(app_module, monkeypatch)
     cookie = signed_in(app_module, client)
     r = client.post("/logout", data={"csrf_token": auth.csrf_token(app_module.AUTH["secret"], cookie)})
     assert r.status_code == 303 and r.headers["location"] == "/login"
@@ -139,9 +142,11 @@ def test_signing_out_clears_the_cookie(app_module, client):
 
 def test_an_unconfigured_install_serves_nothing_but_setup(app_module, client):
     app_module.AUTH["password"] = None
-    for path in ("/", "/api/drives", "/health", "/cc/stats"):
+    for path in ("/", "/cc/stats"):
         r = client.get(path)
         assert r.status_code == 303 and r.headers["location"].endswith("/setup"), path
+    r = client.get("/api/drives")  # a program is told in JSON, not sent to a page
+    assert r.status_code == 401 and "no password yet" in r.json()["error"]
     assert client.get("/setup").status_code == 200
 
 
@@ -194,10 +199,10 @@ def test_a_token_opens_the_api_and_nothing_else(app_module, client):
     raw = auth.mint_token()
     app_module.TOKENS.clear()
     app_module.TOKENS[auth.token_hash(raw)] = {"label": "script", "vin": None}
-    assert client.get("/api/whoami").status_code == 303, "no token, no cookie: sent to sign in"
+    assert client.get("/api/whoami").status_code == 401, "no token, no cookie: told in JSON to send one"
     r = client.get("/api/whoami", headers={"Authorization": f"Bearer {raw}"})
     assert r.status_code == 200 and r.json() == {"label": "script", "vin": None, "kind": "read"}
-    assert client.get("/api/whoami?token=" + raw).status_code == 303, "never from the query string: that is an access-log line"
+    assert client.get("/api/whoami?token=" + raw).status_code == 401, "never from the query string: that is an access-log line"
     assert client.get("/settings", headers={"Authorization": f"Bearer {raw}"}).status_code == 303, "a token is not a session"
     assert client.get("/api/whoami", headers={"Authorization": "Bearer nonsense"}).status_code == 401, "an unknown token is told so (reconnect), not sent to a login page"
 
@@ -213,7 +218,13 @@ def _store(app_module, monkeypatch):
     stored = {}
     monkeypatch.setattr(app_module.auth, "store_set", lambda conn, k, v: stored.__setitem__(k, v))
     monkeypatch.setattr(app_module, "db", lambda: _Null())
-    monkeypatch.setattr(app_module, "load_auth", lambda: app_module.AUTH.update(password=stored.get("password", app_module.AUTH["password"]), secret=stored.get("secret", app_module.AUTH["secret"])))
+    monkeypatch.setattr(
+        app_module,
+        "load_auth",
+        lambda: app_module.AUTH.update(
+            password=stored.get("password", app_module.AUTH["password"]), secret=stored.get("secret", app_module.AUTH["secret"]), epoch=int(stored.get("epoch", app_module.AUTH["epoch"]))
+        ),
+    )
     monkeypatch.setattr(app_module, "settings_render", lambda request, section, **extra: app_module.HTMLResponse(extra.get("pw_error", "")))
     monkeypatch.setattr(app_module.recorder, "notify", lambda *a, **k: None)
     return stored
@@ -368,3 +379,147 @@ def test_a_redirect_keeps_the_mount_and_only_a_known_one(app_module):
     for root, expected in (("/cc", "/cc/drives?vin=V1"), ("/carcommand", "/carcommand/drives?vin=V1"), ("", "/drives?vin=V1"), ("//evil.example", "/drives?vin=V1")):
         req = Request({"type": "http", "method": "GET", "path": "/", "root_path": root, "headers": [], "query_string": b""})
         assert app_module.to_site(req, "/drives?vin=V1").headers["location"] == expected, root
+
+
+def _trip_global_brake(app_module, monkeypatch):
+    import auth
+
+    monkeypatch.setattr(app_module, "FAILURES", auth.Failures())
+    for i in range(60):
+        app_module.FAILURES.record(f"203.0.113.{i}", now=__import__("time").time())
+
+
+def test_signing_in_marks_the_browser_as_known(client):
+    import auth
+
+    token = _token_from(client.get("/login").text)
+    r = client.post("/login", data={"password": "a good long password", "csrf_token": token})
+    assert r.status_code == 303 and auth.DEVICE_COOKIE in r.cookies
+
+
+def test_strangers_tripping_the_brake_do_not_lock_out_a_known_browser(app_module, client, monkeypatch):
+    import auth
+
+    _trip_global_brake(app_module, monkeypatch)
+    token = _token_from(client.get("/login").text)
+    r = client.post("/login", data={"password": "a good long password", "csrf_token": token})
+    assert r.status_code == 429, "a browser never seen before waits with everyone else"
+    client.cookies.set(auth.DEVICE_COOKIE, auth.new_device(app_module.AUTH["secret"]))
+    token = _token_from(client.get("/login").text)
+    r = client.post("/login", data={"password": "a good long password", "csrf_token": token})
+    assert r.status_code == 303, "the owner's browser signs straight in"
+
+
+def test_a_session_cookie_is_no_device_cookie(app_module, client, monkeypatch):
+    import auth
+
+    _trip_global_brake(app_module, monkeypatch)
+    client.cookies.set(auth.DEVICE_COOKIE, auth.new_session(app_module.AUTH["secret"]))
+    token = _token_from(client.get("/login").text)
+    assert client.post("/login", data={"password": "a good long password", "csrf_token": token}).status_code == 429
+
+
+def test_the_owner_is_told_when_the_global_brake_engages(app_module, monkeypatch):
+    told = []
+    monkeypatch.setattr(app_module.recorder, "notify", lambda text, kind="other": told.append((kind, text)))
+    app_module.brake_alert()
+    import time
+
+    for _ in range(50):
+        if told:
+            break
+        time.sleep(0.01)
+    assert told and told[0][0] == "login" and "sign-in" in told[0][1].lower()
+    assert app_module.FAILURES.on_brake is not None
+
+
+def _opens(app_module, cookie) -> bool:
+    from fastapi.testclient import TestClient
+
+    import auth
+
+    other = TestClient(app_module.app, follow_redirects=False)
+    other.cookies.set(auth.SESSION_COOKIE, cookie)
+    return other.get("/login").status_code == 303  # a signed-in browser is sent on from the login page
+
+
+def test_signing_out_ends_that_session_on_the_server_too(app_module, client, monkeypatch):
+    import auth
+
+    stored = _store(app_module, monkeypatch)
+    cookie, elsewhere = signed_in(app_module, client), auth.new_session(app_module.AUTH["secret"])
+    assert _opens(app_module, cookie)
+    client.post("/logout", data={"csrf_token": auth.csrf_token(app_module.AUTH["secret"], cookie)})
+    assert not _opens(app_module, cookie), "a copy of the cookie taken before signing out opens nothing"
+    assert _opens(app_module, elsewhere), "another device stays signed in"
+    assert "revoked" in stored
+
+
+def test_signing_out_everywhere_else_ends_every_other_session(app_module, client, monkeypatch):
+    import auth
+
+    stored = _store(app_module, monkeypatch)
+    cookie, elsewhere = signed_in(app_module, client), auth.new_session(app_module.AUTH["secret"])
+    r = client.post("/settings/signin/everywhere", data={"csrf_token": auth.csrf_token(app_module.AUTH["secret"], cookie)})
+    assert r.status_code == 303 and r.headers["location"] == "/settings/access?saved=everywhere" and stored.get("epoch") == "1"
+    assert not _opens(app_module, elsewhere) and not _opens(app_module, cookie)
+    assert _opens(app_module, r.cookies[auth.SESSION_COOKIE]), "this browser stays signed in"
+
+
+def test_signing_out_everywhere_else_needs_a_session(app_module, client, monkeypatch):
+    stored = _store(app_module, monkeypatch)
+    r = client.post("/settings/signin/everywhere", data={})
+    assert r.status_code in (303, 400, 401, 403) and "epoch" not in stored
+
+
+def test_changing_the_password_signs_out_the_rest_with_a_pinned_key(app_module, client, monkeypatch):
+    import auth
+
+    monkeypatch.setenv("CC_SECRET", app_module.AUTH["secret"])
+    _store(app_module, monkeypatch)
+    other = auth.new_session(app_module.AUTH["secret"])
+    r = _post_password(app_module, client, "a good long password", "another good long one", "another good long one")
+    assert r.status_code == 303
+    assert not _opens(app_module, other), "the key in .env does not keep a stolen session alive"
+    assert _opens(app_module, r.cookies[auth.SESSION_COOKIE]), "this device's fresh session works"
+
+
+def test_the_sign_in_alert_names_the_socket_not_a_header_the_client_chose(app_module, client, monkeypatch):
+    told = []
+    monkeypatch.setattr(app_module.recorder, "notify", lambda text, kind="other": told.append(text))
+    token = _token_from(client.get("/login").text)
+    r = client.post("/login", data={"password": "a good long password", "csrf_token": token}, headers={"CF-Connecting-IP": "198.51.100.1"})
+    assert r.status_code == 303 and told and "198.51.100.1" not in told[0] and "testclient" in told[0]
+
+
+def test_the_site_will_not_start_on_a_placeholder_password(app_module, monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("REST_PASSWORD", "CHANGE_ME")
+    monkeypatch.setattr(app_module, "db", lambda *a, **k: (_ for _ in ()).throw(AssertionError("refused before the database")))
+
+    async def start():
+        async with app_module.lifespan(app_module.app):
+            pass
+
+    with pytest.raises(SystemExit, match="REST_PASSWORD.*make setup"):
+        asyncio.run(start())
+
+
+def test_a_bare_422_gets_the_sites_error_page_and_the_api_keeps_json(app_module, client, monkeypatch):
+    def no_car(request):
+        raise app_module.HTTPException(404, "no car")
+
+    monkeypatch.setattr(app_module, "pick", no_car)
+    signed_in(app_module, client)
+    r = client.get("/places/candidates")
+    assert r.status_code == 422 and r.headers["content-type"].startswith("text/html")
+    assert "needs more than it was given" in r.text and not r.text.lstrip().startswith("{")
+    r = client.get("/places/candidates", headers={"accept": "application/json"})
+    assert r.status_code == 422 and r.json()["detail"][0]["loc"] == ["query", "lat"]
+
+
+def test_health_answers_200_before_any_password_exists(app_module, client, monkeypatch):
+    monkeypatch.setitem(app_module.AUTH, "password", None)
+    assert client.get("/health").status_code == 200
+    assert client.get("/places").status_code == 303, "everything else still funnels to /setup"

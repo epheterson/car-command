@@ -1,0 +1,94 @@
+{# The car's commands (static/commands.js). The ones with a state sit in the car card's tiles
+   (_now_tiles.html) and its battery bar (limit_bar); the rest are the dock under the card: one
+   tap each, by what they touch, then an Adjust fold for those that take a value. The dock is drawn
+   once, so a result, the password or an open fold survives the card being sent again. Every
+   command asks for a second tap before anything is sent. #}
+{% import "_icons.html" as ic %}
+
+{% macro btn(key, label, pressed=none, cls="") -%}
+<button type="button" class="btn sm{{ ' ' ~ cls if cls }}" data-cmd="{{ key }}"{% if pressed is not none %} aria-pressed="{{ 'true' if pressed else 'false' }}"{% endif %}>{{ label }}</button>
+{%- endmacro %}
+
+{# The charge limit on the car's own battery bar: the charge in gold, the floor hatched (no limit
+   below 50 %), the maker's everyday band and the trip band above it, the limit a marker to drag.
+   Set shows once the marker has moved. Daily tops are each maker's app's own advice. #}
+{% set DAILY_TOP = {'Tesla': 90, 'Lucid': 80} %}
+{% macro limit_bar(cmd, car) -%}
+{% set lim = (cmd.limit|round|int) if cmd.limit else 80 %}{% set soc = cmd.get('soc') %}{% set day = DAILY_TOP.get(car.get('make'), 80) %}
+<form class="cmd-arg lim" aria-label="Charge limit" data-current="{{ lim }}" style="--lim:{{ lim }};--day:{{ day }}">
+  <div class="gauge lim-bar">
+    <span class="lim-floor" title="A limit can't be set below 50%"></span><span class="lim-trip" title="Trip: {{ day }} to 100%, for a long drive"></span><i class="lim-fill" style="width:{{ (soc if soc is not none else 0)|round(1) }}%"></i>
+    <input type="range" name="value" min="50" max="100" step="1" value="{{ lim }}" aria-label="Charge limit" aria-valuetext="{{ lim }}%">
+  </div>
+  <div class="lim-scale" aria-hidden="true">
+    <span class="lim-z lim-band" style="left:50%;width:calc((var(--day) - 50) * 1%)">Daily · 50–{{ day }}%</span>
+    <span class="lim-z lim-band trip" style="left:calc(var(--day) * 1%);right:0" title="Trip: {{ day }} to 100%">Trip</span>
+  </div>
+  <div class="lim-foot"><span class="lim-r"><button type="button" class="btn sm" data-cmd="charge_limit" hidden>Set</button><span class="muted small">Limit</span><output class="lim-v">{{ lim }}%</output></span></div>
+</form>
+{%- endmacro %}
+
+{% macro arg(c, value, unit, min, max, step) -%}
+<form class="cmd-arg cmd-join" aria-label="{{ c.label }}"><span class="num"><input type="number" inputmode="decimal" name="value" value="{{ value }}" min="{{ min }}" max="{{ max }}" step="{{ step }}" aria-label="{{ c.label }}"><span class="u">{{ unit }}</span></span>{{ btn(c.key, 'Set') }}</form>
+{%- endmacro %}
+
+{% macro control(c, short) -%}
+{% if c.key == 'charge_amps' %}{{ arg(c, 32, 'A', 5, 80, 1) }}{% elif c.key == 'climate_temp' %}{{ arg(c, 21, '°C', 15, 28, 0.5) }}{% elif c.key == 'volume' %}{{ arg(c, 5, 'of 11', 0, 11, 0.5) }}{% elif c.arg and c.arg[1] == 3 %}{{ arg(c, 3 if 'heat' in c.key else 2, 'of 3', 0, 3, 1) }}{% elif c.key == 'sched_charge' %}<form class="cmd-arg cmd-join" aria-label="{{ c.label }}" data-minutes><input class="field time" type="text" autocomplete="off" name="value" value="{{ '00:00'|tod }}" placeholder="{{ '21:00'|tod }}" aria-label="{{ c.label }}">{{ btn(c.key, 'Set') }}</form>{% else %}<button type="button" class="btn sm" data-cmd="{{ c.key }}" aria-label="{{ c.label }}">{{ short }}</button>{% endif %}
+{%- endmacro %}
+
+{# The dock's one-tap commands, by what they touch; a password-each-time one carries a lock. #}
+{% set ACTS = [('flash', 'lights', 'Flash lights'), ('honk', 'horn', 'Honk'), ('wake', 'wake', 'Wake'), ('trunk', 'trunk', 'Open trunk'), ('trunk_close', 'trunk', 'Close trunk'), ('frunk', 'frunk', 'Open frunk'), ('frunk_close', 'frunk', 'Close frunk'), ('windows_vent', 'window', 'Vent windows'), ('windows_close', 'window', 'Close windows'), ('homelink', 'garage', 'HomeLink'), ('remote_start', 'key', 'Keyless driving')] %}
+{# The Adjust fold, by what each row touches: charging, the cabin, the seats and wheel, security, media. #}
+{% set ADJUST = [
+  ('Charging current', [('charge_amps', none)]),
+  ('Charge port', [('charge_port_open', 'Open'), ('charge_port_close', 'Close')]),
+  ('Charge at', [('sched_charge', none), ('sched_charge_off', 'Off')]),
+  ('Battery preconditioning', [('precondition_on', 'On'), ('precondition_off', 'Off')]),
+  ('Cabin', [('climate_temp', none)]),
+  ('Keep climate', [('keep_on', 'Keep'), ('dog_on', 'Dog'), ('camp_on', 'Camp'), ('keeper_off', 'Off')]),
+  ('Defrost', [('defrost_on', 'On'), ('defrost_off', 'Off')]),
+  ('Max A/C', [('max_ac_on', 'On'), ('max_ac_off', 'Off')]),
+  ('Overheat protection', [('overheat_on', 'On'), ('overheat_fan', 'Fan'), ('overheat_off', 'Off')]),
+  ('Bioweapon defense', [('bioweapon_on', 'On'), ('bioweapon_off', 'Off')]),
+  ("Driver's seat heat", [('seat_heat', none)]),
+  ('Passenger seat heat', [('seat_heat_passenger', none)]),
+  ('Rear left seat heat', [('seat_heat_rear_left', none)]),
+  ('Rear centre seat heat', [('seat_heat_rear_center', none)]),
+  ('Rear right seat heat', [('seat_heat_rear_right', none)]),
+  ("Driver's seat vent", [('seat_vent', none)]),
+  ('Passenger seat vent', [('seat_vent_passenger', none)]),
+  ('Steering wheel heat', [('wheel_heat', none), ('wheel_heat_on', 'On'), ('wheel_heat_off', 'Off')]),
+  ('Sentry at home', [('sentry_home_on', 'On'), ('sentry_home_off', 'Off')]),
+  ('Sentry at work', [('sentry_work_on', 'On'), ('sentry_work_off', 'Off')]),
+  ('Enhanced deterrence', [('deterrence_on', 'On'), ('deterrence_off', 'Off')]),
+  ('Alarm', [('alarm_on', 'On'), ('alarm_silent', 'Silent'), ('alarm_off', 'Off'), ('alarm_silence', 'Silence it')]),
+  ('Headlights', [('lights_on', 'On'), ('lights_off', 'Off')]),
+  ('Media', [('media_prev', 'Back'), ('media_toggle', 'Play/pause'), ('media_next', 'Next')]),
+  ('Volume', [('volume', none)]),
+] %}
+
+{% macro dock(cmd, car, root) -%}
+{% if cmd and cmd.reason %}<p class="cmd-why muted small">{{ cmd.reason }}</p>
+{% elif cmd %}{% set have = {} %}{% for c in (cmd.more or []) %}{% set _ = have.update({c.key: c}) %}{% endfor %}
+<section class="cmd-more dock" data-cmd-url="{{ root }}/cars/{{ car.vin }}/command" data-cmd-vin="{{ car.vin }}" data-step-url="{{ root }}/commands/step-up" aria-label="Commands">
+  {% if cmd.signin %}<a class="btn sm" href="{{ root }}/settings/sources/tesla/start">Sign in again to allow commands</a>{% endif %}
+  {# Where the car has said which way the windows, trunk and frunk are, only the move that changes
+     them shows, in words that say it. A Tesla's trunk button toggles, and its open frunk only
+     closes by hand; a Lucid has a close for each. #}
+  {% set skip = [] %}
+  {% for open_key, close_key, state in [('windows_vent', 'windows_close', 'windows_open'), ('trunk', 'trunk_close', 'trunk_open'), ('frunk', 'frunk_close', 'frunk_open')] if close_key in have %}
+    {% if car.get(state) is true %}{% set _ = skip.append(open_key) %}{% elif car.get(state) is false %}{% set _ = skip.append(close_key) %}{% endif %}
+  {% endfor %}
+  {% set acts = ACTS|selectattr(0, 'in', have)|rejectattr(0, 'in', skip)|list %}
+  {% if acts %}<div class="dock-acts">{% for key, icon, label in acts %}{% set label = 'Close trunk' if key == 'trunk' and 'trunk_close' not in have and car.get('trunk_open') else label %}{% set shut = key == 'frunk' and 'frunk_close' not in have and car.get('frunk_open') %}<button type="button" class="dock-b{{ ' guarded' if have[key].tier == 3 }}" data-cmd="{{ key }}" aria-label="{{ 'Frunk is open' if shut else label }}"{% if shut %} disabled{% elif have[key].tier == 3 %} title="{{ label }}: asks for your password"{% endif %}>{{ ic.icon(icon) }}<span data-say>{{ 'Frunk open' if shut else label }}</span></button>{% endfor %}</div>{% endif %}
+  <p class="cmd-said" data-cmd-said role="status" aria-live="polite">{% if cmd.partial %}This sign-in allows charging commands only.{% endif %}</p>
+  <form class="cmd-step" data-step-up hidden><label class="cmd-l" for="step-{{ car.vin }}">Password, for five minutes</label><span class="cmd-c cmd-join"><input class="field" id="step-{{ car.vin }}" type="password" name="password" autocomplete="current-password"><button type="submit" class="btn sm primary">OK</button></span></form>
+  <div class="dock-more">
+    {% set rows = [] %}{% for label, keys in ADJUST %}{% set ks = keys|selectattr(0, 'in', have)|list %}{% if ks %}{% set _ = rows.append((label, ks)) %}{% endif %}{% endfor %}
+    {% if rows %}<details class="dock-fold"><summary>Adjust</summary><div class="dock-rows">
+      {% for label, ks in rows %}<div class="cmd-row"><span class="cmd-l">{{ label }}{% if label == 'Defrost' and car.get('window_heating') is not none %} <small class="muted" title="Defrost and the rear window heater, as the car last said">{{ 'on' if car.window_heating else 'off' }}</small>{% elif label == 'Keep climate' and car.get('climate_keeper') %} <small class="muted" title="As the car last said">{{ car.climate_keeper }}</small>{% endif %}</span><span class="cmd-c">{% if ks|length >= 2 and ks|rejectattr(1, 'none')|list|length == ks|length %}<span class="cmd-pair" role="group" aria-label="{{ label }}">{% for k, s in ks %}{{ control(have[k], s) }}{% endfor %}</span>{% else %}{% for k, s in ks %}{{ control(have[k], s) }}{% endfor %}{% endif %}</span></div>
+      {% endfor %}</div></details>{% endif %}
+    <details class="dock-fold" data-cmd-log="{{ root }}/cars/{{ car.vin }}/commands"><summary>Log</summary><div class="cmd-log"><span class="muted small">Loading…</span></div></details>
+  </div>
+</section>{% endif %}
+{%- endmacro %}

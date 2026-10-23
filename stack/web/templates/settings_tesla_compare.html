@@ -43,7 +43,7 @@
     <td>{{ p.at|local }}</td>
     <td>{% if p.stream %}{{ p.stream.miles|dist(1) }} {{ u.dist }}{% if p.stream.kwh is not none %}, {{ num(p.stream.kwh) }} kWh{% endif %}{% else %}missing{% endif %}</td>
     <td>{% if p.stored %}{{ p.stored.miles|dist(1) }} {{ u.dist }}{% if p.stored.kwh is not none %}, {{ num(p.stored.kwh) }} kWh{% endif %}{% else %}missing{% endif %}</td>
-    <td class="small">{% if p.stream and p.stored %}{{ p.dt_s }} s apart{% endif %}</td>
+    <td class="small">{% if p.under_way %}under way{% elif p.stream and p.stored and p.stream.n != p.stored.n %}{{ p.stream.n }} vs {{ p.stored.n }}{% elif p.stream and p.stored %}{{ p.dt_s }} s apart{% endif %}</td>
   </tr>{% endfor %}</tbody>
 </table>{% else %}<p class="muted small">No drives.</p>{% endif %}
 
@@ -54,14 +54,14 @@
     <td>{{ p.at|local }}</td>
     <td>{% if p.stream %}{{ num(p.stream.kwh) }} kWh {{ p.stream.type or '' }}{% else %}missing{% endif %}</td>
     <td>{% if p.stored %}{{ num(p.stored.kwh) }} kWh {{ p.stored.type or '' }}{% else %}missing{% endif %}</td>
-    <td class="small">{% if p.stream and p.stored %}{{ p.dt_s }} s apart{% endif %}</td>
+    <td class="small">{% if p.under_way %}under way{% elif p.stream and p.stored and p.stream.n != p.stored.n %}{{ p.stream.n }} vs {{ p.stored.n }}{% elif p.stream and p.stored %}{{ p.dt_s }} s apart{% endif %}</td>
   </tr>{% endfor %}</tbody>
 </table>{% else %}<p class="muted small">No charges.</p>{% endif %}
 
 <h2>The stream, day by day{% call i.info("The columns") %}Resent: records sent again after a break. Goodbyes: the car closing its connection, as it does going to sleep. Silences: no record for over 3 min driving or 30 min parked, with no goodbye.{% endcall %}</h2>
 <div class="ovx"><table class="cmp">
   <thead><tr><th>Day</th><th>Records</th><th>Resent</th><th>Goodbyes</th><th>Reconnects</th><th>Silences</th><th>Longest silence</th></tr></thead>
-  <tbody>{% for d in r.gaps %}<tr class="{{ 'warn' if d.silences }}"><td>{{ d.day.strftime('%a %b %-d') }}</td><td>{{ d.records|num }}</td><td>{{ d.resent|num }}</td><td>{{ d.disconnects }}</td><td>{{ d.reconnects }}</td><td>{{ d.silences }}</td><td>{% if d.silences %}{{ d.longest_silence_min }} min{% endif %}</td></tr>{% endfor %}</tbody>
+  <tbody>{% for d in r.gaps %}<tr class="{{ 'warn' if d.silences }}"><td>{{ d.day|dfmt('%a %b %-d') }}</td><td>{{ d.records|num }}</td><td>{{ d.resent|num }}</td><td>{{ d.disconnects }}</td><td>{{ d.reconnects }}</td><td>{{ d.silences }}</td><td>{% if d.silences %}{{ d.longest_silence_min }} min{% endif %}</td></tr>{% endfor %}</tbody>
 </table></div>
 </details>
 {% endif %}

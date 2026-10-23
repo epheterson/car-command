@@ -10,7 +10,7 @@ def test_every_stored_setting_belongs_to_exactly_one_section():
     owned = [k for keys in OWNS.values() for k in keys]
     assert len(owned) == len(set(owned)), "a key in two sections would be saved from both"
     assert set(owned) | set(RETIRED) == set(settings_mod.DEFAULTS)
-    assert [k for k, _ in SECTIONS] == ["cars", "money", "energy", "alerts", "look", "maps", "data", "access"] and LABELS["look"] == "Units and look"
+    assert [k for k, _ in SECTIONS] == ["cars", "money", "energy", "alerts", "commands", "look", "maps", "data", "access"] and LABELS["look"] == "Units and look"
 
 
 def test_parse_returns_only_the_sections_own_keys_even_from_a_form_with_everything():
@@ -124,7 +124,7 @@ def test_money_reads_fuel_in_the_units_in_force():
 def test_metric_fuel_round_trip_stores_nothing_new():
     st = dict(WAS, units="metric", gas_mpg=28.0, gas_price=4.6, min_drive_mi=0.1)
     shown = converted(st)
-    assert shown == {"gas_l100": "8.4", "gas_ppl": "1.22", "min_drive_km": "0.2"}
+    assert {k: shown[k] for k in ("gas_l100", "gas_ppl", "min_drive_km")} == {"gas_l100": "8.4", "gas_ppl": "1.22", "min_drive_km": "0.2"}
     assert parse("money", {"gas_l100": shown["gas_l100"], "gas_ppl": shown["gas_ppl"]}, st) == {}
     assert parse("data", {"min_drive_km": shown["min_drive_km"], "min_charge_kwh": "0"}, st) == {"min_charge_kwh": 0.0}
     assert parse("data", {"min_drive_km": "1.6"}, st) == {"min_drive_mi": 0.9942}, "a typed km figure is stored in miles"
@@ -233,3 +233,64 @@ def test_a_long_schedule_and_rate_history_survive_an_unchanged_save():
     s = len(shown_rows)
     added = parse("money", dict(form, **{f"sp{s}": "peak", f"sd{s}": "all", f"ss{s}": "23", f"se{s}": "24"}), was)
     assert added["rate_plan"]["versions"][0]["weekday"][0][23] == 2, "a schedule row added below the twelfth"
+
+
+def test_commands_section_reads_the_switch_tiers_and_holds_only_when_shown():
+    import settingsform as sf
+
+    assert sf.parse("commands", {}, sf.DEFAULTS) == {}, "nothing on the page: nothing changes"
+    form = {
+        "commands_shown": "1",
+        "commands_on": "on",
+        "tiers_shown": "1",
+        "tier_5YJ3E1EA0JF000001": "3",
+        "tier_BRAVO0000000000002": "1",
+        "tier_bad vin!": "3",
+        "tier_CHARLIE00000000003": "7",
+        "hold_shown": "1",
+        "hold_5YJ3E1EA0JF000001": "on",
+        "hold_from_5YJ3E1EA0JF000001": "16:30",
+        "hold_until_5YJ3E1EA0JF000001": "nonsense",
+        "hold_from_BRAVO0000000000002": "15:00",
+    }
+    got = sf.parse("commands", form, sf.DEFAULTS)
+    assert got == {
+        "commands_on": True,
+        "command_tiers": {"5YJ3E1EA0JF000001": 3},
+        "charge_hold": {"5YJ3E1EA0JF000001": {"from": "16:30", "until": "00:00"}},
+    }
+    assert sf.parse("commands", {"commands_shown": "1"}, sf.DEFAULTS) == {"commands_on": False}, "an unticked switch posts nothing: off"
+
+
+def test_commands_start_off_and_show_on_the_landing():
+    import settingsform as sf
+
+    assert sf.DEFAULTS["commands_on"] is False and sf.DEFAULTS["charge_hold"] == {}
+    rows = {r["key"]: r["value"] for g in sf.index(sf.DEFAULTS, 1, [], True) for r in g["rows"]}
+    assert rows["commands"] == "Off"
+    assert {r["key"]: r["value"] for g in sf.index({**sf.DEFAULTS, "commands_on": True}, 1, [], True) for r in g["rows"]}["commands"] == "On"
+
+
+def test_a_kind_the_alerts_page_left_out_keeps_its_routing():
+    was = {**WAS, "alert_routes": {"sentry": ["discord"], "parked": ["discord"]}}
+    kinds = {"parked": "Parked", "sentry": "Sentry", "keyfob": "Key fob"}
+    got = parse("alerts", {"routes_shown": "1", "routes_kinds": "parked"}, was, channels=("discord",), kinds=kinds)
+    assert got["alert_routes"] == {"parked": [], "sentry": ["discord"]}, "unticked parked is off; sentry was not on the page, so it is as saved; keyfob stays unset (everywhere)"
+    got = parse("alerts", {"routes_shown": "1"}, was, channels=("discord",), kinds=kinds)
+    assert got["alert_routes"] == {"parked": [], "sentry": [], "keyfob": []}, "a form without the list is every kind, as before"
+
+
+def test_tire_limits_are_typed_in_bar_on_a_metric_install_and_kept_in_psi():
+    st = dict(WAS, units="metric", tire_low_psi=36.0, tire_high_psi=None)
+    shown = converted(st)
+    assert shown["tire_low_bar"] == "2.48" and shown["tire_high_bar"] == ""
+    assert parse("alerts", {"tire_low_bar": shown["tire_low_bar"], "tire_high_bar": ""}, st) == {}, "untouched: the stored psi is not rounded through bar"
+    assert parse("alerts", {"tire_low_bar": "2.5", "tire_high_bar": "3.2"}, st) == {"tire_low_psi": 36.26, "tire_high_psi": 46.41}
+    assert parse("alerts", {"tire_low_bar": "", "tire_high_bar": ""}, st) == {"tire_low_psi": None}
+    assert parse("alerts", {"tire_low_bar": "0.2"}, st) == {"tire_low_psi": None}, "out of range is refused"
+    assert parse("alerts", {"tire_low_psi": "34", "tire_high_psi": "45"}, WAS) == {"tire_low_psi": 34.0, "tire_high_psi": 45.0}
+
+
+def test_saving_the_routing_table_marks_every_channel_on_it_as_chosen():
+    got = parse("alerts", {"routes_shown": "1"}, {**WAS, "alert_routed": ["telegram"]}, channels=("discord", "webhook"), kinds={"parked": "Parked"})
+    assert got["alert_routed"] == ["discord", "telegram", "webhook"], "a channel whose boxes were all left unticked still counts as chosen"

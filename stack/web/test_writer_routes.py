@@ -60,7 +60,7 @@ def test_a_switch_is_asked_for_at_once_and_done_in_the_background(two_teslas, cl
     for w in (two_teslas.tesla_stream_worker, two_teslas.teslafi, two_teslas.teslamate):
         w.last_rebuild[ALPHA] = T0
     r = client.post("/settings/sources/writer", data=form(two_teslas, {"vin": ALPHA, "kind": "tesla"}))
-    assert r.status_code == 303 and r.headers["location"].endswith("/settings/cars")
+    assert r.status_code == 303 and r.headers["location"].split("?")[0].endswith("/settings/cars")
     assert not two_teslas.switched and len(two_teslas.jobs) == 1, "the request only records it"
     assert two_teslas.switcher.status(ALPHA)["state"] == "switching"
     assert two_teslas.choose_writer(ALPHA, "tesla") == "A switch for this car is already under way."
@@ -70,7 +70,7 @@ def test_a_switch_is_asked_for_at_once_and_done_in_the_background(two_teslas, cl
     assert job["state"] == "done" and job["boundary"] == T0
     assert all(ALPHA not in w.last_rebuild for w in (two_teslas.tesla_stream_worker, two_teslas.teslafi, two_teslas.teslamate)), "every worker replays at its next tick"
     r = client.post("/settings/sources/writer", data=form(two_teslas, {"vin": ALPHA, "kind": "tesla", "back": "tesla"}))
-    assert r.headers["location"].endswith("/settings/sources/tesla#step-history")
+    assert r.headers["location"].replace("?vin=" + ALPHA, "").endswith("/settings/sources/tesla#step-history")
 
 
 def test_switching_away_from_the_stream_stops_its_live_positions_at_once(two_teslas, monkeypatch):
@@ -129,7 +129,12 @@ def a_result():
         "days": 2.0,
         "stream": {"drives": 2, "miles": 20.0, "kwh_used": 5.0, "charges": 1, "kwh_added": 30.0, "asleep_h": 30.5},
         "stored": {"drives": 1, "miles": 10.0, "kwh_used": 2.5, "charges": 1, "kwh_added": 29.0, "asleep_h": 31.0},
-        "drives": [{"at": T0, "stream": drive, "stored": drive, "dt_s": -40, "off": False}, {"at": T0 + timedelta(hours=3), "stream": drive, "stored": None, "off": True}],
+        "drives": [
+            {"at": T0, "stream": drive, "stored": drive, "dt_s": -40, "off": False},
+            {"at": T0 + timedelta(hours=3), "stream": drive, "stored": None, "off": True},
+            {"at": T0 + timedelta(hours=4), "stream": {**drive, "n": 1}, "stored": {**drive, "n": 2}, "dt_s": 0, "off": True},
+            {"at": T0 + timedelta(hours=5), "stream": drive, "stored": drive, "dt_s": 0, "off": False, "under_way": True},
+        ],
         "charges": [{"at": T0, "stream": {"start": T0, "kwh": 30.0, "type": "AC"}, "stored": {"start": T0, "kwh": 29.0, "type": "AC"}, "dt_s": 30, "off": False}],
         "gaps": [{"day": day, "records": 81234, "resent": 120, "disconnects": 4, "reconnects": 5, "silences": 1, "longest_silence_min": 42.0}],
         "kwh_per_rated_mi": 0.25,
@@ -143,6 +148,7 @@ def test_the_comparison_page_shows_what_is_kept(two_teslas, client, monkeypatch)
     assert "Stream beside history" in html and "TeslaFi (API)" in html
     assert "<td>2</td><td>1</td>" in html, "drives side by side"
     assert "missing" in html and "40 s apart" in html
+    assert "1 vs 2" in html and "under way" in html, "a drive split differently, one still going at the window's end"
     assert "81,234" in html and "42.0 min" in html and "Resent" in html
     assert 'name="kind"' in html and "location.reload" not in html
 
@@ -199,7 +205,7 @@ def test_connect_tesla_step_6_shows_the_writer_the_choice_and_the_week():
     ctx = dict(root="/cc", now=T0, car={"vin": ALPHA, "name": "Alpha"}, active="", vehicles=[], q="", colors={}, names={}, cur="$", st={}, conv={}, saved=False, label="Connect Tesla")
     html = env.get_template("settings_tesla.html").render(**ctx, steps=teslapage.steps({}), facts={}, links={}, stream=[], tesla_scopes=[], history_step=step, csrf="t")
     assert 'id="step-history"' in html and "History from" in html
-    assert "Last 2 days · " in html and "1 difference<" in html
+    assert "Last 2 days · " in html and "2 differences<" in html
     assert html.count('name="back" value="tesla"') == 1, "a choice only where there is one"
     assert "Comparing the last week" in html and "Tesla (direct) writes it · " in html
     assert f"/settings/sources/tesla/compare?vin={BRAVO}" in html

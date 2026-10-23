@@ -1,29 +1,29 @@
 {% macro chip(vin) %}<span class="chip c{{ colors.get(vin, 0) }}">{{ names.get(vin, vin) }}</span>{% endmacro %}
 {% extends "base.html" %}
 {% import "_parts.html" as parts %}
-{% block title %}{{ day.strftime('%a %b %-d, %Y') }} · Car Command{% endblock %}
-{% block head %}
+{% block title %}{{ day|dfmt('%a %b %-d, %Y') }} · Car Command{% endblock %}
+{% block head %}{% if blocks|map(attribute='routes')|select|list %}
 {% include "_maphead.html" %}
-{% endblock %}
+{% endif %}{% endblock %}
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}
 <div class="pbar">
-  <h1>Day</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span>
+  <h1>Day</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span>
   <span class="sp"></span>
   {# the stepper every page has: the day's name, with the native picker laid invisibly over it #}
-  <form method="get" action="{{ root }}/day" class="stepper"><a href="{{ root }}/day?date={{ prev.isoformat() }}{{ dq }}" aria-label="{{ prev.strftime('%a %b %-d') }}">‹</a><span class="now datepick">{{ day.strftime('%a, %b %-d') }}{% if day.year != today.year %}, {{ day.year }}{% endif %}<input type="date" name="date" value="{{ day.isoformat() }}" max="{{ today.isoformat() }}" data-autosubmit aria-label="Pick a day"></span>{% if q %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}{% if next %}<a href="{{ root }}/day?date={{ next.isoformat() }}{{ dq }}" aria-label="{{ next.strftime('%a %b %-d') }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</form>
+  <form method="get" action="{{ root }}/day" class="stepper"><a href="{{ root }}/day?date={{ prev.isoformat() }}{{ dq }}" aria-label="{{ prev|dfmt('%a %b %-d') }}">‹</a><span class="now datepick">{{ day|dfmt('%a, %b %-d') }}{% if day.year != today.year %}, {{ day.year }}{% endif %}<input type="date" name="date" value="{{ day.isoformat() }}" max="{{ today.isoformat() }}" data-autosubmit aria-label="Pick a day"></span>{% if q %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}{% if next %}<a href="{{ root }}/day?date={{ next.isoformat() }}{{ dq }}" aria-label="{{ next|dfmt('%a %b %-d') }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</form>
 </div>
-<div class="dayshow"><nav class="segmented" aria-label="Show">{% for k, lbl in [("all", "All"), ("drives", "Drives"), ("charges", "Charges"), ("parked", "Parked")] %}<a href="{{ root }}/day?date={{ day.isoformat() }}&show={{ k }}{{ dq }}"{% if show == k or (k == 'parked' and show in ('idles', 'sleeps')) %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}</nav>{% if not car.garage %}<a class="btn sm" href="{{ root }}/data?date={{ day.isoformat() }}{{ dq }}">Readings</a>{% endif %}</div>
+<div class="dayshow"><nav class="segmented" aria-label="Show">{% for k, lbl in [("all", "All"), ("drives", "Drives"), ("charges", "Charges"), ("parked", "Parked")] %}<a href="{{ root }}/day?date={{ day.isoformat() }}&show={{ k }}{{ dq }}"{% if show == k or (k == 'parked' and show in ('idles', 'sleeps')) %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}</nav>{% if not car.garage and raw_readings %}<a class="btn sm" href="{{ root }}/data?date={{ day.isoformat() }}{{ dq }}">Readings</a>{% endif %}</div>
 {% if not blocks %}<div class="empty">Nothing logged on this day</div>{% endif %}
 {% for b in blocks %}
 <section class="daycar">
   {% if car.garage %}<h2 class="daycar-h"><span class="dot c{{ colors.get(b.vin, 0) }}"></span>{{ b.name }}</h2>{% endif %}
   {% set t = b.totals %}
   <div class="tiles pair">
-    {% if t.drives %}<div class="tile"><span class="l">Driven</span><span class="v">{{ t.miles|dist(1) }}<small>{{ u.dist }}</small></span><span class="d">{{ t.drives }} drive{{ 's' if t.drives != 1 }} · {{ t.drive_h|num(1) }} h{% if t.wh_per_mi %} · {{ t.wh_per_mi|econ }} {{ u.econ }}{% endif %}</span></div>{% endif %}
+    {% if t.drives %}<div class="tile"><span class="l">Driven</span><span class="v">{{ t.miles|dist(1) }}<small>{{ u.dist }}</small></span><span class="d">{{ t.drives }} drive{{ 's' if t.drives != 1 }} · {{ t.drive_h|num(1) }} h{% if t.wh_per_mi %} · {{ t.wh_per_mi|econ }} {{ u.econ }}{% endif %}{% if t.unlogged_mi %} · <span title="Driven out of reach: the odometer moved between two drives">+{{ t.unlogged_mi|dist(1) }} {{ u.dist }} not logged</span>{% endif %}</span></div>{% endif %}
     {% if t.battery_used is not none %}<div class="tile"><span class="l">Battery used</span><span class="v">{{ t.battery_used|num(1) }}<small>%</small></span><span class="d">{% if t.used_kwh %}{{ t.used_kwh|num(1) }} kWh{% endif %}{% if t.rated_used %}{% if t.used_kwh %} · {% endif %}{{ t.rated_used|dist(1) }} {{ u.dist }} rated{% endif %}</span></div>{% endif %}
     {% if t.charges %}<div class="tile"><span class="l">Charged</span><span class="v">{{ t.kwh|num(1) }}<small>kWh</small></span><span class="d">{{ t.charges }} charge{{ 's' if t.charges != 1 }}{% if t.cost %} · {{ est(t.cost_estimate, 'part priced at the regional average') }}{{ cur }}{{ t.cost|num(2) }}{% endif %}</span></div>{% endif %}
-    {% if t.parked_h %}{% set pd = [] %}{% if t.asleep_h is not none %}{% set _ = pd.append('asleep ' ~ (t.asleep_h|num(1)) ~ ' h') %}{% endif %}{% if t.parked_kwh_loss %}{% set _ = pd.append('lost ' ~ (t.parked_kwh_loss|num(1)) ~ ' kWh') %}{% elif t.parked_drop %}{% set _ = pd.append('lost ' ~ (t.parked_drop|num) ~ '%') %}{% endif %}{% if t.sentry_h and t.sentry_h >= 0.1 %}{% set _ = pd.append(guard.get(b.vin, 'Guard mode') ~ ' ' ~ (t.sentry_h|num(1)) ~ ' h') %}{% endif %}{% if t.climate_h and t.climate_h >= 0.02 %}{% set _ = pd.append('climate ' ~ ((t.climate_h * 60)|num) ~ ' min') %}{% endif %}<div class="tile"><span class="l">Parked</span><span class="v">{{ t.parked_h|num(1) }}<small>h</small></span><span class="d">{{ pd|join(' · ') }}</span></div>{% endif %}
+    {% if t.parked_h %}{% set pd = [] %}{% if t.asleep_h is not none %}{% set _ = pd.append('asleep ' ~ (t.asleep_h|num(1)) ~ ' h') %}{% endif %}{% if t.parked_kwh_loss %}{% set _ = pd.append('lost ' ~ (t.parked_kwh_loss|num(1)) ~ ' kWh') %}{% elif t.parked_drop %}{% set _ = pd.append('lost ' ~ (t.parked_drop|num) ~ '%') %}{% endif %}{% if t.sentry_h and t.sentry_h >= 0.1 %}{% set _ = pd.append(guard.get(b.vin, 'Guard mode') ~ ' ' ~ (t.sentry_h|num(1)) ~ ' h') %}{% endif %}{% if t.on_h and t.on_h >= 0.05 %}{% set _ = pd.append('car on ' ~ ((t.on_h * 60)|num) ~ ' min') %}{% endif %}{% if t.climate_h and t.climate_h >= 0.02 %}{% set _ = pd.append('climate ' ~ ((t.climate_h * 60)|num) ~ ' min') %}{% endif %}<div class="tile"><span class="l">Parked</span><span class="v">{{ t.parked_h|num(1) }}<small>h</small></span><span class="d">{{ pd|join(' · ') }}</span></div>{% endif %}
     {% if t.phantom_mi_per_h %}<div class="tile"><span class="l">Phantom drain</span><span class="v">{{ t.phantom_mi_per_h|dist(2) }}<small>{{ u.dist }}/h</small></span><span class="d">{{ t.parked_range_loss|dist(1) }} {{ u.dist }} lost parked</span></div>{% endif %}
   </div>
   {% set sc = b.get('since_charge') %}
@@ -32,24 +32,24 @@
   {% if b.get('chart') %}{{ parts.chart('day-' ~ b.vin, b.chart) }}{% endif %}
   {% if b.rows %}
   <div class="rows">{% for r in b.rows %}
-    {% if r.kind == 'parked' %}{{ parts.gap_row(day_gap(r, r.get('where'), guard.get(b.vin)), refs=r.get('refs')) }}
-    {% else %}{% set rp = day_row(r, cur) %}{{ parts.row(root ~ ('/drives/' if r.kind == 'drive' else '/charges/') ~ r.id ~ q, r.start|local('%-I:%M %p'), rp.title, rp.pills, rp.big, rp.sub, extra=(['until ' ~ r.end|local('%-I:%M %p')] if r.end else []) + day_detail(r, cur), refs=r.get('refs'), kind=r.kind) }}{% endif %}
+    {% if r.kind == 'parked' %}{{ parts.gap_row(day_gap(r, r.get('where'), guard.get(b.vin)), refs=r.get('refs'), href=root ~ '/parked/' ~ (r.start.timestamp()|int) ~ '?vin=' ~ b.vin) }}
+    {% else %}{% set rp = day_row(r, cur) %}{{ parts.row(root ~ ('/drives/' if r.kind == 'drive' else '/charges/') ~ r.id ~ q, r.start|local('%-I:%M %p'), rp.title, rp.pills, rp.big, rp.sub, extra=(['from the day before, counted there'] if r.get('carried') else []) + (['until ' ~ r.end|local('%-I:%M %p')] if r.end else []) + day_detail(r, cur), refs=r.get('refs'), kind=r.kind, elev=r.get('elev')) }}{% endif %}
   {% endfor %}</div>
   {% else %}<div class="empty">Nothing logged</div>{% endif %}
 </section>
 {% endfor %}
 {% set routes = [] %}{% for b in blocks %}{% for r in b.routes %}{% if routes.append({"c": colors.get(b.vin, 0), "pts": r}) %}{% endif %}{% endfor %}{% endfor %}
 {% if routes %}
-<section><h2>Where they went</h2><div id="map" class="map tall"></div></section>
+<section><h2>Where they went</h2><div id="map" class="map tall day-map"></div></section>
 <script>
-// the map starts at once; it never waits for the brand's arrival
-(function () {
+// the map starts once its deferred scripts have run (DOMContentLoaded); it never waits for the brand's arrival
+document.addEventListener("DOMContentLoaded", function () {
   var routes = {{ routes|tojson }};
   var map = CCMap.base("map");
   var all = [];
   routes.forEach(function (r) { CCMap.route(map, r.pts, CCMap.palette[r.c], 4); all = all.concat(r.pts); });
   map.fitBounds(all, { padding: [24, 24] });
-})();
+});
 </script>
 {% endif %}
 {% endblock %}

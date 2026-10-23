@@ -4,6 +4,7 @@
 - [Sources](sources.md): Lucid, Tesla, TeslaFi, TeslaMate, other brands, importing history
 - [Making the Tesla app](tesla-app.md): Connect Tesla step by step, the key, what each error means
 - [Tesla live stream](tesla-stream.md): the stream through Tailscale Funnel, and what it exposes
+- [Car commands](commands.md): what each car takes, tiers and safety, the signing proxy, the charging hold
 - [Costs](costs.md): how a charge is priced
 - [Local maps](maps.md): place names and road matching on your own box
 - [API and exports](api.md): tokens, JSON endpoints, CSV

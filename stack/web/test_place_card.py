@@ -273,20 +273,39 @@ def test_the_index_lists_the_found_places_first_busiest_first_then_the_named(pla
     assert d["places"][2]["s"] == "Charlie Coffee" and d["places"][3]["ic"] == "kids" and list(d["icons"]) == ["kids"], "only the icons shown"
 
 
-def test_the_next_one_after_a_save_or_a_skip():
+def test_naming_zooms_in_and_a_save_goes_back_to_the_list():
+    js = (HERE / "static" / "placesmap.js").read_text()
+    assert "var NAME_ZOOM = 17" in js and "Math.max(map.getZoom(), NAME_ZOOM)" in js and "inView(p)) map.setView" not in js, "a picked place is shown at street level, every time"
+    assert "nextIn" not in js and "onSkip" not in js and "queue" not in js.replace("queued", ""), "no next-in-the-queue: a save goes back to the list"
+    assert "if (wasFound) { select(null); if (map) fit(); return false; }" in js
     if not shutil.which("node"):
         pytest.skip("node not installed")
-    js = (HERE / "static" / "placesmap.js").read_text()
-    fn = re.search(r"  function nextIn\(ids, id\) \{.*?\n  \}\n", js, re.S).group(0)
-    cases = [[[8, 6, 9], 6], [[8, 6, 9], 9], [[8], 8], [[8, 6], 99], [[], 1]]
-    out = subprocess.run(["node", "-e", fn + f"console.log(JSON.stringify({json.dumps(cases)}.map(c => nextIn(c[0], c[1]))))"], capture_output=True, text=True, check=True).stdout
-    assert json.loads(out) == [9, 8, None, 8, None], "the following one; from the last, the first; none left, none"
-    assert "onSkip: function () { go(nextIn(queue(), p.id)); }" in js and "after = p && wasFound ? nextIn(queue(), p.id) : null" in js
+    out = subprocess.run(["node", "--check", str(HERE / "static" / "placesmap.js")], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+
+
+def test_a_selected_car_sees_only_its_places_with_its_own_visit_counts(placed, client, monkeypatch):  # noqa: F811
+    rows = ROWS + [dict(ROWS[1], id=8, name="Oak Lane, Springfield", visits=30)]
+    monkeypatch.setattr(placed, "places_detail", lambda: [dict(r) for r in rows])
+    stays = {5: {"n": 7, "by_car": {"V1": 3, "V2": 4}}, 6: {"n": 12, "by_car": {"V2": 12}}, 8: {"n": 2, "by_car": {"V1": 2}}}
+    monkeypatch.setattr(placed, "place_stays", lambda: stays)
+    monkeypatch.setattr(placed, "place_nav", lambda: {})
+    monkeypatch.setattr(placed, "all_vehicles", lambda: [{"vin": "V1", "name": "Alpha", "live": True}, {"vin": "V2", "name": "Bravo", "live": True}])
+    monkeypatch.setattr(placed, "live_vehicle", lambda vin=None: {"vin": vin or "V1", "name": "Alpha"})
+    one = client.get("/places/index.json?vin=V1").json()["places"]
+    assert {p["id"]: p["v"] for p in one} == {5: 3, 8: 2}, "the places V1 has been to, with V1's visits"
+    both = client.get("/places/index.json").json()["places"]
+    assert {p["id"]: p["v"] for p in both} == {5: 7, 6: 12, 8: 2}, "all cars: everything, every car's stops"
+    assert {p["id"] for p in client.get("/places/index.json?vin=nobody").json()["places"]} == {5, 6, 8}, "an unknown car is every car"
+    r2 = client.get("/places?vin=V2")
+    page = r2.text
+    assert 'data-index="/places/index.json?vin=V2"' in page
+    assert 'data-index="/places/index.json"' in client.get("/places?vin=all").text
 
 
 def test_the_places_page_opens_on_a_merge_from_a_places_page(placed, client):  # noqa: F811
     r = client.get("/places?merge=5")
-    assert r.status_code == 200 and 'data-merge="5"' in r.text and ">1 place<" in r.text
+    assert r.status_code == 200 and 'data-merge="5"' in r.text and "1 place" in r.text
     js = (HERE / "static" / "placesmap.js").read_text()
     assert "x.m <= 1000" in js and "metres(k.la, k.lo, p.la, p.lo) <= 1000" in js, "the places within a kilometre are the ones offered"
     assert "c.confirmMerge(" in js, "picking ends in the card's confirm, which says what moves"
@@ -375,7 +394,7 @@ global.document = {
   documentElement: new El("html"), body: new El("body"),
   querySelector: function (sel) {
     if (sel === ".plwrap") return wrap; if (sel === "[data-place-filter]") return find; if (sel === ".plnone") return none; if (sel === ".plmerge") return banner;
-    if (sel === ".plempty") return null; if (sel.indexOf("meta[") === 0) return meta;
+    if (sel === ".plempty" || sel === "[data-pl-count]") return null; if (sel.indexOf("meta[") === 0) return meta;
     var m = /^\.plsec-(\w+)(?: (.*))?$/.exec(sel); if (m) return m[2] ? sections[m[1]].querySelector(m[2]) : sections[m[1]];
     throw new Error("selector " + sel);
   },
@@ -443,14 +462,14 @@ console.log(JSON.stringify({first: a, more: b, after: rows().length, tail: byId[
     assert got["first"][:4] == [
         "Charlie Coffee | Springfield · 40 visits | Name it",
         "Delta Hardware | Springfield · 39 visits | Name it",
-        "39.701, -89.650 | 38 visits | Name it",
+        "Unnamed place | 39.701, -89.650 · 38 visits | Name it",
         "Road 3 | Springfield · 37 visits | Name it",
     ]
     assert len(got["first"]) == 10 and got["more"] == "Show all 14"
     assert got["after"] == 14 and got["tail"] == 0, "Show all lists every one in place and goes"
     assert got["named"] == 1 and got["n"] == "14"
     js = (HERE / "static" / "placesmap.js").read_text()
-    assert " to name" not in js and "plr-qb" not in js, "the one collapsed row is gone"
+    assert "plr-qb" not in js and js.count(" to name") == 1 and "data-pl-count" in js, "the one collapsed row is gone; only the header still says how many are to name"
 
 
 def test_the_picked_place_stands_out_and_the_rest_dim():
@@ -496,7 +515,7 @@ console.log(JSON.stringify({ a: a, b: b, c: c }));
 
 def test_the_card_names_the_picked_stop_and_points_at_it():
     js = (HERE / "static" / "placesmap.js").read_text()
-    assert "title: title(p)," in js and 'function title(p) { return (p.a ? suggest(p) : p.n) + " · " + visitsText(p.v); }' in js
+    assert "title: title(p)," in js and 'function title(p) { return label(p) + (p.v ? " · " + visitsText(p.v) : ""); }' in js
     card = (HERE / "static" / "placecard.js").read_text()
     assert 'head.textContent = st.o.title || "Name this place";' in card and 'head.textContent = st.o.title || (named ? "Edit place" : "Name this place");' in card
     assert 'tip.className = "pcard-tip";' in card and 'tip.classList.toggle("pcard-tip-r", left < r.left);' in card
@@ -523,3 +542,9 @@ def test_the_index_puts_the_most_visited_found_place_first(placed, client, monke
         (14, 1),
         (15, 0),
     ]
+
+
+def test_an_unnamed_place_reads_as_unnamed_with_its_coordinate_beneath():
+    js = (HERE / "static" / "placesmap.js").read_text()
+    assert 'unnamed(p) ? "Unnamed place"' in js and "bits.push(p.n)" in js and 'plr-unnamed' in js
+    assert ".plr-unnamed b {" in (HERE / "static" / "style.css").read_text()

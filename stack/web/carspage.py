@@ -4,6 +4,8 @@ reads the database or the network."""
 
 from __future__ import annotations
 
+import re
+
 from teslafi_import import USABLE_KWH
 
 # What a car's history is written from (app.source_of), in words a person would use. These are
@@ -57,8 +59,16 @@ def pack(stored: float | None, reported: float | None, reported_by: str | None, 
     return {"kwh": stored, "origin": origin, "text": text, "figure": figure, "figure_by": figure_by}
 
 
+def plain(text: str | None) -> str | None:
+    """A stored failure in words a person can act on: the sign-in note an older connector wrote named
+    the Python class that raised."""
+    m = re.match(r"Lucid did not sign in \(\w+\)\.", text or "")
+    return "Lucid did not accept the sign-in. Check the e-mail and password, then sign in again." if m else text
+
+
 def row_status(kind: str, *, pending=False, last_error=None, readable=True, status=None, last_ok_at=None) -> dict:
     """An account's state as a dot and a sentence: ok, bad, wait or none, and when."""
+    last_error = plain(last_error)
     if kind == "lucid":
         # the row's own sign-in result first, then what the connector reports
         if pending:
@@ -84,6 +94,7 @@ def cc_status(config: dict, last_error=None, readable=True, status=None, has_car
     """Another brand's account, as the connector container reports it back: installing,
     starting, removing, why it failed, or what the connector says of its cars."""
     state = config.get("state")
+    last_error = plain(last_error)
     if state == "remove":
         return {"state": "wait", "text": "Removing: CarConnectivity takes it out within a few seconds", "at": None}
     if last_error:
@@ -140,7 +151,12 @@ def accounts(
             st = row_status(r["kind"], pending=bool(config.get("pending")), last_error=r.get("last_error"), readable=r.get("readable", True), status=r.get("status"), last_ok_at=r.get("last_ok_at"))
             what = WHAT.get(r["kind"], r["kind"].title())
         cars = [names.get(v) or (r.get("label") if r["kind"] == "teslafi" else None) or v[-6:] for v in vins]
-        out.append({**r, "what": what, "vins": vins, "cars": cars, "kept": "kept in the app", "where": "app", **st})
+        kept = "kept in the app"
+        if r["kind"] == "lucid":  # only the token Lucid hands back is kept; a refused sign-in keeps nothing
+            kept = "nothing kept" if st["state"] == "bad" and r.get("last_error") else "its sign-in token is kept, never the password"
+        elif r["kind"] == "carconnectivity" and st["state"] == "bad":  # left out of the running connector; its settings stay to retry
+            kept = "kept here, not running"
+        out.append({**r, "what": what, "vins": vins, "cars": cars, "kept": kept, "where": "app", "retry": st["state"] == "bad" and r["kind"] in ("lucid", "carconnectivity"), **st})
     if token_file:
         st = row_status("env", status=connector)
         out.append(
@@ -160,7 +176,7 @@ def accounts(
         if s["kind"] == "teslamate":
             vins = list(env_teslamate_vins)  # .env names no cars: the ones TeslaMate writes
         st = row_status("env", status=s.get("status"))
-        kept = "from an older token setting" + ("" if s.get("used", True) else ", no longer read")
+        kept = "from .env" + ("" if s.get("used", True) else ", no longer read")
         cars = [names.get(v, v) for v in vins] or ([s["car"]] if s.get("car") and s["kind"] != "teslamate" else [])
         detail = {"teslafi": "TESLAFI_TOKENS", "teslamate": "TESLAMATE_DB_URL"}.get(s["kind"], s["kind"]) + " in stack/.env"
         out.append({**s, "what": WHAT.get(s["kind"], s["kind"]), "vins": vins if s.get("used", True) else [], "cars": cars, "kept": kept, "kept_detail": detail, "where": "env", **st})
@@ -190,6 +206,15 @@ def cards(
                 srcs.append({"name": name, "writes": False, "state": a["state"], "text": a["text"], "at": a["at"]})
         label = " ".join(x for x in (make, model) if x) if model else ""
         out.append(
-            {"vin": vin, "name": v["name"], "model": label, "sources": srcs, "newest": newest.get(vin), "pack": packs.get(vin) or pack(None, None, None, None), "choices": (choices or {}).get(vin, [])}
+            {
+                "vin": vin,
+                "name": v["name"],
+                "source_name": v.get("source_name") or v["name"],
+                "model": label,
+                "sources": srcs,
+                "newest": newest.get(vin),
+                "pack": packs.get(vin) or pack(None, None, None, None),
+                "choices": (choices or {}).get(vin, []),
+            }
         )
     return out

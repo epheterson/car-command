@@ -319,5 +319,5 @@ def test_the_connect_page_says_what_the_scope_allows_and_asks_an_old_sign_in_to_
     from pathlib import Path
 
     html = (Path(__file__).parent / "templates" / "settings_tesla.html").read_text()
-    assert "vehicle_charging_cmds" in html and "Car Command sends none" in html
+    assert "vehicle_charging_cmds" in html and "sent only from Settings › Commands" in html
     assert "Sign in again to grant it" in html

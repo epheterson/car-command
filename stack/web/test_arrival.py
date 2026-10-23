@@ -57,7 +57,8 @@ def test_with_reduced_motion_there_is_no_arrival():
 @pytest.mark.parametrize("name", ["now.html", "drive.html", "day.html", "calendar.html", "map.html", "tags.html", "place.html"])
 def test_no_map_waits_for_the_arrival(name):
     s = (HERE / "templates" / name).read_text()
-    assert "CCMap.base(" in s and "ccAfterArrival" not in s, name
+    # the drive page's maps come from track.js (CCMap.trio, on the same base)
+    assert ("CCMap.base(" in s or "CCTrack.drive(" in s) and "ccAfterArrival" not in s, name
 
 
 def test_a_places_fields_work_from_the_first_frame():

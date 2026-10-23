@@ -4,6 +4,7 @@
 <script src="{{ root }}/static/placesmap.js?v={{ js_v }}" defer></script>
 {% endblock %}
 {% block body %}
+{% from "_mapsoffer.html" import offer %}{{ offer(settings, root, csrf, here) }}
 {# Every place on one map, beside a slim list (under the map on a phone): the named ones,
    busiest first, then To name: the places found from where the cars stop, busiest first, the
    top ten with Show all, each with its suggested name. A row or a marker opens the naming card
@@ -13,13 +14,13 @@
    take in. The page carries only this frame: the places come from /places/index.json once
    it has drawn, and the map and its scripts (_maphead.html, kept here unrun) start at once, never
    waiting for the arrival; with backgrounds off it needs no vector library at all (static/placesmap.js). #}
-<div class="pbar"><h1>Places</h1><span class="muted">{{ named|num }} place{{ "s" if named != 1 }}</span></div>
+<div class="pbar"><h1>Places</h1><nav class="segmented" aria-label="Places"><a href="{{ root }}/places{{ q }}" aria-current="page">Map</a><a href="{{ root }}/places/routes{{ q }}">Routes</a></nav><span class="muted" data-pl-count>{{ named|num }} place{{ "s" if named != 1 }}{% if found %} · {{ found|num }} to name{% endif %}</span></div>
 <div class="plhead">
   <input class="filter plfind" type="search" placeholder="Find a place" aria-label="Find a place by name or town" autocomplete="off" data-place-filter>
   <a class="pladd" href="{{ root }}/places/new">Add a place</a>
 </div>
 <div class="plmerge" role="status" hidden><span class="plmerge-say"></span><span class="sp"></span><button type="button" class="quiet plmerge-cancel">Cancel</button><button type="button" class="plmerge-go" disabled>Merge…</button></div>
-<div class="plwrap" data-index="{{ root }}/places/index.json"{% if merge %} data-merge="{{ merge }}"{% endif %}>
+<div class="plwrap" data-index="{{ root }}/places/index.json{{ '?vin=' ~ index_vin if index_vin }}"{% if merge %} data-merge="{{ merge }}"{% endif %}>
   <div class="pllist">
     <section class="plsec plsec-near" hidden aria-labelledby="pl-near-h"><h2 id="pl-near-h">Within a kilometre</h2><ul class="plrows" id="pl-near"></ul></section>
     <section class="plsec plsec-named" aria-labelledby="pl-named-h"><h2 id="pl-named-h">Your places <span class="n">{{ named|num }}</span></h2>

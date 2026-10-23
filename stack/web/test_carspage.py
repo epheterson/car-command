@@ -43,7 +43,7 @@ def test_accounts_and_cards():
     names = {"V1": "Alpha", "V2": "Bravo", "V3": "Charlie"}
     accts = accounts(rows, env, True, names, ["V3"], [], (T, None))
     assert [a["what"] for a in accts] == ["TeslaFi token", "TeslaMate database", "Lucid account", "TeslaFi token"]
-    assert accts[1]["cars"] == ["Alpha", "Bravo"] and accts[2]["kept"] == "from a sign-in file" and accts[3]["kept"] == "from an older token setting, no longer read"
+    assert accts[1]["cars"] == ["Alpha", "Bravo"] and accts[2]["kept"] == "from a sign-in file" and accts[3]["kept"] == "from .env, no longer read"
     assert accts[3]["vins"] == [], "a .env source no longer read feeds no car"
     vehicles = [{"vin": "V1", "name": "Alpha"}, {"vin": "V3", "name": "Charlie"}]
     got = cards(vehicles, {"V1": ("Tesla", "Model 3"), "V3": ("Lucid", "Air")}, {"V1": "feed", "V3": "live"}, {"V1": (T, None), "V3": (T, None)}, {"V1": T}, {}, accts)
@@ -114,3 +114,24 @@ def test_a_brand_waiting_to_retry_says_why_and_when():
         last_error="pip could not install it: no network. Trying again in 2 minutes.",
     )
     assert got["state"] == "bad" and "Trying again in 2 minutes" in got["text"]
+
+
+def test_a_refused_lucid_sign_in_is_in_words_with_a_way_to_sign_in_again():
+    from carspage import plain
+
+    old = "Lucid did not sign in (APIError). Check the e-mail and password and sign in again."
+    assert "APIError" not in plain(old) and plain(old).startswith("Lucid did not accept the sign-in")
+    assert plain("CarConnectivity stopped") == "CarConnectivity stopped" and plain(None) is None
+    rows = [{"id": 1, "kind": "lucid", "vin": None, "label": "Lucid", "config": {"pending": False}, "readable": True, "status": None, "last_ok_at": None, "last_error": old}]
+    a = accounts(rows, [], False, {}, [], [], None)[0]
+    assert a["retry"] is True and a["state"] == "bad" and "APIError" not in a["text"] and a["kept"] == "nothing kept"
+    ok = accounts([{**rows[0], "last_error": None, "last_ok_at": T}], [], False, {}, [], [], None)[0]
+    assert ok["retry"] is False and "never the password" in ok["kept"]
+
+
+def test_a_brand_left_out_of_the_connector_says_it_is_kept_but_not_running():
+    """A plugin the connector took out after it failed keeps its settings here to try again; the
+    row must not say "kept in the app" beside "taken out" as if the two disagreed."""
+    row = {"id": 9, "kind": "carconnectivity", "vin": None, "label": "Tronity", "config": {"brand": "Tronity"}, "readable": True, "status": None, "last_ok_at": None, "last_error": "CarConnectivity stopped while starting with it (exit 1), so it was taken out and the rest started without it."}
+    (acct,) = accounts([row], [], False, {}, [], [], None)
+    assert acct["state"] == "bad" and acct["kept"] == "kept here, not running" and acct["retry"]

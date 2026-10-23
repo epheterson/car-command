@@ -1,24 +1,54 @@
 {% extends "base.html" %}
 {% import "_parts.html" as parts %}
 {% import "_info.html" as i %}
+{% import "_prevnext.html" as pn %}
 {% block title %}Charge · {{ session.session_start_date|local }} · Car Command{% endblock %}
+{% block head %}{% if close_maps and session.get('session_position_latitude') is not none %}{% include "_maphead.html" %}{% endif %}{% endblock %}
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}
-{# A charge: one line of what it was, a tile each for the charger's figures, then the chart
-   (its headline the peak, not the last reading after unplugging) and what can be done with it. #}
-<div class="pbar"><h1>{{ place_refs(session.where, [session.get('where_ref')]) }}</h1><span class="pbar-ctx">{{ session.session_start_date|local('%a %b %-d, %-I:%M %p') }}</span><span class="sp"></span><a class="btn sm" href="{{ root }}/day?date={{ session.session_start_date|local('%Y-%m-%d') }}{{ dq }}">Day ›</a></div>
+{# A charge: one line of what it was (its battery bold at the end), where, two headline figures,
+   the chart, every other figure in a quiet grid, then what the charge bought. #}
+<div class="pbar"><h1>{{ place_refs(session.where, [session.get('where_ref')]) }}</h1><span class="pbar-ctx keep">{{ session.session_start_date|local('%a %b %-d, %-I:%M %p') }}{% if session.session_end_date %} → {{ session.session_end_date|local('%-I:%M %p') if session.session_end_date|local('%Y-%m-%d') == session.session_start_date|local('%Y-%m-%d') else session.session_end_date|local('%a %-I:%M %p') }}{% else %}, still charging{% endif %}</span><span class="sp"></span>{{ pn.inline(near, root, '?vin=' ~ car.vin) }}<a class="btn sm" href="{{ root }}/day?date={{ session.session_start_date|local('%Y-%m-%d') }}{{ dq }}">Day ›</a></div>
 {% set line = [] %}{% if stats.kwh %}{% set _ = line.append((stats.kwh|num(1)) ~ ' kWh') %}{% endif %}{% if session.duration %}{% set _ = line.append(session.duration|duration) %}{% elif not session.session_end_date %}{% set _ = line.append('still charging') %}{% endif %}
-<div class="drv-sum"><b>{{ line|join(' · ') }}{% if session.cost is not none %}{{ ' · ' if line }}{{ '≈' if session.get('cost_source') == 'average' }}{{ cur }}{{ session.cost|num(2) }}{% endif %}</b>{% if session.cost is not none %}{% call i.info('How the cost is worked out') %}{% if session.get('cost_source') == 'average' %}An estimate from the {{ session.rate_plan or 'regional average' }}{% if session.rate_month %}, {{ session.rate_month|month_label }} figure{% endif %}. Set a plan in Settings › Money to price it.{% else %}{{ session.rate_plan or 'Its own price' }}{% for k, v in (session.get('cost_parts') or {}).items() if v %}{{ ':' if loop.first }} {{ v|num(1) }} kWh {{ k|replace('_', '-') }}{{ ',' if not loop.last }}{% endfor %}.{% endif %}{% endcall %}{% endif %}<span class="sp"></span>{% if session.start_level is not none and session.end_level is not none %}<span>{{ session.start_level|num }}→{{ session.end_level|num }}%</span>{% endif %}</div>
+<div class="drv-sum"><b>{{ line|join(' · ') }}{% if session.cost is not none %}{{ ' · ' if line }}{{ '≈' if session.get('cost_source') == 'average' }}{{ cur }}{{ session.cost|num(2) }}{% endif %}</b>{% if session.cost is not none %}{% call i.info('How the cost is worked out') %}{% if session.get('cost_source') == 'average' %}An estimate from the {{ session.rate_plan or 'regional average' }}{% if session.rate_month %}, {{ session.rate_month|month_label }} figure{% endif %}. Set a plan in Settings › Money to price it.{% else %}{{ session.rate_plan or 'Its own price' }}{% for k, v in (session.get('cost_parts') or {}).items() if v %}{{ ':' if loop.first }} {{ v|num(1) }} kWh {{ k|replace('_', '-') }}{{ ',' if not loop.last }}{% endfor %}.{% endif %}{% endcall %}{% endif %}<span class="sp"></span>{% if session.start_level is not none and session.end_level is not none %}<b class="drv-bat">{{ session.start_level|num }}→{{ session.end_level|num }}%</b>{% endif %}</div>
+{# where it charged, a strip of street map named with the place; with no map base it would be a dot on a blank band, so it is left out #}
+{% if close_maps and session.get('session_position_latitude') is not none %}<figure class="strip-map"><div id="chg-map" class="map chg-map" role="img" aria-label="Where this charge was"></div>{% if session.where %}<figcaption>{{ session.where|short_place }}</figcaption>{% endif %}</figure>{% endif %}
+{% if session.get('rate') %}<div class="mix rate">{{ parts.mix_bar(session.rate, true, cur) }}</div>{% endif %}
 {% if session.get('mix') %}<div class="mix">{{ parts.mix_bar(session.mix, true, cur) }}</div>{% endif %}
-<div class="tiles pair">
-  {% if stats.get('peak_kw') %}<div class="tile"><span class="l">Peak power</span><span class="v">{{ stats.peak_kw|num(1) }}<small>kW</small></span><span class="d">{% if stats.get('avg_kw') %}{{ stats.avg_kw|num(1) }} kW average{% endif %}{% if session.charging_type %}{{ ' · ' if stats.get('avg_kw') }}{{ 'DC' if session.charging_type == 'DC' else 'AC' }}{% endif %}</span></div>{% endif %}
-  {% if stats.get('avg_volts') %}<div class="tile"><span class="l">Charger</span><span class="v">{{ stats.avg_volts|num }}<small>V</small></span><span class="d">{% if stats.get('avg_amps') %}{{ stats.avg_amps|num }} A{% endif %}</span></div>{% endif %}
-  {% if session.get('range_added') and session.range_added > 0 %}<div class="tile"><span class="l">Range added</span><span class="v">{{ session.range_added|dist }}<small>{{ u.dist }}</small></span></div>{% endif %}
-  {% if stats.get('kwh_profile') and stats.kwh and stats.kwh_profile > stats.kwh %}<div class="tile"><span class="l">Into the battery</span><span class="v">{{ (stats.kwh / stats.kwh_profile * 100)|num }}<small>%</small></span><span class="d">of {{ stats.kwh_profile|num(1) }} kWh</span></div>{% endif %}
-  {% if stats.get('kwh_per_100') %}<div class="tile"><span class="l">Full battery</span><span class="v">{{ stats.kwh_per_100|num(1) }}<small>kWh</small></span></div>{% endif %}
-  {% if session.plug_connected_date %}<div class="tile"><span class="l">Plugged in</span><span class="v small-v">{{ session.plug_connected_date|local('%-I:%M %p') }}</span><span class="d">{% if session.plug_disconnected_date %}out {{ session.plug_disconnected_date|local('%-I:%M %p') }}{% endif %}</span></div>{% endif %}
+{# two headline figures: what went in and how fast #}
+<div class="tiles pair heroes">
+  {% if stats.kwh %}<div class="tile"><span class="l">Added</span><span class="v">{{ stats.kwh|num(1) }}<small>kWh</small></span><span class="d">{% if session.get('range_added') and session.range_added > 0 %}+{{ session.range_added|dist }} {{ u.dist }} rated{% endif %}</span></div>{% endif %}
+  {% if stats.get('peak_kw') %}<div class="tile"><span class="l">Peak power</span><span class="v">{{ stats.peak_kw|num(1) }}<small>kW</small></span><span class="d">{% if stats.get('avg_kw') %}{{ stats.avg_kw|num(1) }} kW average{% endif %}</span></div>{% endif %}
 </div>
-{% if chart.primary.points %}{{ parts.chart('charge-' ~ session.id, chart, big=((stats.peak_kw|num(1)) ~ ' kW peak') if stats.get('peak_kw') else none) }}{% else %}<div class="empty">No power readings inside this charge</div>{% if chart.extras %}{{ parts.chart('charge-' ~ session.id, dict(chart, primary=chart.extras[0], extras=chart.extras[1:])) }}{% endif %}{% endif %}
+{% if chart.primary.points %}{{ parts.chart('charge-' ~ session.id, chart, title=false) }}{% else %}<div class="empty">No power readings inside this charge</div>{% if chart.extras %}{{ parts.chart('charge-' ~ session.id, dict(chart, primary=chart.extras[0], extras=chart.extras[1:]), title=false) }}{% endif %}{% endif %}
+{# every other figure, a step quieter #}
+<dl class="dgrid">
+  {% if session.plug_connected_date %}<div><dt>Plugged in</dt><dd>{{ session.plug_connected_date|local('%-I:%M %p') }}{% if session.plug_disconnected_date %}<small>out {{ session.plug_disconnected_date|local('%-I:%M %p') }}</small>{% endif %}</dd></div>{% endif %}
+  {% if stats.get('avg_volts') %}<div><dt>Volts</dt><dd>{{ stats.avg_volts|num }} V{% if stats.get('max_volts') %}<small>{{ stats.max_volts|num }} at most</small>{% endif %}</dd></div>{% endif %}
+  {% if stats.get('avg_amps') %}<div><dt>Amps</dt><dd>{{ stats.avg_amps|num }} A{% if stats.get('max_amps') %}<small>{{ stats.max_amps|num }} at most</small>{% endif %}</dd></div>{% endif %}
+  {% if stats.get('kwh_profile') and stats.kwh and stats.kwh_profile > stats.kwh %}<div><dt>From the charger</dt><dd>{{ stats.kwh_profile|num(1) }} kWh<small>{{ (stats.kwh / stats.kwh_profile * 100)|num }}% into the battery</small></dd></div>{% endif %}
+  {% if session.get('range_added') and session.range_added > 0 %}<div><dt>Range added</dt><dd>{{ session.range_added|dist }} {{ u.dist }}</dd></div>{% endif %}
+  {% if stats.get('kwh_per_100') %}<div><dt>Full battery</dt><dd>{{ stats.kwh_per_100|num(1) }} kWh<small>what 0–100% took, at this rate</small></dd></div>{% endif %}
+  {% if session.charging_type or session.get('session_charge_type') %}<div><dt>Charger</dt><dd>{{ 'DC, fast' if session.charging_type == 'DC' else 'AC' if session.charging_type else '' }}{% if session.get('session_charge_type') %}<small>{{ session.session_charge_type|lower|replace('_', ' ') }}</small>{% endif %}</dd></div>{% endif %}
+  {% if session.get('session_odometer') is not none %}<div><dt>Odometer</dt><dd>{{ session.session_odometer|dist(1) }} {{ u.dist }}</dd></div>{% endif %}
+</dl>
+{% if paid %}{% set nx = paid.until %}
+{# What this charge bought: from unplugging to the next charge (or now): the miles first, then what they took #}
+<section class="bought">
+  <div class="bt-h"><h2 class="sec">What this charge bought</h2><span class="sp"></span>{% if nx %}<a class="bt-to" href="{{ root }}{{ nx.href }}?vin={{ car.vin }}">until the next charge, {{ nx.start|local('%a %b %-d, %-I:%M %p') }} ›</a>{% else %}<span class="bt-to">so far, no charge since</span>{% endif %}</div>
+  <div class="bt-b">
+    <div class="bt-lead"><span class="bt-big">{{ paid.miles|dist(1) }}<small>{{ u.dist }}</small></span><span class="bt-over">driven over {{ paid.ago|duration }}</span></div>
+    {% if paid.end_level is not none and (paid.next_level is not none or paid.battery_used is not none) %}{% set lo = paid.next_level if paid.next_level is not none else paid.end_level - paid.battery_used %}
+    {% set l0, l1 = [lo, 0]|max, [paid.end_level, 100]|min %}<div class="bt-bat" role="img" aria-label="{{ paid.end_level|num }}% when it ended, {{ lo|num }}% {{ 'when the next began' if nx else 'now' }}"><span class="bt-track"><span class="bt-used" style="left:{{ l0|round(1) }}%; width:{{ (l1 - l0)|round(1) }}%"></span><span class="bt-at lo{{ ' edge' if l0 < 8 }}" style="left:{{ l0|round(1) }}%">{{ lo|num }}%</span><span class="bt-at hi{{ ' edge' if l1 > 92 }}" style="left:{{ l1|round(1) }}%">{{ paid.end_level|num }}%</span></span></div>{% endif %}
+    <dl class="bt-figs">
+      {% if paid.battery_used is not none %}<div><dt>Battery used</dt><dd>{{ paid.battery_used|num(1) }}%{% if paid.used_kwh %}<small>{{ paid.used_kwh|num(1) }} kWh</small>{% endif %}</dd></div>{% endif %}
+      {% if paid.rated_used is not none %}<div><dt>Rated used</dt><dd>{{ paid.rated_used|dist(1) }} {{ u.dist }}{% if paid.efficiency %}<small>{{ (paid.efficiency * 100)|num }}% of rated</small>{% endif %}</dd></div>{% endif %}
+      {% if paid.wh_per_mi %}<div><dt>Efficiency</dt><dd>{{ paid.wh_per_mi|econ }} {{ u.econ }}</dd></div>{% endif %}
+      {% if paid.cost_per_mi is not none %}<div><dt>A {{ 'kilometre' if u.dist == 'km' else 'mile' }} cost</dt><dd>{{ cur }}{{ paid.cost_per_mi|perdist(2) }}</dd></div>{% endif %}
+    </dl>
+  </div>
+</section>
+{% endif %}
 <section class="group drv-more">
   <div class="group-b">
     {% if bill and bill.invoice_id %}<a class="set-row set-nav" href="{{ root }}/dx/charging/invoice/{{ bill.invoice_id|urlencode }}" target="_blank" rel="noopener"><span class="set-l">Invoice</span></a>{% endif %}
@@ -49,4 +79,16 @@
   </details>
   {% else %}<div class="empty">No charging-power readings recorded inside this charge</div>{% endif %}
 </section>
+{% if close_maps and session.get('session_position_latitude') is not none %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    var at = [{{ session.session_position_latitude }}, {{ session.session_position_longitude }}];
+    var map = CCMap.base("chg-map", { close: true, still: true, zoomControl: false, dragging: false, attributionControl: true });
+    ["doubleClickZoom", "touchZoom", "boxZoom", "keyboard", "scrollWheelZoom"].forEach(function (h) { if (map[h]) map[h].disable(); });
+    CCMap.charge(map, { lat: at[0], lon: at[1], kwh: {{ (stats.kwh or 0)|tojson }}, fast: {{ (session.charging_type == 'DC')|tojson }} }, CCMap.palette[{{ colors.get(car.vin, 0) }}]);
+    if (map.attributionControl && !CCMap.satellite()) map.attributionControl.addAttribution(CCMap.credit);  // a still map keeps a picture of its base, and the credit with it
+    map.setView(at, 17);
+  });
+</script>
+{% endif %}
 {% endblock %}

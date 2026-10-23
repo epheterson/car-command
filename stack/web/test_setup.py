@@ -59,9 +59,16 @@ def test_every_secret_is_its_own(install):
     # doors into one: whoever gets the REST password gets the database.
     run(install)
     vals = env_values(install)
-    secrets = [vals[k] for k in ("DB_PASSWORD", "WEBUI_PASSWORD", "REST_PASSWORD")]
+    secrets = [vals[k] for k in ("DB_PASSWORD", "WEBUI_PASSWORD", "REST_PASSWORD", "CC_SECRET")]
     assert len(set(secrets)) == len(secrets), "a generated password was reused"
     assert all(len(s) >= 32 for s in secrets), secrets
+
+
+def test_the_session_signing_key_lives_in_the_env_not_the_database(install):
+    """A database dump alone then cannot mint a session or the setup code."""
+    run(install)
+    assert len(env_values(install)["CC_SECRET"]) >= 32
+    assert "CC_SECRET=\n" in EXAMPLE.read_text(), "the example leaves it empty, so a copied example never pins a known key"
 
 
 def test_two_installs_do_not_share_a_password(install, tmp_path_factory):
@@ -95,7 +102,18 @@ def test_running_it_twice_leaves_the_first_env_alone(install):
 
 def test_it_says_what_to_do_next(install):
     r = run(install)
-    assert "docker compose" in r.stdout and "3044" in r.stdout
+    assert "docker compose" in r.stdout and "setup_code.py" in r.stdout
+
+
+def test_the_first_run_prints_no_open_hint_before_the_stack_exists(install):
+    """The port may change after setup, and the code cannot be had before the site runs."""
+    out = run(install).stdout
+    assert "Open http://localhost" not in out and "localhost:3044" not in out
+
+
+def test_a_second_run_still_says_where_to_open_it(install):
+    run(install)
+    assert "Open http://localhost" in run(install).stdout
 
 
 def test_the_example_carries_no_real_secret():

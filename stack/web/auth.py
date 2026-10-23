@@ -14,6 +14,7 @@ import ipaddress
 import os
 import secrets
 import time
+from urllib.parse import urlsplit
 
 SESSION_COOKIE = "cc_session"
 CSRF_FIELD = "csrf_token"
@@ -25,6 +26,7 @@ MIN_PASSWORD = 8
 # The Tesla key path: Tesla fetches the app's public key with no session, and a login page there fails pairing.
 OPEN_PATHS = ("/health", "/favicon.ico", "/login", "/setup", "/manifest.webmanifest", "/.well-known/appspecific/com.tesla.3p.public-key.pem")
 OPEN_PREFIXES = ("/static/",)
+SETUP_ASSETS = ("/favicon.ico", "/manifest.webmanifest")  # the first-run page's own icons; it is styled from /static/
 
 
 # Credentials live in their own table rather than in cc_settings, so the password hash
@@ -50,6 +52,7 @@ CREATE TABLE IF NOT EXISTS cc_api_tokens (
 ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS kind VARCHAR NOT NULL DEFAULT 'read';
 ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS last4 VARCHAR;
 ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS share_place BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS coords BOOLEAN NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS cc_api_log (
     id         BIGSERIAL PRIMARY KEY,
     at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -78,6 +81,12 @@ def store_set(conn, key: str, value: str) -> None:
         "INSERT INTO cc_auth (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         (key, value),
     )
+    conn.commit()
+
+
+def store_delete(conn, key: str) -> None:
+    conn.execute(DDL)
+    conn.execute("DELETE FROM cc_auth WHERE key = %s", (key,))
     conn.commit()
 
 
@@ -130,6 +139,22 @@ def password_problem(password: str, confirm: str | None = None) -> str | None:
     return None
 
 
+# ---- placeholders --------------------------------------------------------
+PLACEHOLDER = "CHANGE_ME"  # stack/.env.example's stand-in for a password; make setup replaces every one
+PLACEHOLDER_NAMES = ("REST_PASSWORD", "CC_PASSWORD", "CC_SECRET")
+
+
+def placeholders(env) -> list[str]:
+    """The settings that still hold the example's placeholder, which the site must not run on."""
+    out = []
+    try:
+        if urlsplit(env.get("DATABASE_URL") or "").password == PLACEHOLDER:
+            out.append("DATABASE_URL (DB_PASSWORD)")
+    except ValueError:
+        pass
+    return out + [name for name in PLACEHOLDER_NAMES if (env.get(name) or "").strip() == PLACEHOLDER]
+
+
 # ---- signed values ---------------------------------------------------------
 
 
@@ -152,6 +177,12 @@ def unsign(
     now: float | None = None,
 ) -> str | None:
     """The payload when the signature holds and the token is young enough, else None."""
+    parts = signed(secret, token, max_age=max_age, now=now)
+    return parts[0] if parts else None
+
+
+def signed(secret: str, token: str | None, *, max_age: int = SESSION_MAX_AGE, now: float | None = None) -> tuple[str, int] | None:
+    """(payload, issued_at) when the signature holds and the token is young enough, else None."""
     if not token:
         return None
     try:
@@ -161,19 +192,60 @@ def unsign(
             return None
         if (now or time.time()) - int(issued) > max_age:
             return None
+        return payload, int(issued)
     except (ValueError, TypeError):
         return None
-    return payload
 
 
-def new_session(secret: str) -> str:
+# A session carries the generation it was made in (e<n>:u<random>); bumping the generation
+# (cc_auth "epoch") ends every session at once, whatever signed it. A session made before
+# generations existed is a bare u<random> and counts as generation 0.
+def new_session(secret: str, epoch: int = 0) -> str:
     # Random payload, so two sign-ins in the same second are still two distinct cookies:
     # without it the CSRF token below would be bound to the clock rather than to a session.
-    return sign(secret, "u" + _b64(secrets.token_bytes(9)))
+    return sign(secret, f"e{int(epoch)}:u" + _b64(secrets.token_bytes(9)))
 
 
-def valid_session(secret: str, cookie: str | None) -> bool:
-    return unsign(secret, cookie) is not None
+def session_epoch(payload: str) -> int | None:
+    head, sep, _ = payload.partition(":")
+    if not sep:
+        return 0 if payload.startswith("u") else None
+    try:
+        return int(head[1:]) if head.startswith("e") else None
+    except ValueError:
+        return None
+
+
+def valid_session(secret: str, cookie: str | None, epoch: int = 0, revoked=()) -> bool:
+    """Signed, young enough, of the current generation, and not signed out (`revoked` holds
+    the payloads of sessions ended one at a time)."""
+    payload = unsign(secret, cookie)
+    return payload is not None and session_epoch(payload) == epoch and payload not in revoked
+
+
+def revoke(revoked: dict, secret: str, cookie: str | None, now: float) -> dict:
+    """The signed-out list with this session added and every entry old enough to have expired
+    on its own dropped, so the list holds at most a month of sign-outs."""
+    out = {k: v for k, v in revoked.items() if now - v <= SESSION_MAX_AGE}
+    parts = signed(secret, cookie, now=now)
+    if parts:
+        out[parts[0]] = parts[1]
+    return out
+
+
+def device_key(secret: str) -> str:
+    """A key of its own for device cookies, so one can never pass for a session."""
+    return _b64(hmac.new(secret.encode(), b"known device", hashlib.sha256).digest())
+
+
+def new_device(secret: str) -> str:
+    """The known-device cookie a browser gets when it signs in: it opens nothing, and only
+    exempts that browser from the global sign-in brake (Failures)."""
+    return sign(device_key(secret), "d" + _b64(secrets.token_bytes(9)))
+
+
+def known_device(secret: str, cookie: str | None) -> bool:
+    return unsign(device_key(secret), cookie, max_age=DEVICE_MAX_AGE) is not None
 
 
 # ---- CSRF ------------------------------------------------------------------
@@ -198,6 +270,9 @@ def csrf_ok(secret: str, session_cookie: str | None, submitted: str | None) -> b
 LOCKOUT_AFTER = 5
 LOCKOUT_CEILING = 900.0
 TRACKED_KEYS = 4096
+GLOBAL_FACTOR = 10  # failures from all clients together that count as one client's
+DEVICE_COOKIE = "cc_device"
+DEVICE_MAX_AGE = 365 * 24 * 3600
 
 
 def lockout_seconds(failures: int) -> float:
@@ -211,14 +286,16 @@ def lockout_seconds(failures: int) -> float:
 class Failures:
     """Consecutive failures per client, and across all of them.
 
-    The global count matters because the deployment trusts X-Forwarded-For from anything
-    that can reach the port, so a guesser can present a fresh address on every try and
-    never accumulate a per-client count. The per-client count is the one that gives a
-    real person a useful message; the global one is the one that actually holds a door."""
+    The global count matters because a guesser with many addresses never accumulates a
+    per-client count. The per-client count is the one that gives a real person a useful
+    message; the global one holds the door for everyone else. A browser that has signed
+    in before (a known-device cookie) is not held by the global count, so strangers
+    tripping it cannot lock the owner out; its own per-client count still applies."""
 
-    def __init__(self, tracked: int = TRACKED_KEYS, global_brake: bool = True):
+    def __init__(self, tracked: int = TRACKED_KEYS, global_brake: bool = True, on_brake=None):
         self.tracked = tracked
         self.global_brake = global_brake  # off where there is nothing a stranger could lock the owner out of
+        self.on_brake = on_brake  # called once when the global count first holds everyone back
         self.by_key: dict[str, tuple[int, float]] = {}
         self.total = 0
         self.last = 0.0
@@ -231,20 +308,22 @@ class Failures:
             for stale in sorted(self.by_key, key=lambda k: self.by_key[k][1])[: self.tracked // 4]:
                 del self.by_key[stale]
         self.total, self.last = self.total + 1, now
+        if self.global_brake and self.on_brake and self.total == GLOBAL_FACTOR * LOCKOUT_AFTER:
+            self.on_brake()
 
     def clear(self, key: str) -> None:
         self.by_key.pop(key, None)
         self.total = 0
 
-    def wait(self, key: str, now: float) -> float:
-        """Seconds this client must wait, 0 when it may try."""
+    def wait(self, key: str, now: float, known: bool = False) -> float:
+        """Seconds this client must wait, 0 when it may try. `known`: the browser has signed in here before."""
         held = []
         count, at = self.by_key.get(key, (0, 0.0))
         if count:
             held.append(lockout_seconds(count) - (now - at))
-        if self.total and self.global_brake:
+        if self.total and self.global_brake and not known:
             # Ten times the per-client allowance before everyone is slowed down.
-            held.append(lockout_seconds(self.total // 10) - (now - self.last))
+            held.append(lockout_seconds(self.total // GLOBAL_FACTOR) - (now - self.last))
         return max(0.0, max(held, default=0.0))
 
 
@@ -270,9 +349,10 @@ def gate(
     open_path = path in OPEN_PATHS or path.startswith(OPEN_PREFIXES)
     write = method not in ("GET", "HEAD", "OPTIONS")
     if enabled and not password_set:
-        # An unconfigured install is not a public one: everything funnels to /setup,
-        # and the form that sets the password is still a write like any other.
-        if path != "/setup":
+        # An unconfigured install is not a public one: everything funnels to /setup but the
+        # assets the setup page is drawn with, and the form that sets the password is still
+        # a write like any other.
+        if path not in ("/setup", "/health") and not (path in SETUP_ASSETS or path.startswith(OPEN_PREFIXES)):
             return "setup"
     elif enabled and not signed_in and not open_path:
         return "login"
@@ -314,13 +394,13 @@ def token_allows(scope_vin: str | None, requested_vin: str | None) -> bool:
     return requested_vin == scope_vin
 
 
-def client_ip(headers, fallback: str | None) -> str:
-    """Who signed in, as seen through Cloudflare or a proxy: the first forwarded address, else the socket's."""
-    for name in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
-        v = headers.get(name) if headers is not None else None
-        if v:
-            return v.split(",")[0].strip()[:64]
-    return fallback or "?"
+def seen_from(headers, peer: str | None) -> str:
+    """Where a request came from, for alerts and the audit log, in words a client cannot choose: the address
+    the trusted hops report (throttle_key), and the socket when that is a proxy in between."""
+    if not peer:
+        return "?"
+    trusted = throttle_key(headers, peer)
+    return trusted if trusted == peer[:64] else f"{trusted} via {peer[:64]}"
 
 
 # ---- admin tokens ------------------------------------------------------------------
@@ -328,7 +408,10 @@ def client_ip(headers, fallback: str | None) -> str:
 # the house: it answers only to a request that started on the local network or the
 # tailnet and did not come in through Cloudflare, unless the owner says otherwise.
 
-KINDS = ("read", "admin", "status")
+KINDS = ("read", "admin", "status", "mcp")
+# An MCP token opens the read-only MCP endpoint and nothing else, and /mcp opens for no other kind. Its `coords`
+# flag (set when it is made) is the one thing that lets its answers carry latitude and longitude.
+MCP_PATH = "/mcp"
 # What a status token may call, and nothing else: the car now, and the stream of it. Not the
 # house: its power over time shows when nobody is home, and its grid state shows power cuts.
 STATUS_PATHS = ("/api/now", "/api/stream")
@@ -354,9 +437,11 @@ HOME_NETS = tuple(
 
 
 def kind_of(text) -> str:
-    """The posted kind: admin or status when it says exactly that, read otherwise."""
+    """The posted kind: admin, status, mcp or control when it says exactly that, read otherwise.
+    A control token reads what a read token reads and may also send the car commands
+    (POST /api/cars/{vin}/command); no other kind ever may."""
     kind = str(text or "").strip()
-    return kind if kind in ("admin", "status") else "read"
+    return kind if kind in ("admin", "status", "control", "mcp") else "read"
 
 
 def status_payload(value, share_place: bool = False):
@@ -598,6 +683,12 @@ def throttle_key(headers, peer: str | None) -> str:
     return hops[0][:64]
 
 
+def sign_in_key(headers, peer: str | None) -> str:
+    """The sign-in throttle's key: the address a client cannot forge (throttle_key), an IPv6
+    one as its /64."""
+    return client_prefix(throttle_key(headers, peer))
+
+
 def client_prefix(address: str) -> str:
     """The throttle's key for an address: an IPv6 one counts as its /64, the smallest network a
     provider hands out, so a client cannot dodge the brake by cycling through its own addresses."""
@@ -653,7 +744,10 @@ def admin_refusal(headers, peer: str | None, anywhere: bool, never=()) -> str | 
     hops = [peer]
     for name in ("x-forwarded-for", "x-real-ip"):
         hops += [h for h in (headers.get(name) or "").split(",") if h.strip()]
-    if any(_within(h, never) for h in hops):
+    # Tailscale sets this on what Funnel forwards from the internet (and drops it from any
+    # request that arrives with one). In the one container that proxy reaches the site from
+    # 127.0.0.1, so the address alone cannot tell.
+    if any(_within(h, never) for h in hops) or any(name.lower() == "tailscale-funnel-request" for name in headers.keys()):
         return "admin tokens are refused from the Tesla stream's network, which faces the internet"
     if anywhere:
         return None
@@ -695,7 +789,7 @@ def log_call(conn, token: dict, method: str, path: str, status: int, ip: str) ->
     """One admin call in cc_api_log. The caller commits."""
     conn.execute(
         "INSERT INTO cc_api_log (label, last4, method, path, status, client_ip) VALUES (%s, %s, %s, %s, %s, %s)",
-        (str(token.get("label") or "token")[:40], token.get("last4"), method[:10], path[:300], int(status), (ip or "?")[:64]),
+        (str(token.get("label") or "token")[:40], token.get("last4"), method[:10], path[:300], int(status), (ip or "?")[:140]),
     )
 
 

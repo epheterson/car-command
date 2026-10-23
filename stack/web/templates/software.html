@@ -2,20 +2,36 @@
 {% import "_info.html" as i %}
 {% block title %}Software · Car Command{% endblock %}
 {% block body %}
-{# Per car: what it runs, then one row a version (newest first, how long it ran); a missed
-   update is added from the group's last row. #}
-<div class="pbar"><h1>Software</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span></div>
-{% for b in blocks %}{% set now_row = b.rows[0] %}{% set long = b.rows|sort(attribute='days', reverse=true)|first %}
+{# Per car: what it runs, how often updates come and a year of them as bars; then one row a
+   version (newest first): the range at 100 % the pack showed while it ran and over how many
+   charges, against the version before, the outside temperature it ran in, how long it
+   stayed. A missed update is added from the group's last row. #}
+<div class="pbar"><h1>Software</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span></div>
+{% for b in blocks %}{% set now_row = b.rows[0] %}{% set long = b.rows|sort(attribute='secs', reverse=true)|first %}
 <section class="daycar">
   {% if car.garage %}<h2 class="daycar-h"><span class="dot c{{ colors.get(b.vin, 0) }}"></span>{{ b.name }}</h2>{% endif %}
+  {# the update the car says is waiting, and the maker's notes where its model has them #}
+  {% set w = b.get('waiting') %}{% if w %}<section class="swup" aria-label="Update waiting">
+    <span class="swup-h"><b>{{ w.version }}</b> waiting{% if w.minutes %}<small> · about {{ w.minutes }} min to install</small>{% endif %}</span>
+    {% if w.notes %}<details class="swup-n"><summary>Release notes</summary><ul>{% for line in w.notes %}<li>{{ line }}</li>{% endfor %}</ul></details>{% endif %}
+    {% if w.url %}<a class="swup-a" href="{{ w.url }}" target="_blank" rel="noopener noreferrer">Notes online</a>{% endif %}
+  </section>{% endif %}
   <div class="tiles t3">
-    <div class="tile"><span class="l">Running</span><span class="v small-v">{{ now_row.version }}</span><span class="d">{{ now_row.days }} day{{ 's' if now_row.days != 1 }}</span></div>
-    <div class="tile"><span class="l">Versions</span><span class="v">{{ b.rows|length }}</span><span class="d">since {{ b.rows[-1].seen_at|local('%b %Y') }}</span></div>
-    <div class="tile"><span class="l">Longest</span><span class="v">{{ long.days }}<small>days</small></span><span class="d">{{ long.version }}</span></div>
+    <div class="tile"><span class="l">Running</span><span class="v small-v">{{ now_row.version }}</span><span class="d">{% if now_row.brief %}{{ now_row.brief|join(' ') }}{% else %}{{ now_row.days }} day{{ 's' if now_row.days != 1 }}{% endif %}</span></div>
+    <div class="tile"><span class="l">Versions</span><span class="v">{{ b.rows|length }}</span><span class="d">since {{ b.rows[-1].seen_at|local('%b %Y') }}{% set every = (b.get('cadence') or {}).get('every') %}{% if every %} · every {{ every|num }} days{% endif %}</span></div>
+    <div class="tile"><span class="l">Longest</span><span class="v">{% if long.brief %}{{ long.brief[0] }}<small>{{ long.brief[1] }}</small>{% else %}{{ long.days }}<small>day{{ 's' if long.days != 1 }}</small>{% endif %}</span><span class="d">{{ long.version }}</span></div>
   </div>
+  {% set tl = b.get('timeline') %}{% if tl %}<figure class="swtl" aria-label="Updates in the last twelve months: {{ tl.n }}"><span class="cap">Updates, last 12 months</span>
+    <div class="swtl-l">{% for d in tl.dots %}<i class="{{ 'cur' if d.current }}" style="left:{{ d.x }}%" title="{{ d.label }}"></i>{% endfor %}</div>
+    <div class="swtl-t" aria-hidden="true">{% for t in tl.ticks %}<span style="left:{{ t.x }}%">{{ t.text }}</span>{% endfor %}</div></figure>{% endif %}
   <div class="group">
+    {% set many = b.rows|length > 12 %}{% if many %}<input type="checkbox" id="sw-all-{{ b.vin }}" class="rows-all" aria-label="Show every version">{% endif %}
     <div class="group-b">
-      {% for r in b.rows %}<div class="set-row"><span class="set-l">{{ r.version }}<span class="set-s">{{ r.seen_at|local('%b %-d, %Y') }}{% if r.odometer %} · {{ r.odometer|dist }} {{ u.dist }}{% endif %}{% if r.by_hand %} · by hand{% endif %}</span></span><span class="set-c">{% if r.by_hand %}<form method="post" action="{{ root }}/software/{{ r.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ b.vin }}"><button type="submit" class="btn sm danger">Remove</button></form>{% endif %}<span class="set-v">{{ r.days }} day{{ 's' if r.days != 1 }}{% if not r.until %} so far{% endif %}</span></span></div>{% endfor %}
+      <div class="swr swr-h" aria-hidden="true"><span>Version</span><span>Range at 100%{% call i.info('Range at 100% per version') %}The median of the charges that ended at {{ b.get('min_level', 60) }}% or more while it ran; the change against the version before.{% endcall %}</span><span>Outside</span><span>Ran</span></div>
+      {% for r in b.rows %}<div class="swr{{ ' later' if loop.index > 12 }}"><span class="swr-v">{{ r.version }}<small>{{ r.seen_at|local('%b %-d, %Y') }}{% if r.by_hand %} · by hand{% endif %}</small>{% if r.odometer %}<small class="swr-o">{{ r.odometer|dist }} {{ u.dist }}</small>{% endif %}{% if r.by_hand %}<form method="post" action="{{ root }}/software/{{ r.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ b.vin }}"><button type="submit" class="btn sm danger">Remove</button></form>{% endif %}</span>
+        <span class="swr-r">{% if r.get('full') is not none %}<b>{{ r.full|dist(1) }}</b> {{ u.dist }}<small>{{ r.full_n }} charge{{ 's' if r.full_n != 1 }}</small>{% if r.full_change is not none and (r.full_change|abs) >= 0.05 %}<small class="swr-c{{ ' quiet' if r.get('full_quiet') }}"{% if r.get('full_quiet') %} title="Few charges, or inside the estimate's own wobble"{% endif %}>{{ '+' if r.full_change > 0 else '−' }}{{ (r.full_change|abs)|dist(1) }} {{ u.dist }} vs previous</small>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</span>
+        <span class="swr-t">{% if r.get('temp_f') is not none %}{{ r.temp_f|temp }}{{ u.temp }}{% else %}<span class="muted">—</span>{% endif %}</span>
+        <span class="swr-d">{% if r.brief %}{{ r.brief[0] }}<small>{{ r.brief[1] }}{{ ' so far' if not r.until }}</small>{% else %}{{ r.days }}<small>{{ 'so far' if not r.until else 'day' ~ ('s' if r.days != 1) }}</small>{% endif %}</span></div>{% endfor %}
       {% if add_cars and loop.last %}<details class="set-x add"><summary class="set-row"><span class="set-l">Add a missed update {% call i.info('A missed update') %}One installed while nothing was logging.{% endcall %}</span></summary>
         <form method="post" action="{{ root }}/software/add" class="set-p"><input type="hidden" name="csrf_token" value="{{ csrf }}">
           {% if add_cars|length > 1 %}<div class="set-row"><label class="set-l" for="sw-car">Car</label><span class="set-c"><select id="sw-car" class="sel" name="vin">{% for v in add_cars %}<option value="{{ v.vin }}">{{ v.name }}</option>{% endfor %}</select></span></div>{% else %}<input type="hidden" name="vin" value="{{ add_cars[0].vin }}">{% endif %}
@@ -25,6 +41,7 @@
         </form>
       </details>{% endif %}
     </div>
+    {% if many %}<label for="sw-all-{{ b.vin }}" class="btn sm rows-more"><span class="off">All {{ b.rows|length }} versions</span><span class="on">Latest 12</span></label>{% endif %}
   </div>
 </section>
 {% endfor %}

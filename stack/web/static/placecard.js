@@ -421,7 +421,7 @@
       add(d.nav.name, "", d.nav.source);
       (d.nav.alternates || []).forEach(function (n) { add(n, "", d.nav.source); });
     }
-    (d.candidates || []).forEach(function (c) { add(c.name, c.kind, c.inside ? "you were here" : Math.round(c.distance_m || 0) + " m"); });
+    (d.candidates || []).forEach(function (c) { add(c.name, c.kind, c.sub || (c.inside ? "you were here" : Math.round(c.distance_m || 0) + " m")); });
     return out;
   }
 
@@ -452,7 +452,7 @@
       if (s.sub) { em.textContent = s.sub; b.appendChild(em); }
       chips.appendChild(b);
     });
-    if (!sugg.length) chips.insertAdjacentHTML("beforeend", '<span class="muted small pcard-none">' + (d.available === false && !d.nav ? "No suggestions: the local maps add-on isn’t running." : "Nothing named nearby.") + "</span>");
+    if (!sugg.length) chips.insertAdjacentHTML("beforeend", '<span class="muted small pcard-none">' + (d.available === false && d.configured && !d.nav ? "Place names are not answering." : d.available === false && !d.nav ? 'Place names are off. <a href="' + ROOT + "/settings/maps" + (location.search.match(/[?&]vin=[\w-]+/) || [""])[0].replace(/^&/, "?") + '">Settings › Maps</a>' : "No name found nearby.") + "</span>");
     if (named && p.stored_icon) setIcon(icons, p.stored_icon);
     else if (named) mark(icons, p.icon); // the name's guess: marked, not checked, so a Save keeps none stored
     else guess(form, (sugg[0] && kinds[sugg[0].kind]) || iconForName(nameIn.value, pairsOf(icons)));

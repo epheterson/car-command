@@ -9,6 +9,8 @@ source of that kind that opens, that kind's .env value is no longer read."""
 
 from __future__ import annotations
 
+import re
+
 import sealing
 
 KINDS = {"teslafi": "TeslaFi", "teslamate": "TeslaMate", "lucid": "Lucid", "tesla": "Tesla", "carconnectivity": "CarConnectivity"}
@@ -88,16 +90,43 @@ def last4(text: str) -> str:
     return "…" + text[-4:] if len(text) >= 8 else "…"
 
 
+VIN_SHAPE = re.compile(r"[A-Za-z0-9]{10,20}")  # what stands before the colon in VIN:token; a name, a space or a short word is not a car
+
+
+def split_token(part: str) -> tuple[str | None, str] | None:
+    """One TESLAFI_TOKENS entry as (vin or None, token): the token alone, or VIN:token. None for
+    anything else (Name:token, a missing token, a stray colon): that entry is refused, not guessed at."""
+    part = (part or "").strip()
+    if not part:
+        return None
+    vin, sep, tok = part.rpartition(":")
+    vin, tok = vin.strip(), tok.strip()
+    if not tok or " " in tok or (sep and not VIN_SHAPE.fullmatch(vin)):
+        return None
+    return (vin or None), tok
+
+
+def parse_tokens(raw: str | None) -> tuple[list[tuple[str | None, str]], list[str]]:
+    """TESLAFI_TOKENS as the entries that are well formed and one plain line for each that is not.
+    The line says which entry by its place and never repeats it: it may be a token."""
+    good, bad = [], []
+    entries = [p for p in (raw or "").split(",") if p.strip()]
+    for n, part in enumerate(entries, 1):
+        got = split_token(part)
+        if got:
+            good.append(got)
+        else:
+            bad.append(f"entry {n} of {len(entries)} is not a token or VIN:token (the part before the colon must be the car's VIN), so it is ignored")
+    return good, bad
+
+
 def env_tokens(env) -> list[tuple[str | None, str]]:
-    """TESLAFI_TOKENS as (vin or None, token): comma separated, optionally VIN:token."""
-    out = []
-    for part in (env.get("TESLAFI_TOKENS") or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        vin, _sep, tok = part.rpartition(":")
-        out.append((vin.strip() or None, tok.strip()))
-    return out
+    """TESLAFI_TOKENS as (vin or None, token): comma separated, optionally VIN:token. Malformed entries are left out (env_token_problems says which)."""
+    return parse_tokens(env.get("TESLAFI_TOKENS"))[0]
+
+
+def env_token_problems(env) -> list[str]:
+    return parse_tokens(env.get("TESLAFI_TOKENS"))[1]
 
 
 def env_sources(env) -> list[dict]:

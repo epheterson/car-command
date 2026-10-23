@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+import clockfmt
+
 # The three periods the rows editor knows, cheapest first. Plans with other periods are
 # described by role on pages that want three columns: cheapest is off-peak, dearest is
 # peak, anything between is part-peak.
@@ -31,7 +33,7 @@ MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", 
 # What an install from before plans existed priced with when it had saved no rates or
 # schedule of its own. Only the upgrade reads these (settings.load), so that upgrading
 # changes no cost; a new install starts with no plan.
-LEGACY_PLAN_NAME = "PG&E EV2A"  # the name those charges were priced and labelled under
+LEGACY_PLAN_NAME = "Earlier rates"  # a label only (stored nowhere but the plan itself); the rates and schedule below are what priced those charges
 LEGACY_RATES = [{"from": "2000-01-01", "off_peak": 0.40, "part_peak": 0.60, "peak": 0.63}]
 LEGACY_SCHEDULE = [
     {"period": "peak", "days": "all", "start": 16, "end": 21, "months": None},
@@ -95,11 +97,60 @@ def schedule_text(schedule: list[dict]) -> str:
 
 
 def _h(h: int) -> str:
+    if clockfmt.PREFS["clock"] == "24":
+        return f"{h % 24:02d}:00"
     if h in (0, 24):
         return "12am"
     if h == 12:
         return "12pm"
     return f"{h}am" if h < 12 else f"{h - 12}pm"
+
+
+def _runs(xs: list[int]) -> list[tuple[int, int]]:
+    """Sorted integers as (first, last) runs of consecutive ones."""
+    out: list[list[int]] = []
+    for x in xs:
+        if out and x == out[-1][1] + 1:
+            out[-1][1] = x
+        else:
+            out.append([x, x])
+    return [(a, b) for a, b in out]
+
+
+def hour_roles(version: dict, weekend: bool, month: int) -> list[str]:
+    """The role of each local hour of a month's weekdays or weekends, ranked among the periods
+    that month uses (cheapest off-peak, dearest peak, any between part-peak): a plan filed with
+    summer and winter periods side by side compares hour for hour with a three-period one."""
+    row = (version["weekend"] if weekend else version["weekday"])[month - 1]
+    used = sorted(set(row), key=lambda i: (float(version["periods"][i]["price"]), i))
+    role = dict.fromkeys(used, "part_peak")
+    role[used[0]] = "off_peak"
+    if len(used) > 1:
+        role[used[-1]] = "peak"
+    return [role[i] for i in row]
+
+
+def hours_differ(mine: dict, theirs: dict) -> list[str]:
+    """Where two versions put an hour in a different role, one line per pair of roles:
+    "off-peak here, part-peak there: 10pm–12am Jan–May, Oct–Dec; 9pm–12am Jun–Sep"."""
+    found: dict[tuple[str, str], dict[int, tuple]] = {}
+    for month in range(1, 13):
+        for weekend in (False, True):
+            for h, (a, b) in enumerate(zip(hour_roles(mine, weekend, month), hour_roles(theirs, weekend, month))):
+                if a != b:
+                    found.setdefault((a, b), {}).setdefault(month, ([], []))[weekend].append(h)
+    lines = []
+    for (a, b), months in found.items():
+        groups: dict[tuple, list[int]] = {}
+        for month, (wd, we) in months.items():
+            groups.setdefault((tuple(wd), tuple(we)), []).append(month)
+        parts = []
+        for (wd, we), ms in sorted(groups.items(), key=lambda g: g[1][0]):
+            when = "every month" if len(ms) == 12 else ", ".join(MONTHS[x - 1] if x == y else f"{MONTHS[x - 1]}–{MONTHS[y - 1]}" for x, y in _runs(ms))
+            hours = [(hs, "") for hs in [wd] if wd == we] or [(hs, f" {DAYS[k]}") for hs, k in ((wd, "weekdays"), (we, "weekends")) if hs]
+            parts += [", ".join(f"{_h(x)}–{_h(y + 1)}" for x, y in _runs(list(hs))) + f"{days} {when}" for hs, days in hours]
+        lines.append(f"{PERIODS[a].lower()} here, {PERIODS[b].lower()} there: " + "; ".join(parts))
+    return lines
 
 
 # --- rows <-> grid -------------------------------------------------------------------
@@ -178,11 +229,15 @@ def legacy_plan(name: str | None, rates, schedule) -> dict:
 
 
 def with_prices(plan: dict, prices: dict[tuple[int, int], float]) -> dict:
-    """A copy of `plan` with (version index, period index) prices replaced."""
+    """A copy of `plan` with (version index, period index) prices replaced. A price typed
+    over an estimated one (`est`) is no longer an estimate."""
     out = {**plan, "versions": [{**v, "periods": [dict(p) for p in v["periods"]]} for v in plan["versions"]]}
     for (vi, pi), price in prices.items():
         if 0 <= vi < len(out["versions"]) and 0 <= pi < len(out["versions"][vi]["periods"]):
-            out["versions"][vi]["periods"][pi]["price"] = float(price)
+            p = out["versions"][vi]["periods"][pi]
+            if float(p["price"]) != float(price):
+                p.pop("est", None)
+            p["price"] = float(price)
     return out
 
 
@@ -288,15 +343,24 @@ def rates_at(when) -> dict[str, float]:
     return {k: sum(xs) / len(xs) for k, xs in by_role.items()}
 
 
+def hour_rate(local: datetime) -> tuple[str | None, float | None]:
+    """The role (off_peak, part_peak, peak) and all-in price per kWh of the local hour `local`
+    is in, under the plan in force on its date; (None, None) when no plan covers it."""
+    v = version_at(local)
+    if v is None:
+        return None, None
+    i = period_index(v, local)
+    return roles(v)[i], float(v["periods"][i]["price"])
+
+
 def period_index(version: dict, local: datetime) -> int:
     grid = version["weekend"] if local.weekday() >= 5 else version["weekday"]
     return grid[local.month - 1][local.hour]
 
 
-def split_kwh(powers: list[tuple[datetime, datetime, float]], start: datetime, end: datetime, tz, version: dict) -> dict[str, float]:
-    """kWh per period key inside [start, end), stepping through each power interval by the local hour."""
-    keys = [p["key"] for p in version["periods"]]
-    kwh = dict.fromkeys(keys, 0.0)
+def _hourly(powers: list[tuple[datetime, datetime, float]], start: datetime, end: datetime, tz):
+    """(local time, kWh) for each piece of each power interval inside [start, end), cut at
+    the local hour."""
     for a, b, kw in powers:
         if kw is None or kw <= 0:
             continue
@@ -306,9 +370,48 @@ def split_kwh(powers: list[tuple[datetime, datetime, float]], start: datetime, e
             local = t.astimezone(tz)
             next_hour = (local.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)).astimezone(t.tzinfo)
             seg_end = min(stop, next_hour)
-            kwh[keys[period_index(version, local)]] += kw * (seg_end - t).total_seconds() / 3600
+            yield local, kw * (seg_end - t).total_seconds() / 3600
             t = seg_end
+
+
+def split_kwh(powers: list[tuple[datetime, datetime, float]], start: datetime, end: datetime, tz, version: dict) -> dict[str, float]:
+    """kWh per period key inside [start, end), stepping through each power interval by the local hour."""
+    keys = [p["key"] for p in version["periods"]]
+    kwh = dict.fromkeys(keys, 0.0)
+    for local, k in _hourly(powers, start, end, tz):
+        kwh[keys[period_index(version, local)]] += k
     return kwh
+
+
+# --- a plan against the charging already done ------------------------------------------
+# Home charges as kWh per (weekday or weekend, month, local hour): what any plan's grid
+# prices, so one profile answers "what would this plan have cost" for every plan without
+# touching a charge.
+
+
+def profile_add(profile: list[float], powers, start: datetime, end: datetime, tz) -> None:
+    """Add one charge's energy to a profile of 2 x 12 x 24 hours (see profile_index)."""
+    for local, k in _hourly(powers, start, end, tz):
+        profile[profile_index(local.weekday() >= 5, local.month, local.hour)] += k
+
+
+def profile_index(weekend: bool, month: int, hour: int) -> int:
+    return (12 * weekend + month - 1) * 24 + hour
+
+
+def profile_cost(plan: dict | None, profile: list[float], on: date) -> float | None:
+    """What the energy in `profile` costs on `plan` at the prices in force on `on` (its
+    oldest version when it starts later). None for no plan."""
+    if not valid_plan(plan):
+        return None
+    v = version_at(on, plan) or min(plan["versions"], key=lambda x: x["from"])
+    prices = [float(p["price"]) for p in v["periods"]]
+    total = 0.0
+    for weekend, grid in ((False, v["weekday"]), (True, v["weekend"])):
+        for m in range(12):
+            for h in range(24):
+                total += profile[profile_index(weekend, m + 1, h)] * prices[grid[m][h]]
+    return total
 
 
 def session_cost(powers: list[tuple[datetime, datetime, float]], start: datetime, end: datetime, tz, plan: dict | None = None) -> dict | None:

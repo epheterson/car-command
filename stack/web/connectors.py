@@ -215,3 +215,9 @@ def claims(config: dict, make: str | None) -> bool:
     if not makes:
         return bool(m) and m != "lucid"  # a connector that reads many brands: any car the connector has that is not Lucid's
     return m in makes
+
+
+# A brand with several connectors shares one row in Settings; a picker inside names each by region or source.
+# The connector keys stay as they are, so saved accounts and connectors.json still match.
+_VW_CHOICES = {"volkswagen": "Europe", "volkswagen_na": "US and Canada", "vw_eu_data_act": "EU Data Act (VW Group)"}
+GROUPS: dict[str, dict] = {k: {"id": "vw", "name": "Volkswagen", "label": "Region or source", "first": "volkswagen", "choices": _VW_CHOICES} for k in _VW_CHOICES}

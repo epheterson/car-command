@@ -88,9 +88,15 @@ def test_the_calendar_month_marks_its_estimated_cost(env):
     assert month["avg_cost"] == pytest.approx(2.64) and month["drive_cost_estimate"]
     window = {"start": T0, "end": T0, "label": "September 2026", "ym": "2026-09", "prev": "2026-08", "prev_label": "Aug 2026", "next": "2026-10", "next_label": "Oct 2026", "is_current": True}
     html = env.get_template("calendar.html").render(
-        **BASE, weeks=[], window=window, totals={"drives": 1, "miles": 12.0, "charges": 1, "kwh": 13.8}, month=dict(month, added_kwh=13.8), center=[40.0, -89.0]
+        **BASE,
+        weeks=[],
+        window=window,
+        totals={"drives": 1, "miles": 12.0, "charges": 1, "kwh": 13.8},
+        month=dict(month, added_kwh=13.8),
+        center=[40.0, -89.0],
+        strips=[{"key": "cost", "label": "Cost", "total": "$2.64", "est": True, "strip": {"bars": [], "w": 300, "h": 40, "ticks": [], "total": 2.64}}],
     )
-    assert plain(html).count("≈$2.64") >= 2, "the Charged tile and the Cost row"
+    assert plain(html).count("≈$2.64") >= 2, "the Cost total and the Cost row"
 
 
 def test_tags_and_the_drive_page_mark_an_estimated_drive_cost(env):

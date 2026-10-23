@@ -45,15 +45,44 @@ def row_parts(r: dict, units, cur: str) -> dict:
     else:
         estimate = r.get("cost_estimate") or r.get("cost_source") == "average"
         pills = [_hm(r.get("duration")), "fast" if r.get("charging_type") == "DC" else "", _money(r.get("cost"), cur, estimate)]
-        big = f"{r['kwh']:.1f} kWh" if r.get("kwh") is not None else "—"
+        big = "Charging now" if r.get("live") else "No end logged" if r.get("open") else f"{r['kwh']:.1f} kWh" if r.get("kwh") is not None else "—"
     return {"title": r.get("title") or "", "pills": [p for p in pills if p], "big": big, "sub": _battery(r)}
+
+
+UNLOGGED_MI = 0.5  # an odometer step between two drives this big is miles driven with nothing logged
+
+
+def unlogged(trips: list[dict], rows: list[dict]) -> float:
+    """Miles the car drove that no drive holds: the odometer at one drive's start past where the
+    drive before it ended, out of cell service or while the logger was down. `trips` is every
+    drive the car has around the day, hidden and tiny ones too, so a drive left off the list is
+    not taken for a gap. Each gap is written on the stretch it fell in ("moved"); returns the day's total."""
+    total = 0.0
+    seq = sorted((t for t in trips if t.get("start_date")), key=lambda t: t["start_date"])
+    for a, b in zip(seq, seq[1:]):
+        if a.get("destination_odometer") is None or b.get("start_odometer") is None or a.get("destination_date") is None:
+            continue
+        miles = b["start_odometer"] - a["destination_odometer"]
+        if miles < UNLOGGED_MI:
+            continue
+        mid = a["destination_date"] + (b["start_date"] - a["destination_date"]) / 2
+        for r in rows:
+            if r["kind"] == "parked" and r["start"] <= mid <= (r.get("end") or mid):
+                r["moved_mi"] = r.get("moved_mi", 0.0) + miles
+                total += miles
+                break
+    return total
 
 
 def gap_text(r: dict, where: str | None, units, guard: str | None = None) -> str:
     guard = guard or identity.guard_name(None)
+    if r.get("moved_mi"):  # not parked: driven out of reach
+        return f"Out of reach {_hm(r.get('duration'))} · drove {units.distance(r['moved_mi']):.1f} {units.labels['dist']} not logged"
     text = ("Asleep " if r.get("sub") == "sleep" else "Parked ") + _hm(r.get("duration"))
     if where and where not in PLACEHOLDERS:
         text += f" at {where}"
+    if (r.get("on_h") or 0) >= 0.05:  # the car on while parked (3 min or more); the states say on, not that anyone sat in it
+        text += f" · car on {_hm(timedelta(hours=r['on_h']))}"
     loss, drop, rng = r.get("kwh_loss"), r.get("drop"), r.get("range_loss")
     if loss is not None and loss >= 0.05:
         text += f" · lost {loss:.1f} kWh" + (f", {units.distance(rng):.1f} {units.labels['dist']}" if rng is not None and rng >= 0.05 else "")
@@ -137,6 +166,27 @@ def as_charge(c: dict) -> dict:
     return dict(c, kind="charge", title=c.get("where") or "Charge", start=c.get("session_start_date"), end=c.get("session_end_date"), level_start=c.get("start_level"), level_end=c.get("end_level"))
 
 
+LIST_CAP = 500  # rows a list draws at once: all time on a car with years of drives was 10 MB of HTML
+
+
+def cap(rows: list[dict], limit: int, tz=None, at: str | None = None) -> tuple[list[dict], int]:
+    """The first `limit` rows and how many are left out. Given the time field, the last local
+    day kept stays whole, so its header's miles and kWh are the whole day's."""
+    if len(rows) <= limit:
+        return rows, 0
+    n = limit
+    if at:
+
+        def day(r):
+            t = r.get(at)
+            return t.astimezone(tz).date() if t else None
+
+        last = day(rows[n - 1])
+        while n < len(rows) and day(rows[n]) == last:
+            n += 1
+    return rows[:n], len(rows) - n
+
+
 def by_day(rows: list[dict], tz, at: str) -> list[dict]:
     """Rows under local-day headers, in the order given, with each day's miles and kWh."""
     out: list[dict] = []
@@ -144,8 +194,9 @@ def by_day(rows: list[dict], tz, at: str) -> list[dict]:
         t = r.get(at)
         day = t.astimezone(tz).date() if t else None  # a charge that never started: only the hidden list has one
         if not out or out[-1]["date"] != day:
-            out.append({"date": day, "rows": [], "miles": 0.0, "kwh": 0.0})
+            out.append({"date": day, "rows": [], "miles": 0.0, "kwh": 0.0, "live": False})
         out[-1]["rows"].append(r)
+        out[-1]["live"] = out[-1]["live"] or bool(r.get("live"))  # a charge still going adds nothing yet
         out[-1]["miles"] += r.get("miles") or 0.0
         if "session_start_date" in r:
             out[-1]["kwh"] += r.get("kwh") or 0.0

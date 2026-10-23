@@ -17,15 +17,18 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from urllib.parse import quote, urlencode
 
+import fleet_usage
 from sources import scrub
 
 AUTHORIZE = "https://auth.tesla.com/oauth2/v3/authorize"
 TOKEN = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
 NA = "https://fleet-api.prd.na.vn.cloud.tesla.com"
-# vehicle_charging_cmds is the scope Tesla puts its charging history and invoices under.
-# It also permits charge commands (start, stop, limits); Car Command sends none.
+# vehicle_charging_cmds is the scope Tesla puts its charging history and invoices under, and
+# charge commands (start, stop, limits). vehicle_cmds is every other command Settings › Commands
+# can send (climate, lock, ...), each signed by Tesla's proxy with the app's key.
 BILLING_SCOPE = "vehicle_charging_cmds"
-SCOPES = f"openid offline_access vehicle_device_data vehicle_location {BILLING_SCOPE}"
+COMMAND_SCOPE = "vehicle_cmds"
+SCOPES = f"openid offline_access vehicle_device_data vehicle_location {BILLING_SCOPE} {COMMAND_SCOPE}"
 # energy_device_data reads a Powerwall's live status and history; Car Command sends no energy command.
 # Asked for only by the Energy page's own sign-in, with the vehicle scopes beside it so one token
 # covers both: a developer app without Energy Product Data must still be able to sign in for cars.
@@ -91,7 +94,9 @@ class Fleet:
 
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
-            status, body = self.call(method, url, headers=headers, data=data, json=json)
+            status, body = fleet_usage.through(method, url, json, lambda: self.call(method, url, headers=headers, data=data, json=json))
+        except fleet_usage.Overspent as err:
+            raise TeslaError(err.public) from None
         except httpx.HTTPError as err:
             raise TeslaError(f"Tesla did not answer ({type(err).__name__}).") from None
         if missing_ok and status == 404:
@@ -114,11 +119,10 @@ class Fleet:
 
     # ---- signing in
     def authorize_url(self, redirect_uri: str, state: str, energy: bool = False) -> str:
-        params = {"client_id": self.client_id, "redirect_uri": redirect_uri, "response_type": "code", "scope": ENERGY_SCOPES if energy else SCOPES, "state": state}
-        if energy:
-            # An account that consented before is otherwise handed its old grant back, silently
-            # without a scope it never granted: Tesla is asked to prompt for the missing one.
-            params["prompt_missing_scopes"] = "true"
+        # An account that consented before is otherwise handed its old grant back, silently
+        # without a scope it never granted (commands, a Powerwall): Tesla is asked to prompt
+        # for the missing ones.
+        params = {"client_id": self.client_id, "redirect_uri": redirect_uri, "response_type": "code", "scope": ENERGY_SCOPES if energy else SCOPES, "state": state, "prompt_missing_scopes": "true"}
         return AUTHORIZE + "?" + urlencode(params)
 
     def exchange(self, code: str, redirect_uri: str) -> dict:
@@ -176,7 +180,9 @@ class Fleet:
 
         url = f"{base}/api/1/dx/charging/invoice/{quote(content_id, safe='')}"
         try:
-            status, kind, data = self.raw("GET", url, headers={"Authorization": f"Bearer {access}"})
+            status, kind, data = fleet_usage.through("GET", url, None, lambda: self.raw("GET", url, headers={"Authorization": f"Bearer {access}"}))
+        except fleet_usage.Overspent as err:
+            raise TeslaError(err.public) from None
         except httpx.HTTPError as err:
             raise TeslaError(f"Tesla did not answer ({type(err).__name__}).") from None
         if status >= 400 or not data:

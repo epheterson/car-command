@@ -1,0 +1,14 @@
+{# A row of bars beside a headline total: a day of a month, a month of a year, a week of a year
+   (strips.py places them). Stretches across its container; each bar's tooltip is its <title>,
+   a bar with an href is a link, the current one is drawn in the ink, the future left empty.
+   `label` names the whole strip for a screen reader ("Distance each day of October"), as a group
+   so the links on the bars inside are still reached; each link is named by its bar's words. #}
+{% macro strip(s, label, cls="") -%}
+<figure class="strip{% if cls %} {{ cls }}{% endif %}">
+  <svg viewBox="0 0 {{ s.w }} {{ s.h }}" preserveAspectRatio="none" role="group" aria-label="{{ label }}">
+    {%- for b in s.bars %}{% if b.href %}<a href="{{ b.href }}" aria-label="{{ b.label }}">{% endif %}<g class="sb{% if b.current %} cur{% endif %}{% if b.future %} fut{% endif %}{% if not b.value %} nil{% endif %}"><title>{{ b.label }}</title><rect class="hit" x="{{ b.sx }}" y="0" width="{{ b.slot }}" height="{{ s.h }}"/><rect class="bar" x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}"/></g>{% if b.href %}</a>{% endif %}{% endfor %}
+    {%- if s.ref is not none %}<line class="sref" x1="0" x2="{{ s.w }}" y1="{{ s.ref }}" y2="{{ s.ref }}"/>{% endif %}
+  </svg>
+  {% if s.ticks %}<div class="strip-t" aria-hidden="true">{% for t in s.ticks %}<span style="left:{{ t.left }}%">{{ t.text }}</span>{% endfor %}</div>{% endif %}
+</figure>
+{%- endmacro %}

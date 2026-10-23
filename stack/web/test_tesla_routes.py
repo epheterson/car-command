@@ -40,6 +40,7 @@ def tesla(bare, monkeypatch):  # noqa: F811
     monkeypatch.setattr(bare, "state_get", state.get)
     monkeypatch.setattr(bare, "state_set", lambda k, v: state.__setitem__(k, v))
     monkeypatch.setattr(bare, "TESLA_REDIRECT", "https://example.test/carcommand/settings/sources/tesla/callback")
+    monkeypatch.setattr(bare, "_TESLA_ENTERED", {"loaded": False, "values": {}, "retry": 0.0})
     monkeypatch.setattr(bare, "db", lambda: Recording(log))
 
     def add(conn, vault_, kind, vin, label, config, secret):
@@ -246,7 +247,12 @@ def test_the_first_visit_shows_what_to_paste_into_tesla(tesla, client, monkeypat
     )
     html = client.get("/settings/sources/tesla").text
     assert "https://example.test/carcommand/settings/sources/tesla/callback" in html
-    assert "vehicle_location" in html and "TESLA_CLIENT_SECRET" in html and 'class="step next" id="step-app"' in html
+    assert "vehicle_location" in html and 'class="step next" id="step-app"' in html
+    assert "TESLA_CLIENT_SECRET" not in html and ".env" not in html.split('id="step-app"')[1].split("</li>")[0], "step 1 no longer asks for .env"
+    assert "/settings/sources/tesla/app" in html
+    for label in ("developer.tesla.com", "Authorization Code and Machine-to-Machine", "Allowed origin", "Redirect URI", "Scopes", 'name="client_id"', 'name="client_secret"'):
+        assert label in html, label
+    assert 'value="example.test"' in html and "from .env" in html, "the domain is the .env one here, marked as such"
 
 
 def test_registering_checks_the_domain_serves_the_key_before_telling_tesla(tesla, client, monkeypatch):  # noqa: F811
@@ -672,3 +678,46 @@ def test_stop_pressed_meanwhile_is_never_undone(tesla, monkeypatch):
     assert app.tesla_refresh_configs() == [BRAVO] and sent == [BRAVO]
     assert app.STREAM_LOCK.acquire(blocking=False), "the lock is let go"
     app.STREAM_LOCK.release()
+
+
+def test_the_app_values_entered_on_the_page_are_sealed_and_used_without_a_restart(tesla, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(tesla.app, "TESLA_DOMAIN", "")
+    for k in ("TESLA_CLIENT_ID", "TESLA_CLIENT_SECRET"):
+        monkeypatch.delenv(k, raising=False)
+    r = client.post("/settings/sources/tesla/app", data=form(tesla.app, {"client_id": "client-alpha", "client_secret": "ta-secret.springfield", "domain": "https://Cars.Example.test/path"}))
+    assert r.status_code == 303 and r.headers["location"].endswith("/settings/sources/tesla?fresh=1")
+    blob = tesla.state["tesla_app"]
+    assert "ta-secret" not in blob and "client-alpha" not in blob, "sealed, not stored in the clear"
+    cfg = tesla.app.tesla_cfg()
+    assert (cfg["client_id"], cfg["client_secret"], cfg["domain"]) == ("client-alpha", "ta-secret.springfield", "cars.example.test")
+    assert cfg["from"] == {"client_id": "app", "client_secret": "app", "domain": "app"}
+    assert tesla.app.tesla_redirect() == "https://example.test/carcommand/settings/sources/tesla/callback", "a redirect set in .env still wins"
+    # read back from the store after a restart: the memory is gone, the sealed row is not
+    tesla.app._TESLA_ENTERED.update(loaded=False, values={})
+    assert tesla.app.tesla_cfg()["client_secret"] == "ta-secret.springfield"
+
+
+def test_a_blank_secret_keeps_the_kept_one_and_env_values_win_and_are_marked(tesla, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(tesla.app, "TESLA_DOMAIN", "")
+    monkeypatch.delenv("TESLA_CLIENT_ID", raising=False)
+    monkeypatch.delenv("TESLA_CLIENT_SECRET", raising=False)
+    client.post("/settings/sources/tesla/app", data=form(tesla.app, {"client_id": "client-alpha", "client_secret": "ta-secret.springfield", "domain": "cars.example.test"}))
+    client.post("/settings/sources/tesla/app", data=form(tesla.app, {"client_id": "client-bravo", "client_secret": "", "domain": "cars.example.test"}))
+    assert tesla.app.tesla_cfg()["client_id"] == "client-bravo" and tesla.app.tesla_cfg()["client_secret"] == "ta-secret.springfield"
+    monkeypatch.setenv("TESLA_CLIENT_ID", "client-charlie")
+    cfg = tesla.app.tesla_cfg()
+    assert cfg["client_id"] == "client-charlie" and cfg["from"]["client_id"] == "env" and cfg["from"]["client_secret"] == "app"
+    monkeypatch.setattr(tesla.app, "tesla_facts", lambda **_: done_facts(app_ok=False, registered=False, account=False, cars=[]))
+    html = client.get("/settings/sources/tesla").text
+    assert "from .env" in html and 'value="client-charlie"' in html and "ta-secret" not in html
+
+
+def test_the_app_form_refuses_a_bad_domain_or_a_missing_value_and_keeps_nothing(tesla, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(tesla.app, "TESLA_DOMAIN", "")
+    monkeypatch.delenv("TESLA_CLIENT_ID", raising=False)
+    monkeypatch.delenv("TESLA_CLIENT_SECRET", raising=False)
+    bad = client.post("/settings/sources/tesla/app", data=form(tesla.app, {"client_id": "a", "client_secret": "b", "domain": "192.168.1.5"}))
+    assert bad.status_code == 400 and "hostname alone" in bad.text
+    short = client.post("/settings/sources/tesla/app", data=form(tesla.app, {"client_id": "a", "client_secret": "", "domain": "cars.example.test"}))
+    assert short.status_code == 400 and "Client secret" in short.text
+    assert "tesla_app" not in tesla.state

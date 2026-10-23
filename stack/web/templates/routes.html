@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "_info.html" as i %}
+{% block title %}Routes · Car Command{% endblock %}
+{% block body %}
+{# Where the cars go, beside the Places map as its own tab: the routes driven most, both ways
+   as one (a loop from a place back to it is its own), each with how often, when last, the
+   usual time, energy and Wh per mile, the auto-tag that covers it and, where enough drives
+   say so, the quickest hour to leave; a route opens its page. Then the places arrived at
+   most. One period for both. #}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}
+<div class="pbar"><h1>Places</h1><nav class="segmented" aria-label="Places"><a href="{{ root }}/places{{ q }}">Map</a><a href="{{ root }}/places/routes{{ q }}" aria-current="page">Routes</a></nav><span class="sp"></span>
+  <nav class="segmented" aria-label="Period">{% for k, lbl, _d in spans %}<a href="{{ root }}/places/routes?span={{ k }}{{ dq }}"{% if span == k %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}</nav></div>
+{% macro hour(h) %}{{ h|hour }}{% endmacro %}
+{% if routes or destinations %}
+<div class="rt-wrap">
+<section class="group rt-routes" aria-labelledby="rt-h">
+  <h2 class="sec" id="rt-h">Top routes{% call i.info('Top routes') %}Drives between two places, both ways counted as one route, {{ drives|num }} {{ drives|plural('drive') }} in all. Time is the median; energy and {{ u.econ }} from the drives' rated range used. A leaving hour is named only when it holds five drives or more, another hour does too, and it is at least 15% quicker than usual.{% endcall %}</h2>
+  {% if routes %}<div class="rows">{% for r in routes %}
+    <a class="rt" href="{{ root }}/places/routes/{{ r.key }}?span={{ span }}{{ dq }}">
+      <span class="rt-n"><b>{{ r.n|num }}</b></span>
+      <span class="rt-m">
+        <span class="rt-t">{% if r.loop %}{{ r.a.name|places }} <span class="muted">loop</span>{% else %}{{ r.a.name|places }} <span class="rt-ar" aria-label="and back">⇄</span> {{ r.b.name|places }}{% endif %}{% if r.tag %}<span class="rt-tag">{{ r.tag }}</span>{% endif %}</span>
+        <span class="rt-s"><span>{{ r.time|duration }}</span>{% if r.kwh %}<span>{{ r.kwh|num(1) }} kWh</span>{% endif %}{% if r.wh_per_mi %}<span>{{ r.wh_per_mi|econ }} {{ u.econ }}</span>{% endif %}{% if not r.loop %}<span title="Drives each way">{% for f, t, n in r.ways %}{{ n|num }} → {{ t }}{% if not loop.last %}, {% endif %}{% endfor %}</span>{% endif %}<span class="rt-ld">last {{ r.last|local('%b %-d, %Y') }}</span></span>
+        {% for qk in r.quick %}<span class="rt-q">{% if not r.loop %}From {{ qk['from'] }}, leave{% else %}Leave{% endif %} at {{ hour(qk.hour) }}: {{ qk.minutes|round|int }} min (usually {{ qk.typical|round|int }})</span>{% endfor %}
+      </span>
+      <span class="rt-d">{{ r.last|local('%b %-d, %Y') }}</span>
+    </a>{% endfor %}</div>
+  {% else %}<p class="muted small">No route driven twice yet.</p>{% endif %}
+</section>
+<section class="group rt-dest" aria-labelledby="dt-h">
+  <h2 class="sec" id="dt-h">Top destinations</h2>
+  {% if destinations %}<div class="rows">{% for d in destinations %}
+    <a class="dt" href="{{ root }}/places/{{ d.place.id }}{{ q }}"><span class="dt-m">{% set nm = d.place.name|places %}<span class="dt-t">{% if 'class="pl"' not in nm %}<span class="pl-slot" aria-hidden="true"></span>{% endif %}{{ nm }}</span><span class="dt-b"><i style="width:{{ '%.0f'|format(d.share * 100) }}%"></i></span></span><span class="dt-n"><b>{{ d.n|num }}</b><span>{{ d.last|local('%b %-d, %Y') }}</span></span></a>{% endfor %}</div>
+  {% else %}<p class="muted small">No arrivals at a place yet.</p>{% endif %}
+</section>
+</div>
+{% else %}<div class="empty">No drives between places in this period</div>{% endif %}
+{% endblock %}

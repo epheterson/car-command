@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_parts.html" as parts %}
 {% block title %}Charges · Car Command{% endblock %}
-{% macro crow(c, grouped) %}{% set r = as_charge(c) %}{% set rp = day_row(r, cur) %}{{ parts.row(root ~ '/charges/' ~ c.id ~ q, c.session_start_date|local('%-I:%M %p') if grouped else c.session_start_date|when, rp.title, rp.pills + (['by hand'] if c.get('by_hand') else []), rp.big, rp.sub, '', colors.get(c.vin, 0) if car.garage else none, none, [c.get('where_ref')], 'charge', c.get('mix')) }}{% endmacro %}
+{% macro crow(c, grouped) %}{% set r = as_charge(c) %}{% set rp = day_row(r, cur) %}{{ parts.row(root ~ '/charges/' ~ c.id ~ q, c.session_start_date|local('%-I:%M %p') if grouped else c.session_start_date|when, rp.title, rp.pills + (['by hand'] if c.get('by_hand') else []), rp.big, rp.sub, '', colors.get(c.vin, 0) if car.garage else none, none, [c.get('where_ref')], 'charge', c.get('rate')) }}{% endmacro %}
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}{% set raw = flt or {} %}
 {% set nflt = [raw.get('place'), raw.get('kind'), raw.get('min')]|select|list|length %}
@@ -23,8 +23,9 @@
 </form>
 </details>
 {% if charges %}
-  {% if days %}{% for day in days %}<section class="tday">{% if day.date %}<h2 class="day-h"><a href="{{ root }}/day?date={{ day.date.isoformat() }}{{ dq }}">{{ day.date.strftime('%A, %B %-d') }}</a><span>{{ day.kwh|num(1) }} kWh</span></h2>{% endif %}<div class="rows">{% for c in day.rows %}{{ crow(c, true) }}{% endfor %}</div></section>{% endfor %}
+  {% if days %}{% for day in days %}<section class="tday">{% if day.date %}<h2 class="day-h"><a href="{{ root }}/day?date={{ day.date.isoformat() }}{{ dq }}">{{ day.date|dfmt('%A, %B %-d') }}</a><span>{% if day.kwh or not day.live %}{{ day.kwh|num(1) }} kWh{% else %}Charging now{% endif %}</span></h2>{% endif %}<div class="rows">{% for c in day.rows %}{{ crow(c, true) }}{% endfor %}</div></section>{% endfor %}
   {% else %}<div class="rows">{% for c in charges %}{{ crow(c, false) }}{% endfor %}</div>{% endif %}
+{% if more %}<div class="empty">{{ more.left|num }} more<a class="btn sm" href="{{ more.href }}" data-no-prefetch>{{ more.label }}</a></div>{% endif %}
 {% else %}<p class="muted">No charges in {{ window.label }}.</p>{% endif %}
 {% if said %}<p class="said">{{ said }}</p>{% endif %}
 <details class="byhand"><summary class="muted">Add a charge by hand</summary>

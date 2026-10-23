@@ -22,18 +22,20 @@
 <script type="speculationrules">{"prefetch": [{"where": {"and": [{"href_matches": "{{ root }}/*"}, {"not": {"href_matches": "{{ root }}/*.csv"}}, {"not": {"selector_matches": "[data-no-prefetch], [target=_blank]"}}]}, "eagerness": "moderate"}]}</script>
 <script src="{{ root }}/static/prefetch.js?v={{ js_v }}" defer></script>
 <script src="{{ root }}/static/shell.js?v={{ js_v }}" defer></script>
+<script src="{{ root }}/static/view.js?v={{ js_v }}" defer></script>
+<script src="{{ root }}/static/clockfmt.js?v={{ js_v }}" defer></script>
 <script src="{{ root }}/static/chart.js?v={{ js_v }}" defer></script>
 <link rel="manifest" href="{{ root }}/manifest.webmanifest" crossorigin="use-credentials">
-<link rel="icon" type="image/svg+xml" href="{{ root }}/static/favicon.svg?v=3">
-<link rel="icon" type="image/png" sizes="32x32" href="{{ root }}/static/favicon-32.png?v=3">
+<link rel="icon" type="image/svg+xml" href="{{ root }}/static/favicon.svg?v=5">
+<link rel="icon" type="image/png" sizes="32x32" href="{{ root }}/static/favicon-32.png?v=5">
 <link rel="apple-touch-icon" href="{{ root }}/static/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#1D1C24" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F6F5F0" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141319" media="(prefers-color-scheme: dark)">
 {% block head %}{% endblock %}
 {% if active == 'now' and not live_vin %}<meta http-equiv="refresh" content="60">{% endif %}{# a page with a stream updates itself #}
 </head>
-<body data-tiles="{{ 'public' if public_tiles else 'none' }}">
+<body data-tiles="{{ 'public' if public_tiles else 'none' }}" data-sat="{{ 'on' if satellite else 'off' }}"{% if satellite %} data-sat-key="{{ satellite_key }}"{% endif %} data-close="{{ 'on' if close_maps else 'off' }}">
 {% import "_icons.html" as ic %}
 <template id="cc-wait">{{ ic.brand_mark("loop") }}</template>
 {% set sec = section_of(active) %}
@@ -63,17 +65,17 @@
   {% if multi %}<a class="phonemark" href="{{ root }}/{{ q }}" aria-label="Car Command home">{{ ic.brand_mark("tow") }}</a><details class="carsheet"><summary>{% if not car.garage %}{{ cardot(car.vin) }}{% endif %}<span class="cn">{{ 'All cars' if car.garage else car.name }}</span></summary>
     <div class="sheet">{% for v in [{'vin': 'all', 'name': 'All cars'}] + vehicles %}<a class="{% if v.vin == car.vin %}on{% endif %}" href="{{ root }}{{ car_href(here_, v.vin) }}"{% if v.vin == car.vin %} aria-current="true"{% endif %}>{% if v.vin != 'all' %}{{ cardot(v.vin) }}{% else %}<span class="dot all"></span>{% endif %}<span class="side-nm">{{ v.name }}</span>{% if v.vin in lv %}<span class="side-lv">{{ lv[v.vin]|num }}%</span>{% endif %}</a>{% endfor %}</div>
   </details>{% else %}<span class="brand">{{ ic.brand_mark("tow") }}<span class="nm">{{ car.name }}</span></span>{% endif %}
-  {# The page's title, on the phone, in the bar's free right side: the section's name until the page's own h1 (script below the page) replaces it #}
+  {# The page's title, on the phone, in the bar's free right side: the section's name only; a page whose h1 says the same gives that h1 up (script below the page) #}
   <span class="ptitle" id="ptitle">{% if sec == 'settings' %}{{ nav_settings[1] }}{% else %}{% for key, label, path, pages in nav_sections %}{% if key == sec %}{{ label }}{% endif %}{% endfor %}{% endif %}</span>
 </header>
 <div class="stage">
 {% for key, label, path, pages in nav_sections %}{% if key == sec and pages|length > 1 %}<nav class="subpages" aria-label="{{ label }}">{% for pk, pl, pp in pages %}<a href="{{ root }}{{ pp }}{{ q }}"{% if pk == active %} aria-current="page"{% endif %}>{{ pl }}</a>{% endfor %}</nav>{% endif %}{% endfor %}
 <main{% if live_vin %} data-live-src="{{ root }}/stream?vin={{ live_vin }}"{% endif %}>{% block body %}{% endblock %}</main>
 {# the page's h1 becomes the bar's title on a phone (style.css hides the h1 there once this has run) #}
-<script>(function(){var t=document.getElementById("ptitle"),h=document.querySelector("main h1");if(!t||!h)return;var c=h.cloneNode(true);c.querySelectorAll(".more,.pd-ic").forEach(function(e){e.remove()});var x=c.textContent.replace(/\s+/g," ").trim();if(x){t.textContent=x;document.documentElement.classList.add("pt")}})()</script>
+<script>(function(){var t=document.getElementById("ptitle"),h=document.querySelector("main h1");if(!t||!h)return;var c=h.cloneNode(true);c.querySelectorAll(".more,.pd-ic").forEach(function(e){e.remove()});var x=c.textContent.replace(/\s+/g," ").trim();if(x&&x===t.textContent.replace(/\s+/g," ").trim())document.documentElement.classList.add("pt")})()</script>
 {# Only what needs the owner: CarConnectivity not answering, a check that found something. The
    map credit sits in each map's own corner (maps.js). #}
-{% set down = connector and 'not answering' in connector %}{% if down or findings %}<footer class="muted">{% if down %}<span class="warn">{{ connector }}</span> {% endif %}{% for f in findings %}<span class="warn">{{ f.text }}</span> {% endfor %}</footer>{% endif %}
+{% set down = connector and 'not answering' in connector and active != 'settings-cars' %}{% if down or findings %}<footer class="muted">{% if down %}<span class="warn">{{ connector }}</span> {% endif %}{% for f in findings %}<span class="warn">{{ f.text }}</span> {% endfor %}</footer>{% endif %}
 </div>
 <nav class="tabbar" aria-label="Sections">
   {% for key, label, path, pages in nav_sections %}{% if key in nav_phone_tabs %}<a href="{{ root }}{{ path }}{{ q }}"{% if key == sec or (key == 'map' and sec == 'places') %} aria-current="page"{% endif %}>{{ ic.icon(key) }}<span>{{ label }}</span></a>{% endif %}{% endfor %}

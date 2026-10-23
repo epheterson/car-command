@@ -17,6 +17,19 @@ def drive_cost(kwh_used, rate) -> tuple[float | None, bool]:
     return kwh_used * rate[0], bool(rate[1])
 
 
+# A charge that added less than this is the car topping up at the plug (a third of the
+# Teslas' sessions): its energy and cost count, but not as a charge in a count or an average.
+TOPUP_KWH = 1.0
+
+
+def charge_kind(c: dict) -> str:
+    """'open' for a session still going (an end that is not there yet), 'topup' for one under
+    TOPUP_KWH, else 'charge'. A finished session whose energy is not worked out yet is a charge."""
+    if "session_end_date" in c and c["session_end_date"] is None:
+        return "open"
+    return "topup" if c.get("kwh") is not None and c["kwh"] < TOPUP_KWH else "charge"
+
+
 def bucket(d: datetime, by: str, tz) -> date:
     local = d.astimezone(tz).date()
     if by == "day":
@@ -42,6 +55,7 @@ def summarize(drives: list[dict], charges: list[dict], by: str, tz, capacity_kwh
                 "drive_cost": 0.0,
                 "fsd_miles": 0.0,
                 "charges": 0,
+                "topups": 0,
                 "added_kwh": 0.0,
                 "cost": 0.0,
                 "priced": 0,
@@ -64,10 +78,11 @@ def summarize(drives: list[dict], charges: list[dict], by: str, tz, capacity_kwh
             d["kwh_used"] if d.get("kwh_used") is not None else drive_kwh(d.get("level_start"), d.get("level_end"), capacity_kwh, d.get("range_start"), d.get("range_end"), kwh_per_rated_mi)
         ) or 0.0
     for c in charges:
-        if c.get("session_start_date") is None:
+        kind = charge_kind(c)
+        if c.get("session_start_date") is None or kind == "open":
             continue
         r = row(bucket(c["session_start_date"], by, tz))
-        r["charges"] += 1
+        r["topups" if kind == "topup" else "charges"] += 1
         r["added_kwh"] += c.get("kwh") or 0.0
         r["cost"] += c.get("cost") or 0.0
         r["priced"] += c.get("cost") is not None
@@ -156,15 +171,16 @@ def calendar_grid(drives: list[dict], charges: list[dict], window: dict, tz, wee
         k["drives"] += 1
         k["miles"] += dr.get("miles") or 0.0
     for ch in charges:
-        if ch.get("session_start_date") is None:
+        kind = charge_kind(ch)
+        if ch.get("session_start_date") is None or kind == "open":
             continue
         c = cell(ch["session_start_date"].astimezone(tz).date())
-        c["charges"] += 1
+        c["charges"] += kind == "charge"
         c["kwh"] += ch.get("kwh") or 0.0
         if ch.get("at_home"):
             c["home_kwh"] += ch.get("kwh") or 0.0
         k = car(c, ch.get("vin"))
-        k["charges"] += 1
+        k["charges"] += kind == "charge"
         k["kwh"] += ch.get("kwh") or 0.0
     start = first - timedelta(days=(first.weekday() - week_start) % 7)
     end = last + timedelta(days=6 - (last.weekday() - week_start) % 7)
@@ -183,9 +199,10 @@ TEMP_BINS = [(-100, 40), (40, 50), (50, 60), (60, 70), (70, 80), (80, 90), (90, 
 SPEED_BINS = [(0, 15), (15, 25), (25, 35), (35, 45), (45, 55), (55, 65), (65, 200)]
 
 
-def efficiency_bins(drives: list[dict], capacity_kwh: float | None, kwh_per_rated_mi: float | None = None, over: float = 1.0) -> dict:
+def efficiency_bins(drives: list[dict], capacity_kwh: float | None, kwh_per_rated_mi: float | None = None, over: float = 1.0, temp_bins=None) -> dict:
     """Wh/mi and % of rated, binned by outside temperature at the start and by average speed.
-    Only drives over `over` miles with a known energy count."""
+    Only drives over `over` miles with a known energy count. `temp_bins` (°F) in place of
+    TEMP_BINS: the chart's finer bands (effchart.py)."""
     if not capacity_kwh and not kwh_per_rated_mi:
         return {"temp": [], "speed": []}
 
@@ -217,15 +234,15 @@ def efficiency_bins(drives: list[dict], capacity_kwh: float | None, kwh_per_rate
                 b["wh_per_mi"] = b["kwh"] * 1000 / b["miles"]
                 b["of_rated"] = (b["miles"] / b["rated"]) if b["rated"] > 0 else None
                 out.append(b)
-        # the bar spans the range the rows cover, not zero to the top: 250 against 270 Wh/mi
-        # is a difference worth seeing, and every row carries its number beside the bar
-        lo, hi = min((b["wh_per_mi"] for b in out), default=0), max((b["wh_per_mi"] for b in out), default=0)
+        # a bar from zero, as long as its figure against the longest: a bar that started at
+        # the lowest row drew 264 against 331 as one to five
+        top = max((b["wh_per_mi"] for b in out), default=0)
         for b in out:
-            b["share"] = 0.15 + 0.85 * (b["wh_per_mi"] - lo) / (hi - lo) if hi > lo else 1.0
+            b["share"] = b["wh_per_mi"] / top if top else 0.0
         return out
 
     return {
-        "temp": rows(TEMP_BINS, lambda d, miles, dur: d.get("temp_f")),
+        "temp": rows(temp_bins or TEMP_BINS, lambda d, miles, dur: d.get("temp_f")),
         "speed": rows(SPEED_BINS, lambda d, miles, dur: (miles / (dur.total_seconds() / 3600)) if dur and dur.total_seconds() > 60 else None),
     }
 
@@ -233,7 +250,7 @@ def efficiency_bins(drives: list[dict], capacity_kwh: float | None, kwh_per_rate
 PARKED_AFTER = timedelta(hours=1)
 
 
-def with_parked(events: list[dict], parked_after: timedelta = PARKED_AFTER) -> list[dict]:
+def with_parked(events: list[dict], parked_after: timedelta = PARKED_AFTER, car_on=()) -> list[dict]:
     """The same events plus one "parked" row for every stretch of an hour or more a car
     sat between two of them, carrying the battery lost across it.
 
@@ -270,12 +287,13 @@ def with_parked(events: list[dict], parked_after: timedelta = PARKED_AFTER) -> l
                     "level_start": start,
                     "level_end": end,
                     "lost": (start - end) if start is not None and end is not None else None,
+                    "on_h": sum((min(y, b["at"]) - max(x, a["end"])).total_seconds() for x, y, v in car_on if v == vin and x < b["at"] and y > a["end"]) / 3600,
                 }
             )
     return out
 
 
-def timeline_days(drives: list[dict], charges: list[dict], software: list[dict], tz, parked: bool = True) -> list[dict]:
+def timeline_days(drives: list[dict], charges: list[dict], software: list[dict], tz, parked: bool = True, garage: dict | None = None, car_on=()) -> list[dict]:
     """One feed, newest first, grouped by local day: drives, charges and software
     updates from every car given, each event carrying its car's vin and name."""
     events: list[dict] = []
@@ -304,6 +322,7 @@ def timeline_days(drives: list[dict], charges: list[dict], software: list[dict],
                 "temp_f": d.get("temp_f"),
                 "cost": d.get("cost"),
                 "weather": d.get("weather"),
+                "garage": (garage or {}).get(d["id"]),
             }
         )
     for c in charges:
@@ -332,7 +351,7 @@ def timeline_days(drives: list[dict], charges: list[dict], software: list[dict],
     for s in software:
         events.append({"at": s["seen_at"], "kind": "software", "vin": s.get("vin"), "car": s.get("car_name"), "id": None, "title": f"Software {s['version']}"})
     if parked:  # only the whole feed knows every drive and charge a gap sits between
-        events = with_parked(events)
+        events = with_parked(events, car_on=car_on)
     events.sort(key=lambda e: e["at"], reverse=True)
     days: list[dict] = []
     for e in events:
@@ -351,22 +370,17 @@ def charging_summary(charges: list[dict]) -> dict:
     by_place: dict[str, dict] = {}
     by_end: dict[int, dict] = {}
     superchargers: dict[str, dict] = {}
-    priced, estimate, areas = 0, 0.0, set()
+    priced, estimate, areas, charging_now = 0, 0.0, set(), 0
     for c in charges:
+        kind = charge_kind(c)
         if c.get("session_start_date") is None:
             continue
+        if kind == "open":
+            charging_now += 1  # no energy yet: in no count, total or average
+            continue
         where = c.get("where") or "Unnamed spot"
-        p = by_place.setdefault(
-            where, {"where": where, "charges": 0, "kwh": 0.0, "cost": 0.0, "gained": 0.0, "hours": 0.0, "dc": 0, "at_home": bool(c.get("at_home")), "range_added": 0.0, "range_kwh": 0.0}
-        )
-        p["charges"] += 1
+        p = by_place.setdefault(where, {"where": where, "charges": 0, "topups": 0, "topup_kwh": 0.0, "kwh": 0.0, "cost": 0.0, "gained": 0.0, "hours": 0.0, "dc": 0, "at_home": bool(c.get("at_home"))})
         p["kwh"] += c.get("kwh") or 0.0
-        # Rated miles gained per kWh, per place: the honest per-charger efficiency. Only
-        # sessions that carry both figures count toward it, so the ratio is of matched
-        # pairs and not of two totals with different holes in them.
-        if (c.get("range_added") or 0) > 0 and (c.get("kwh") or 0) > 0:
-            p["range_added"] += c["range_added"]
-            p["range_kwh"] += c["kwh"]
         p["cost"] += c.get("cost") or 0.0
         if c.get("cost") is not None:
             priced += 1
@@ -374,6 +388,11 @@ def charging_summary(charges: list[dict]) -> dict:
             p["estimate"] = True
             estimate += c["cost"]
             areas.add((c.get("rate_plan") or "").removesuffix(" average") or "regional")
+        if kind == "topup":
+            p["topups"] += 1
+            p["topup_kwh"] += c.get("kwh") or 0.0
+            continue
+        p["charges"] += 1
         p["gained"] += c.get("gained") or 0.0
         p["hours"] += (c["duration"].total_seconds() / 3600) if c.get("duration") else 0.0
         if c.get("charging_type") == "DC":
@@ -390,19 +409,25 @@ def charging_summary(charges: list[dict]) -> dict:
             e["kwh"] += c.get("kwh") or 0.0
     places = sorted(by_place.values(), key=lambda p: p["kwh"], reverse=True)
     for p in places:
-        p["kwh_per_charge"] = p["kwh"] / p["charges"] if p["charges"] else None
-        p["mi_per_kwh"] = (p["range_added"] / p["range_kwh"]) if p["range_kwh"] > 0 else None
         p["rate"] = (p["cost"] / p["kwh"]) if p["cost"] and p["kwh"] else None
+        p["avg_time"] = timedelta(hours=p["hours"] / p["charges"]) if p["charges"] and p["hours"] else None  # a session's average length
     ends = sorted(by_end.values(), key=lambda e: e["level"], reverse=True)
+    # The share is of every charge that ended at a level; the bar is scaled to the top row
+    # so the commonest level fills it.
+    counted = sum(e["charges"] for e in ends)
     top = max((e["charges"] for e in ends), default=0)
     for e in ends:
-        e["share"] = e["charges"] / top if top else 0
+        e["share"] = e["charges"] / counted if counted else 0
+        e["bar"] = e["charges"] / top if top else 0
     return {
         "places": places,
         "ends": ends,
         "superchargers": sorted(superchargers.values(), key=lambda x: x["charges"], reverse=True),
         "total_kwh": sum(p["kwh"] for p in places),
         "total_charges": sum(p["charges"] for p in places),
+        "total_topups": sum(p["topups"] for p in places),
+        "topup_kwh": sum(p["topup_kwh"] for p in places),
+        "charging_now": charging_now,
         "total_cost": sum(p["cost"] for p in places),
         # How many charges carry a price at all, and how much of the total is an estimate
         # at a regional average (and whose), so a page never shows a bare $0 or passes an
@@ -496,17 +521,23 @@ def _is(name: str | None, want: str | None) -> bool:
     return not want or bool(name) and name.strip().lower() == want.strip().lower()
 
 
-def filter_drives(rows: list[dict], frm: str | None = None, to: str | None = None, both_ways: bool = False, min_mi: float | None = None, text: str | None = None) -> list[dict]:
-    """The drive search, on rows the list already has: from and to a named place
+def _id_is(have: int | None, want: int | None) -> bool:
+    return want is None or have == want
+
+
+def filter_drives(
+    rows: list[dict], frm: str | None = None, to: str | None = None, both_ways: bool = False, min_mi: float | None = None, text: str | None = None, frm_id: int | None = None, to_id: int | None = None
+) -> list[dict]:
+    """The drive search, on rows the list already has: from and to a place, by name or by id
     (both ways if asked), longer than N, and a word in the tag or note. Blank means any."""
     needle = (text or "").strip().lower()
     out = []
     for d in rows:
         if min_mi and (d.get("miles") or 0) < min_mi:
             continue
-        if frm or to:
-            straight = _is(d.get("from"), frm) and _is(d.get("to"), to)
-            reverse = both_ways and _is(d.get("to"), frm) and _is(d.get("from"), to)
+        if frm or to or frm_id is not None or to_id is not None:
+            straight = _is(d.get("from"), frm) and _is(d.get("to"), to) and _id_is(d.get("from_id"), frm_id) and _id_is(d.get("to_id"), to_id)
+            reverse = both_ways and _is(d.get("to"), frm) and _is(d.get("from"), to) and _id_is(d.get("to_id"), frm_id) and _id_is(d.get("from_id"), to_id)
             if not (straight or reverse):
                 continue
         if needle and needle not in f"{d.get('tag') or ''} {d.get('note') or ''} {d.get('from') or ''} {d.get('to') or ''}".lower():
@@ -628,3 +659,49 @@ def petrol_comparison(groups: list[dict], wh_per_mi: dict, mpg: float | None, ra
         saved=out["petrol"] - out["charging"], litres=out["gallons"] * LITRES_PER_GALLON, sources=list(sources), areas=sorted(areas), skipped=skipped, own_price=own_price, ok=out["charges"] > 0
     )
     return out
+
+
+def place_savings(charges: list[dict], tz, wh_per_mi: dict, mpg: float | None, rates, own_price: float | None = None) -> dict[str, dict]:
+    """What each place's charges saved against a petrol car: petrol_comparison over that
+    place's charges alone (each charge its own group, at its own region and month). Each
+    place carries the saving of the charges it could compare, how many those were of how
+    many, and why the rest were left out, so a partial figure is never shown as a whole one."""
+    by: dict[str, list[dict]] = {}
+    for c in charges:
+        when = c.get("session_start_date")
+        if when is None:
+            continue
+        local = when.astimezone(tz)
+        by.setdefault(c.get("where") or "Unnamed spot", []).append(
+            {"vin": c.get("vin"), "year": local.year, "ym": local.strftime("%Y-%m"), "region": c.get("region"), "n": 1, "kwh": c.get("kwh") or 0.0, "cost": c.get("cost")}
+        )
+    out = {}
+    for where, groups in by.items():
+        p = petrol_comparison(groups, wh_per_mi, mpg, rates, own_price)
+        out[where] = {"saved": p["saved"] if p["ok"] else None, "compared": p["charges"], "of": len(groups), "skipped": p["skipped"]}
+    return out
+
+
+def saving_cell(cells: list[dict]) -> dict:
+    """Several places' savings as one cell (a folded row, the All row): the savings that
+    exist added up, the counts added up, and the reasons kept."""
+    skipped = {k: sum((c.get("skipped") or {}).get(k, 0) for c in cells) for k in ("unpriced", "efficiency", "petrol")}
+    got = [c["saved"] for c in cells if c.get("saved") is not None]
+    return {"saved": sum(got) if got else None, "compared": sum(c.get("compared", 0) for c in cells), "of": sum(c.get("of", 0) for c in cells), "skipped": skipped}
+
+
+def saving_note(cell: dict | None, distname: str = "mile") -> str | None:
+    """The tooltip on a Saved cell that is partial or blank, naming what was left out and
+    why: no price, no measured efficiency for the year, no petrol price for the region.
+    None on a whole one."""
+    if not cell:
+        return None
+    sk = cell.get("skipped") or {}
+    why = [
+        f"{n} with no price" if k == "unpriced" else f"{n} with no Wh a {distname} for that year" if k == "efficiency" else f"{n} with no petrol price for where and when" for k, n in sk.items() if n
+    ]
+    if cell.get("compared", 0) >= cell.get("of", 0):
+        return None
+    if not cell.get("compared"):
+        return "Nothing to compare: " + ", ".join(why) if why else "Nothing to compare"
+    return f"{cell['compared']} of {cell['of']} charges compared" + (": " + ", ".join(why) if why else "")

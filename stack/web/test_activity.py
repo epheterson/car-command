@@ -20,6 +20,7 @@ def test_only_a_car_doing_something_now_has_a_banner():
     assert activity.kind(car(), NOW) == "driving"
     assert activity.kind(car(status="Charging"), NOW) == "charging"
     assert activity.kind(car(status="Idle"), NOW) is None and activity.kind(car(status="Sleeping"), NOW) is None
+    assert activity.kind(car(offline=True), NOW) is None, "a car out of reach is not out on a drive"
     assert activity.kind(car(updated=mins(40)), NOW) is None, "the newest state row of a car gone quiet is not now"
     assert activity.kind(car(updated=None), NOW) is None
 
@@ -91,6 +92,7 @@ def test_sentry_from_the_feed_and_the_stream():
     assert activity.sentry_on("3") is True and activity.sentry_on("true") is True
     assert activity.sentry_on("1") is False, "since 2025 the feed's 1 is idle"
     assert activity.sentry_on("Armed") is True and activity.sentry_on("Off") is False
+    assert activity.sentry_on("Idle") is activity.sentry_on("1") is False, "the stream's Idle is the feed's idle: one answer from both"
     assert activity.sentry_on(None) is None and activity.sentry_on("") is None and activity.sentry_on("weird") is None
 
 
@@ -98,7 +100,8 @@ def test_the_stream_says_driving_only_while_fresh():
     c = {"_at": mins(1), "Gear": "D", "Odometer": 1200.5, "BatteryLevel": 66.0, "SentryMode": "Off"}
     st = activity.stream_now(c, NOW)
     assert st["driving"] is True and st["odometer"] == 1200.5 and st["level"] == 66.0 and st["sentry"] is False
-    assert activity.stream_now(dict(c, _at=mins(30)), NOW) == {}
+    stale = activity.stream_now(dict(c, _at=mins(30)), NOW)
+    assert stale["fresh"] is False and "driving" not in stale and "sentry" not in stale and "level" not in stale
     assert activity.stream_now(None, NOW) == {}
     assert activity.stream_now({"_at": mins(1), "Gear": "P"}, NOW)["driving"] is False
 
@@ -118,3 +121,24 @@ def test_a_route_from_the_raw_records_after_a_restart():
     cleared = [(mins(2), {"data": [v("DestinationName", {"invalid": True})]})] + recs[1:]
     assert tesla_nav.route_from_records(cleared, NOW) is None, "a destination cancelled is no route"
     assert tesla_nav.route_from_records([], NOW) is None
+
+
+def test_the_stream_says_charging_plugged_and_the_limit():
+    st = activity.stream_now({"_at": NOW - timedelta(minutes=1), "DetailedChargeState": "Charging", "ChargeLimitSoc": 80}, NOW)
+    assert st["charging"] is True and st["plugged"] is True and st["charge_limit"] == 80.0
+    st = activity.stream_now({"_at": NOW - timedelta(minutes=1), "DetailedChargeState": "Stopped"}, NOW)
+    assert st["charging"] is False and st["plugged"] is True
+    st = activity.stream_now({"_at": NOW - timedelta(minutes=1), "DetailedChargeState": "Unknown", "ChargeState": "Disconnected"}, NOW)
+    assert st["plugged"] is False
+    assert "charging" not in activity.stream_now({"_at": NOW - timedelta(minutes=1), "Gear": "P"}, NOW), "unsaid is unknown"
+
+
+def test_a_drive_says_where_it_set_out_from():
+    first = {"at": mins(12), "odometer": 1000.0, "level": 72.0}
+    last_drive = {"to": "Home", "destination_date": mins(40)}
+    b = activity.banner(car(), "driving", (first, {"at": NOW, "odometer": 1004.0}), NOW, last_drive=last_drive)
+    assert b["origin"] == "Home"
+    # a drive that ended after this one began is not where this one started
+    assert activity.banner(car(), "driving", (first, {"at": NOW}), NOW, last_drive={"to": "Work", "destination_date": mins(5)})["origin"] is None
+    assert activity.banner(car(), "driving", None, NOW, last_drive=last_drive)["origin"] == "Home", "no readings yet: the last stop still is"
+    assert activity.banner(car(status="Charging"), "charging", None, NOW, last_drive=last_drive)["origin"] is None

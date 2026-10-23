@@ -15,8 +15,11 @@ def test_summary_text_reads_like_a_person_wrote_it():
         "- Asleep 85% of the day (20.5 h), idle awake 2.1 h, 3 wake-ups.",
         "- Now 89% and 344 mi.",
     ]
-    quiet = daily_summary_text("Alpha", date(2026, 9, 4), None, [], [], 74.0, 286.0)
-    assert quiet.splitlines()[1:] == ["- No drives.", "- No charging.", "- Now 74% and 286 mi."]
+    assert daily_summary_text("Alpha", date(2026, 9, 4), None, [], [], 74.0, 286.0) is None, "nothing happened: nothing sent"
+    parked = {"known_h": 24, "asleep_pct": 100, "hours": {"sleeping": 24, "idle": 0}, "wakeups": 0}
+    assert daily_summary_text("Alpha", date(2026, 9, 4), parked, [], [], None, None).splitlines()[1:] == ["- No drives.", "- No charging.", "- Asleep 100% of the day (24.0 h), idle awake 0.0 h, 0 wake-ups."], "no '?%' without a reading"
+    one = daily_summary_text("Alpha", date(2026, 9, 4), None, [{"miles": 3.0}], [], 50.0, None)
+    assert one.splitlines()[-1] == "- Now 50%."
 
 
 def test_summary_due_once_per_day_after_seven():
@@ -90,3 +93,17 @@ def test_a_drive_still_under_way_is_not_announced():
 def test_shuffling_the_car_around_the_driveway_is_not_news():
     assert drive_announcement_due(_drive(2, miles=0.2), None, NOW) is False
     assert drive_announcement_due(_drive(2, miles=None), None, NOW) is False
+
+
+def test_a_feed_drive_is_announced_only_once_it_is_whole():
+    from datetime import datetime, timedelta, timezone
+
+    from summary import drive_whole
+
+    stopped = datetime(2026, 3, 1, 18, 40, tzinfo=timezone.utc)  # the last moment the car was seen driving
+    half = {"destination_date": stopped - timedelta(minutes=25), "miles": 4.1}  # the hourly replay, mid-drive
+    whole = {"destination_date": stopped - timedelta(minutes=1), "miles": 30.2}
+    assert not drive_whole(whole, "Driving", stopped), "never while it drives"
+    assert not drive_whole(half, "Idle", stopped), "4 miles of a 30-mile drive is not the drive"
+    assert drive_whole(whole, "Idle", stopped), "ends with the stop, less the feed's minute behind it"
+    assert drive_whole(whole, "Idle", None), "a car never seen driving since the start has nothing to wait for"

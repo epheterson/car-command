@@ -12,6 +12,14 @@ set -eu
 if [ "$#" -gt 0 ]; then
     exec setpriv --reuid=10001 --regid=10001 --clear-groups -- "$@"
 fi
+# stack/.env.example's CHANGE_ME is a stand-in, not a password: refuse to run on one.
+for name in DB_PASSWORD WEBUI_PASSWORD REST_PASSWORD; do
+    eval "value=\${$name:-}"
+    if [ "$value" = CHANGE_ME ]; then
+        echo "$name is still CHANGE_ME, the placeholder from stack/.env.example. Run make setup (or scripts/setup.sh) to write stack/.env with generated passwords." >&2
+        exit 1
+    fi
+done
 RUN="${CC_RUN_DIR:-/run/carcommand}"
 umask 077
 mkdir -p "$RUN/secrets"

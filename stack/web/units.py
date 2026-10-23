@@ -100,9 +100,9 @@ def climate_active(state: str | None) -> bool | None:
     """Whether the climate system is doing anything, from CarConnectivity's
     ClimatizationState: heating, cooling and ventilation are yes, off is no, and
     anything the car has not actually said stays None rather than becoming "off"."""
-    if state in ("heating", "cooling", "ventilation"):
+    if state in ("heating", "cooling", "ventilation", "on", "precondition"):  # the last two are a Tesla's HvacPower
         return True
-    if state == "off":
+    if state in ("off", "overheat"):  # Cabin Overheat Protection keeps a parked car cool; nobody turned climate on
         return False
     return None
 
@@ -124,8 +124,12 @@ def classify_status(state: str | None, connection_state: str | None, charging_st
     return "Idle"
 
 
-def ribbon_segments(states: Iterable[tuple[datetime, datetime, str]], charging: Iterable[tuple[datetime, datetime, str]], start: datetime, end: datetime) -> list[dict]:
-    """Cut [start, end) into contiguous segments labelled sleeping/idle/driving/charging.
+def ribbon_segments(
+    states: Iterable[tuple[datetime, datetime, str]], charging: Iterable[tuple[datetime, datetime, str]], start: datetime, end: datetime, car_on: Iterable[tuple[datetime, datetime, object]] = ()
+) -> list[dict]:
+    """Cut [start, end) into contiguous segments labelled sleeping/idle/caron/driving/charging.
+    `car_on` rows (cc_car_on) are the car on and parked with no drive: they show as "caron"
+    over what the state says, under a charge.
 
     `states` rows are (first_date, last_date, STATE) with STATE from the vehicle
     state table (OFFLINE, PARKED, IGNITION_ON, DRIVING); `charging` rows are the
@@ -137,7 +141,8 @@ def ribbon_segments(states: Iterable[tuple[datetime, datetime, str]], charging: 
     if total <= 0:
         return []
     cuts = {start, end}
-    for a, b, _ in list(states) + list(charging):
+    car_on = list(car_on)
+    for a, b, _ in list(states) + list(charging) + car_on:
         for t in (a, b):
             if start < t < end:
                 cuts.add(t)
@@ -149,6 +154,8 @@ def ribbon_segments(states: Iterable[tuple[datetime, datetime, str]], charging: 
         for a, b, s in charging:
             if a <= t < b and s == "CHARGING":
                 return "charging"
+        if any(a <= t < b for a, b, _ in car_on):
+            return "caron"
         for a, b, s in states:
             if a <= t < b:
                 return {"DRIVING": "driving", "IGNITION_ON": "idle", "PARKED": "idle"}.get(s, "sleeping")
@@ -197,7 +204,20 @@ def daily_breakdown(states: list[tuple[datetime, datetime, str]], charging: list
     return days_between(states, charging, today - timedelta(days=days - 1), today, tz, now)
 
 
-def days_between(states: list[tuple[datetime, datetime, str]], charging: list[tuple[datetime, datetime, str]], first_day, last_day, tz, now: datetime) -> list[dict]:
+# Hours of nothing logged that a wake from sleep can sit inside. TeslaFi polls an asleep car
+# once a minute (two exports: the gap before the first awake row has a median of 1.1 min, 1.5 at
+# the 90th percentile); the demo polls every 15 min. Past 20 min nobody knows what happened.
+WAKE_GAP_H = 1 / 3
+
+
+def wakes_per_day(days: list[dict]) -> float | None:
+    """Wakes a day over days from days_between, by the hours logged: a day still running, or
+    one logged for half its hours, counts for what it covered, not as a whole quiet day."""
+    known = sum(d["known_h"] for d in days)
+    return sum(d["wakeups"] for d in days) / known * 24 if known > 0 else None
+
+
+def days_between(states: list[tuple[datetime, datetime, str]], charging: list[tuple[datetime, datetime, str]], first_day, last_day, tz, now: datetime, car_on=()) -> list[dict]:
     """Per local day from first_day to last_day inclusive, hours spent in each
     label and how many times the car woke. Days run midnight to midnight in
     `tz`; a day that is still running ends at `now`; days after `now` are
@@ -213,16 +233,19 @@ def days_between(states: list[tuple[datetime, datetime, str]], charging: list[tu
         if day_start >= local_now:
             break
         day_end = min(day_start + timedelta(days=1), local_now)
-        segs = ribbon_segments(states, charging, day_start, day_end)
+        segs = ribbon_segments(states, charging, day_start, day_end, car_on)
         span_h = (day_end - day_start).total_seconds() / 3600
         hours = {"sleeping": 0.0, "idle": 0.0, "driving": 0.0, "charging": 0.0, "unknown": 0.0}
         wakeups = 0
         prev = None
         for s in segs:
-            hours[s["label"]] += s["width"] * span_h
+            hours["idle" if s["label"] == "caron" else s["label"]] += s["width"] * span_h  # the car on, parked, is awake parked time
             if prev == "sleeping" and s["label"] not in ("sleeping", "unknown"):
                 wakeups += 1
-            prev = s["label"]
+            # a short unlogged gap (the poll interval of an asleep car, where the wake itself
+            # happened) does not forget what came before it; a long one does
+            if s["label"] != "unknown" or s["width"] * span_h > WAKE_GAP_H:
+                prev = s["label"]
         known = span_h - hours["unknown"]
         out.append(
             {"date": day_start.date(), "hours": hours, "span_h": span_h, "known_h": known, "segments": segs, "asleep_pct": (hours["sleeping"] / known * 100) if known > 0 else None, "wakeups": wakeups}
@@ -319,6 +342,11 @@ def charge_stats(powers: list[tuple[datetime, datetime, float]], start: datetime
     return {"kwh": kwh, "peak_kw": peak, "avg_kw": (kwh / hours) if hours > 0 else None, "gained_pct": gained, "kwh_per_100": (kwh / gained * 100) if gained and gained > 0 and kwh > 0 else None}
 
 
+# A daily rate from a stretch shorter than this is a reading's rounding multiplied up: one
+# point over 1.1 hours printed as 21 %/day. Shorter stretches give their plain level change.
+RATE_MIN_HOURS = 6.0
+
+
 def idle_periods(
     states: list[tuple[datetime, datetime, str]], levels: list[tuple[datetime, float]], charging: list[tuple[datetime, datetime, str]], now: datetime, min_hours: float = 1.0
 ) -> list[dict]:
@@ -365,13 +393,17 @@ def idle_periods(
         hours = (p["end"] - p["start"]).total_seconds() / 3600
         s0, s1 = level_at(p["start"]), level_at(p["end"])
         drop = (s0 - s1) if s0 is not None and s1 is not None else None
+        # A charge inside the stretch (one that began after the stretch's state row did, which
+        # the cut above does not see) or a level that rose: no drain to give a rate for.
+        charged = any(a < p["end"] and b > p["start"] for a, b in charging_windows) or (drop is not None and drop < 0)
         p.update(
             {
                 "hours": hours,
                 "soc_start": s0,
                 "soc_end": s1,
                 "drop_pct": drop,
-                "drop_per_day": (drop / hours * 24) if drop is not None and hours > 0 else None,
+                "charged": charged,
+                "drop_per_day": (drop / hours * 24) if drop is not None and not charged and hours >= RATE_MIN_HOURS else None,
                 "asleep_share": (p["asleep_h"] / hours) if hours > 0 else None,
             }
         )

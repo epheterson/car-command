@@ -3,7 +3,7 @@ templates/_icons.html (24-unit box, currentColor stroke, round caps). Defined on
 here so the `place_icon` Jinja macro (_icons.html) and the `places` filter
 (filters.py) read the same paths instead of keeping two copies in sync.
 
-Also the guess from a name ("SF Home" -> home, "Lily's Daycare" -> kids), which is the
+Also the guess from a name ("SF Home" -> home, "Alpha Daycare" -> kids), which is the
 default icon of a place nobody chose one for, and through it the default of whether a
 place is home (places.is_home: home follows the icon).
 """
@@ -214,7 +214,7 @@ def resolve_icon(name: str | None, icon: str | None) -> str | None:
 
     An explicit stored value wins, including the literal "none" (no icon, even for a
     place named Home). With nothing stored (icon IS NULL), the guess from its name
-    (icon_for_name): "SF Home" shows the house, "Lily's Daycare" the stroller.
+    (icon_for_name): "SF Home" shows the house, "Alpha Daycare" the stroller.
     """
     if icon is not None:
         return None if icon == "none" or icon not in PLACE_ICONS else icon

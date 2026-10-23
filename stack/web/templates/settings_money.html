@@ -1,8 +1,8 @@
 {% extends "settings_base.html" %}
 {# Settings › Money: the home plan read as its grid, its prices over time and its hours as rows
    that open beneath themselves, then fast charging, petrol and the regional averages. One form
-   and one Save bar; Find my plan, Stop using and Update now are their own small forms at the
-   foot of the page, which their controls name with form="…" (forms cannot nest). #}
+   and one Save bar; Find my plan is its own page (settings_money_plan.html); Stop using and Update
+   now are their own small forms at the foot of the page, which their controls name with form="…" (forms cannot nest). #}
 {% from "_plan_grid.html" import tou_grid %}
 {% from "_info.html" import info %}
 {% import "_settings.html" as s %}
@@ -28,8 +28,6 @@
 {%- endmacro %}
 
 {% block section %}
-{% set f = find or {} %}
-{% set fz = finder or {} %}
 {% set g = plan_grid %}
 {% set cur = st.currency %}
 <form id="money" method="post" action="{{ root }}/settings/money{{ q }}" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
@@ -40,57 +38,20 @@
     {% if plan %}
     <div class="plan-sum">
       <h3 class="plan-nm">{{ plan.name }}</h3>
-      <p class="plan-meta">{% if plan.source == 'manual' %}Typed in{% else %}{{ plan.utility or 'OpenEI' }}{% if plan.link %} · <a href="{{ plan.link }}" target="_blank" rel="noopener">its page</a>{% endif %}{% endif %}{% if g.now %} · since {{ g.now.label }}{% endif %}</p>
-      {% if g.now %}<div class="chips">{% for c in g.now.prices %}<span class="chip-v"><i style="--heat:{{ c.heat }}"></i>{{ c.label }} <b>{{ cur }}{{ c.price }}</b></span>{% endfor %}</div>{% endif %}
+      <p class="plan-meta">{% if plan.source == 'manual' %}Typed in{% else %}{{ plan.utility or 'OpenEI' }}{% if plan.link %} · <a href="{{ plan.link }}" target="_blank" rel="noopener">its page</a>{% endif %}{% endif %}{% if g.now and g.now.since %} · {{ g.now.since }}{% endif %}</p>
+      {% if g.now %}<div class="chips">{% for c in g.now.prices %}<span class="chip-v{% if c.est %} est{% endif %}"><i style="--heat:{{ c.heat }}"></i>{{ c.label }} <b>{% if c.est %}≈{% endif %}{{ cur }}{{ c.price }}</b></span>{% endfor %}</div>
+      {% if g.now.prices|selectattr('est')|list %}<div class="find-est"><span class="set-s">≈ scaled from one season of your bill {% call info("Prices marked ≈") %}Your bill covered one season; these are its prices scaled the way the utility's published prices differ between seasons. A bill from the other season sets them.{% endcall %}</span><a class="btn sm" href="{{ root }}/settings/money/plan{{ q }}#bill">Read another bill</a></div>{% endif %}{% endif %}
+      {% if plan_check %}<div class="find-est" role="alert"><span class="set-s warn">Hours differ from OpenEI's {{ plan_check.name }}: {{ plan_check.differ|join('; ') }}</span></div>{% endif %}
       <div>{{ tou_grid(g, legend=not g.now) }}</div>
       {% if g.note %}<p class="plan-meta">{{ g.note }}</p>{% endif %}
+      {% if not plan_fits and st.manual_plan %}<div class="plan-back"><span class="set-s">Replaced your prices, {{ st.manual_plan.name }}</span><button type="submit" class="btn sm" form="plan-clear">Go back to {{ st.manual_plan.name }}</button></div>{% endif %}
     </div>
     {% else %}
     <div class="empty">No rate plan yet · home charges show no cost</div>
     {% endif %}
+    <a class="set-row set-nav" href="{{ root }}/settings/money/plan{{ q }}"><span class="set-l">{{ 'Change plan' if plan else 'Find my plan' }}<span class="set-s">From your bill or your ZIP code</span></span></a>
     <div class="set-row"><label class="set-l" for="plan-name">Name</label><div class="set-c"><input class="field" id="plan-name" name="plan" value="{{ plan.name if plan else '' }}" maxlength="40" placeholder="Home"></div></div>
-    <details class="set-x" id="find"{% if f.searched or f.error or f.key_error or preview %} open{% endif %}>
-      <summary class="set-row"><span class="set-l">Find my plan</span><span class="set-v">US utilities</span></summary>
-      <div class="set-p">
-        {% if fz.relay or fz.key_hint %}
-        <div class="set-row stack"><span class="set-l"><label for="urdb-q">Utility or ZIP code</label> {% call info("About plan search") %}The utility list is stored here, so typing sends nothing. Search asks OpenEI's Utility Rate Database for that utility's plans{% if fz.relay %}, through this install's plan relay{% endif %}. Nothing about your cars is sent.{% endcall %}</span>
-          <input class="field wide" id="urdb-q" name="q" form="find-search" value="{{ f.q or '' }}" maxlength="120" placeholder="e.g. pg&amp;e, or 62701" autocomplete="off" spellcheck="false" required data-list="{{ root }}/settings/money/utilities.json"></div>
-        <ul id="urdb-pick" class="chips find-pick"></ul>
-        <div class="set-row stack"><label class="set-l" for="urdb-c">Plan name contains</label><input class="field wide" id="urdb-c" name="contains" form="find-search" value="{{ f.contains or '' }}" maxlength="60" placeholder="optional, e.g. EV"></div>
-        <div class="acts"><button type="submit" class="btn" form="find-search">Search</button></div>
-        {% else %}
-        <div class="set-row"><span class="set-l"><label for="openei-key">OpenEI API key</label> {% call info("About the key") %}Plan search covers US utilities only. Get a free key from OpenEI by email: <a href="{{ fz.signup or 'https://openei.org/services/api/signup/' }}" target="_blank" rel="noopener">sign up</a>.{% endcall %}</span>
-          <div class="set-c"><input class="field" id="openei-key" name="key" form="find-key" type="password" autocomplete="off" spellcheck="false" maxlength="80" required><button type="submit" class="btn" form="find-key">Save key</button></div></div>
-        {% if finder and not fz.vault_ready %}<p class="notice warn">A key cannot be kept: {{ fz.vault_problem }}.</p>{% endif %}
-        {% endif %}
-        {% if f.error %}<p class="notice err" role="alert">{{ f.error }}</p>{% endif %}
-        {% if f.key_error %}<p class="notice err" role="alert">{{ f.key_error }}</p>{% endif %}
-        {% if f.searched %}{% if f.rows %}
-        <p class="group-f">{{ f.total }} plan{{ '' if f.total == 1 else 's' }}{% if f.utilities %} from {{ f.utilities|join(', ') }}{% endif %}{% if f.total > f.rows|length %}, showing the first {{ f.rows|length }}; narrow with the plan name filter{% endif %}{% if f.more %} {% call info("Older rates") %}The oldest rates aren't listed. A plan's older versions still come with its preview.{% endcall %}{% endif %}</p>
-        <ul class="find-list">{% for r in f.rows %}
-          <li class="set-row"><span class="set-l">{{ r.name }}<span class="set-s">{{ r.utility }} · {{ r.start or '?' }} to {{ r.end or 'now' }}{% if r.versions > 1 %} · {{ r.versions }} versions since {{ r.first }}{% endif %}</span><span class="set-s">{{ r.kind }}{% if r.tiered %}, tiered{% endif %} · {{ r.fixed or 'no fixed charge listed' }}</span></span>{% if r.usable %}<div class="set-c"><button type="submit" class="btn sm" form="find-preview" name="label" value="{{ r.label }}">Preview</button></div>{% endif %}</li>{% endfor %}
-        </ul>
-        {% else %}
-        <div class="empty">No home plans for “{{ f.q }}”{% if f.contains %} with “{{ f.contains }}”{% endif %} · pick it from the list, or try a ZIP code</div>
-        {% endif %}{% endif %}
-        {% if preview %}
-        <div id="preview" class="plan-sum group-b">
-          <h3 class="plan-nm">{{ preview.plan.name }}</h3>
-          <p class="plan-meta">{{ preview.plan.utility }} · {{ preview.kind }}{% if preview.plan.link %} · <a href="{{ preview.plan.link }}" target="_blank" rel="noopener">on OpenEI</a>{% endif %}</p>
-          <p class="plan-meta">{{ preview.dates|length }} version{{ '' if preview.dates|length == 1 else 's' }}: {{ preview.dates|join(', ') }}</p>
-          {% if preview.grid %}{% set pg = preview.grid %}
-          <div class="chips">{% for c in (pg.now or {'prices': []}).prices or [] %}<span class="chip-v"><i style="--heat:{{ c.heat }}"></i>{{ c.label }} <b>${{ c.price }}</b></span>{% endfor %}</div>
-          <div>{{ tou_grid(pg, legend=not pg.now) }}</div>{% endif %}
-          {% if preview.note %}<p class="plan-meta">{{ preview.note }}</p>{% endif %}
-          <div class="acts"><button type="submit" class="btn primary" form="find-use">Use this plan</button> {% call info("What Use this plan does") %}Replaces the home plan and re-prices home charges at the version in force each day. Charges before {{ preview.dates[-1] }} use the regional average.{% endcall %}</div>
-        </div>
-        {% endif %}
-        {% if fz.key_hint and not fz.relay %}
-        <div class="set-row"><span class="set-l">OpenEI key<span class="set-s">saved, ends {{ fz.key_hint }}</span></span><div class="set-c"><button type="submit" class="btn sm danger" form="find-key" name="remove" value="1">Remove</button></div></div>
-        {% endif %}
-      </div>
-    </details>
-    {% if plan and not plan_fits %}<button type="submit" class="set-row set-act" form="plan-clear">{% if st.manual_plan %}Go back to {{ st.manual_plan.name }}{% else %}Stop using {{ plan.name }}{% endif %}</button>{% endif %}
+    {% if plan and not plan_fits and not st.manual_plan %}<button type="submit" class="set-row set-act" form="plan-clear">Stop using {{ plan.name }}</button>{% endif %}
   </div>
 </section>
 
@@ -98,21 +59,29 @@
   <h2 class="sec">Prices over time {% call info("How dated prices apply") %}Each set applies from its date until the next. Changes re-price home charges.{% endcall %}</h2>
   <div class="group-b">
     {% if plan_fits %}
-    {% for r in plan_rates %}{% set i = loop.index0 %}{% set v = rate_rows[i] %}
+    {% if plan_rates %}<div class="set-row cols" aria-hidden="true"><span class="set-l"></span><span class="set-v">{% for k in ('off_peak', 'part_peak', 'peak') %}{{ periods[k] }}{{ ' · ' if not loop.last }}{% endfor %}</span></div>{% endif %}
+    {% macro rate_row(i) %}{% set r = plan_rates[i] %}{% set v = rate_rows[i] %}
     <details class="set-x"><summary class="set-row"><span class="set-l">{{ v.label }}{% if v.now %}<span class="badge">Now</span>{% endif %}</span><span class="set-v">{{ v.prices }}</span></summary>
       <div class="set-p">{{ rate_fields(i, r, cur) }}<div class="acts">{{ s.remove('del' ~ i) }}</div></div>
-    </details>
-    {% endfor %}
+    </details>{% endmacro %}
+    {% for i in rate_order[:rate_shown] %}{{ rate_row(i) }}{% endfor %}
+    {% if rate_order[rate_shown:] %}<details class="set-x rate-more"><summary class="set-row"><span class="set-l">Earlier prices</span><span class="set-v">{{ rate_order[rate_shown:]|length }}</span></summary>
+      {% for i in rate_order[rate_shown:] %}{{ rate_row(i) }}{% endfor %}
+    </details>{% endif %}
     {% set n = plan_rates|length %}
     <details class="set-x"{% if not plan %} open{% endif %}><summary class="set-row"><span class="set-l">{{ 'Add a price change' if plan else 'Add your prices' }}</span></summary>
       <div class="set-p">{{ rate_fields(n, none, cur) }}</div>
     </details>
     {% else %}
-    {% for v in g.versions %}
+    {% if g.versions %}<div class="set-row cols" aria-hidden="true"><span class="set-l"></span><span class="set-v">Cheapest to dearest</span></div>{% endif %}
+    {% macro version_row(v) %}
     <details class="set-x"><summary class="set-row"><span class="set-l">{{ v.label }}{% if v.now %}<span class="badge">Now</span>{% endif %}</span><span class="set-v">{{ v.summary }}</span></summary>
       <div class="set-p">{% for p in v.periods %}<div class="set-row"><label class="set-l" for="{{ p.field }}">{{ p.label }}</label><div class="set-c">{{ s.num(p.field, p.price, unit='/kWh', pre=cur, step='0.001', min=0, id=p.field) }}</div></div>{% endfor %}</div>
-    </details>
-    {% endfor %}
+    </details>{% endmacro %}
+    {% for v in g.versions[:g.shown] %}{{ version_row(v) }}{% endfor %}
+    {% if g.versions[g.shown:] %}<details class="set-x rate-more"><summary class="set-row"><span class="set-l">Earlier prices</span><span class="set-v">{{ g.versions[g.shown:]|length }}</span></summary>
+      {% for v in g.versions[g.shown:] %}{{ version_row(v) }}{% endfor %}
+    </details>{% endif %}
     {% endif %}
   </div>
 </section>
@@ -139,7 +108,7 @@
     {% for key, name in (('sc', 'Superchargers'), ('dc', 'Other networks')) %}
     <div class="set-row"><label class="set-l" for="{{ key }}_price">{{ name }}</label><div class="set-c">
       {{ s.num(key ~ '_price', st[key ~ '_price'] or '', unit='/kWh', pre=cur, w=4, min='0.01', max=5, placeholder=('0.48' if key == 'sc' else '0.56'), id=key ~ '_price') }}
-      {{ s.num(key ~ '_per_min', st[key ~ '_per_min'] or '', unit='/min', pre='+ ' ~ cur, w=4, min='0.01', max=5, placeholder='off', label=name ~ ', per minute') }}
+      {{ s.num(key ~ '_per_min', st[key ~ '_per_min'] or '', unit='/min', pre='+ ' ~ cur, w=4, min='0.01', max=5, placeholder='none', label=name ~ ', per minute') }}
     </div></div>
     {% endfor %}
   </div>
@@ -168,55 +137,13 @@
     <details class="set-x"><summary class="set-row"><span class="set-l">Sources</span><span class="set-v">{% if rates.origin == 'downloaded' %}Downloaded {{ rates.fetched_at|local }}{% else %}Came with this version{% endif %}</span></summary>
       <div class="set-p">
         {% for src in rates.sources %}<div class="set-row"><span class="set-l">{{ src.source }}</span><span class="set-v">{{ src.label }}</span></div>{% else %}<div class="empty">No figures: the bundled file is missing</div>{% endfor %}
-        {% if rates.tried_at %}<div class="set-row"><span class="set-l">Last check</span><span class="set-v">{{ rates.tried_at|local }} · {{ 'failed' if rates.error else 'fine' }}</span>{% if rates.error %}{% call info("Why it failed") %}{{ rates.error }}. The copy in use is kept.{% endcall %}{% endif %}</div>{% endif %}
+        {% if rates.tried_at %}<div class="set-row"><span class="set-l">Last check</span><span class="set-v">{{ rates.tried_at|local }} · {{ 'failed' if rates.error else 'all good' }}</span>{% if rates.error %}{% call info("Why it failed") %}{{ rates.error }}. The copy in use is kept.{% endcall %}{% endif %}</div>{% endif %}
         <div class="acts">{% call info("What Update now fetches") %}The whole file, from {{ rates.url }}. It updates itself when over 45 days old or missing a region, at most once a day.{% endcall %}<button type="submit" class="btn sm" form="avg-refresh">Update now</button></div>
       </div>
     </details>
   </div>
 </section>{% endif %}
 
-<form id="find-search" method="post" action="{{ root }}/settings/money/plan-search{{ q }}#find"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" id="urdb-eia" name="eia" value="{{ f.eia or '' }}"></form>
-{% if f.rows %}<form id="find-preview" method="post" action="{{ root }}/settings/money/plan-search/preview{{ q }}#preview"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="q" value="{{ f.q or '' }}"><input type="hidden" name="eia" value="{{ f.eia or '' }}"><input type="hidden" name="contains" value="{{ f.contains or '' }}"></form>{% endif %}
-{% if preview %}<form id="find-use" method="post" action="{{ root }}/settings/money/plan-search/use{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="label" value="{{ preview.label }}"><input type="hidden" name="q" value="{{ f.q or '' }}"><input type="hidden" name="eia" value="{{ f.eia or '' }}"></form>{% endif %}
-<form id="find-key" method="post" action="{{ root }}/settings/money/plan-search/key{{ q }}#find"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
 {% if plan and not plan_fits %}<form id="plan-clear" method="post" action="{{ root }}/settings/money/plan/clear{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}
 {% if rates %}<form id="avg-refresh" method="post" action="{{ root }}/settings/money/averages{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}
-<script>
-/* Find my plan: the utility list is fetched once, on focus, and matched as you type, in the same
-   order as urdb.suggest: an alias, the whole name, a start of the name or its initials, then
-   anywhere in it. Picking one fills the search's EIA number. */
-(() => {
-  const box = document.getElementById("urdb-q"), eia = document.getElementById("urdb-eia"), list = document.getElementById("urdb-pick");
-  if (!box) return;
-  let data = null, loading = null;
-  const compact = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-  const initials = (s) => ((s || "").toLowerCase().match(/[a-z0-9]+/g) || []).map((w) => w[0]).join("");
-  const load = () => loading || (loading = fetch(box.dataset.list, { credentials: "same-origin" }).then((r) => r.json()).then((d) => {
-    const alias = {};
-    for (const [k, v] of Object.entries(d.aliases || {})) alias[compact(k)] = v;
-    data = { alias, rows: (d.utilities || []).map((u) => ({ eia: u[0], name: u[1], states: u[2], c: compact(u[1]), i: initials(u[1]) })) };
-  }).catch(() => { data = { alias: {}, rows: [] }; }));
-  const match = (text) => {
-    const w = compact(text);
-    if (!w || !data) return [];
-    const out = [];
-    data.rows.forEach((u, n) => {
-      const r = data.alias[w] === u.eia ? 0 : u.c === w ? 1 : (u.c.startsWith(w) || u.i.startsWith(w)) ? 2 : u.c.includes(w) ? 3 : -1;
-      if (r >= 0) out.push([r, n, u]);
-    });
-    return out.sort((a, b) => a[0] - b[0] || a[1] - b[1]).slice(0, 8).map((x) => x[2]);
-  };
-  const show = () => list.replaceChildren(...match(box.value).map((u) => {
-    const li = document.createElement("li"), b = document.createElement("button");
-    b.type = "button";
-    b.className = "btn sm";
-    b.textContent = u.name + (u.states ? " · " + u.states.replace(/,/g, ", ") : "");
-    b.addEventListener("click", () => { box.value = u.name; eia.value = u.eia; list.replaceChildren(); box.focus(); });
-    li.append(b);
-    return li;
-  }));
-  box.addEventListener("focus", load);
-  box.addEventListener("input", () => { eia.value = ""; load().then(show); });
-})();
-</script>
 {% endblock %}

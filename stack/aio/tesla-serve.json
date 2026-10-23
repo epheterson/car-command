@@ -1,0 +1,23 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    },
+    "8443": {
+      "TCPForward": "127.0.0.1:4443"
+    }
+  },
+  "Web": {
+    "${TS_CERT_DOMAIN}:443": {
+      "Handlers": {
+        "/.well-known/appspecific/com.tesla.3p.public-key.pem": {
+          "Proxy": "http://127.0.0.1:3044/.well-known/appspecific/com.tesla.3p.public-key.pem"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {
+    "${TS_CERT_DOMAIN}:443": true,
+    "${TS_CERT_DOMAIN}:8443": true
+  }
+}

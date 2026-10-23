@@ -15,6 +15,7 @@ FAKE_DOCKER = r"""#!/bin/sh
 echo "$*" >> "$CALLS"
 case "$*" in
   "image inspect"*) exit 0 ;;
+  "volume inspect carcommand_tesla_net") [ -n "$FAKE_NODE" ] && exit 0; exit 1 ;;
   "volume inspect"*) [ -n "$FAKE_VOLUME_EXISTS" ] && exit 0; exit 1 ;;
   "compose"*" ps "*) echo db; exit 0 ;;
   "compose"*) exit 0 ;;
@@ -78,3 +79,24 @@ def test_a_move_takes_compose_down_but_never_its_volume(checkout):
     assert "DISCORD_WEBHOOK_URL=" in settings
     for kept_back in ("DB_PASSWORD", "CC_SECRET_KEY", "MAPS_URL"):
         assert kept_back not in settings
+
+
+def test_the_tesla_streams_node_comes_along_with_its_name_and_never_runs_twice(checkout):
+    env = checkout / "stack" / ".env"
+    env.write_text(env.read_text() + "TESLA_STREAM_HOST=carcommand-stream.tail0000.ts.net\nTESLA_STREAM_ZMQ=tcp://tesla-telemetry:5284\n")
+    done, calls = move(checkout, FAKE_NODE="1")
+    assert done.returncode == 0, done.stderr
+    stop = next(i for i, c in enumerate(calls) if c.endswith("--profile tesla stop tesla-net tesla-telemetry"))
+    copy = next(i for i, c in enumerate(calls) if c.startswith("run") and "carcommand_tesla_net:/from:ro" in c and "vol-test:/data" in c)
+    down = next(i for i, c in enumerate(calls) if c.startswith("compose") and c.endswith("--profile tesla down"))
+    assert stop < copy < down, "the node is stopped before its state is copied, and compose's goes with the rest"
+    settings = (checkout / "stack" / "secrets" / "one-container.env").read_text()
+    assert "TESLA_STREAM_HOST=carcommand-stream.tail0000.ts.net" in settings and "TESLA_STREAM_ZMQ" not in settings
+    assert "nothing to change in the cars" in done.stdout
+
+
+def test_without_a_node_nothing_of_the_stream_is_copied(checkout):
+    done, calls = move(checkout)
+    assert done.returncode == 0, done.stderr
+    assert not any("tesla_net" in c for c in calls if c.startswith("run"))
+    assert "nothing to change in the cars" not in done.stdout

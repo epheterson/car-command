@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Command check · Car Command{% endblock %}
+{% block body %}
+{# One command at a time with someone at the car: Try, see what the car reports, say what happened, Put back. #}
+<div class="pbar"><h1>Command check</h1><span class="pbar-ctx">{{ check_car.name }}</span></div>
+<p class="muted small" id="cc-car">{{ now._state or '—' }} · {{ now._speed if now._speed is not none else '—' }} km/h</p>
+<div class="cc-list">
+{% for s in steps %}{% set k = kept.get(s.key) or {} %}{% if not k.verdict %}
+<section class="cc-step" data-step="{{ s.key }}">
+  <div class="cc-head"><strong>{{ s.label }}</strong><span class="cc-v small{{ ' ok' if k.verdict == 'worked' else (' bad' if k.verdict == 'failed' else '') }}" data-verdict>{{ k.verdict or '' }}</span></div>
+  <div class="muted small">{{ s.note }}</div>
+  <div class="small">Car reports <b data-now>{{ now.get(s.key) if now.get(s.key) is not none else '—' }}</b>{% if k.before is defined %} · was <span data-before>{{ k.before if k.before is not none else '—' }}</span>{% endif %}</div>
+  <div class="cc-btns">
+    <button class="btn sm primary" data-send="do">Try</button>
+    <button class="btn sm" data-send="undo">Put back</button>
+    <button class="btn sm" data-v="worked">Worked</button>
+    <button class="btn sm" data-v="failed">Didn't</button>
+    <button class="btn sm" data-v="skipped">Skip</button>
+  </div>
+  <div class="cc-note"><input class="field" data-note type="text" maxlength="300" placeholder="Note" aria-label="Note on {{ s.label }}" value="{{ k.note or '' }}"><button class="btn sm" data-save>Save note</button></div>
+  <div class="small" data-said role="status" aria-live="polite"></div>
+</section>{% endif %}
+{% endfor %}
+</div>
+{% set answered = steps|selectattr('key', 'in', kept.keys()|list)|list %}
+<details class="cc-done"><summary>Answered</summary><ul class="small">{% for s in answered %}{% set k = kept[s.key] %}{% if k.verdict %}<li><b>{{ s.label }}</b> · {{ k.verdict }}{% if k.note %} · {{ k.note }}{% endif %}</li>{% endif %}{% endfor %}</ul></details>
+<p class="muted small">Left out: {{ left_out }}</p>
+<style>
+.cc-list{display:grid;gap:12px;max-width:640px}
+.cc-step{border:1px solid var(--line,#8884);border-radius:10px;padding:12px;display:grid;gap:6px}
+.cc-head{display:flex;justify-content:space-between;gap:8px}
+.cc-btns{display:flex;flex-wrap:wrap;gap:6px}
+.cc-btns .btn{min-height:40px}
+.cc-note{display:flex;gap:6px}.cc-note .field{flex:1;min-width:0}
+.cc-v.ok{color:var(--ok,#2a7)}.cc-v.bad{color:var(--bad,#c33)}
+</style>
+<script>
+(function () {
+  var root = "{{ root }}", vin = "{{ check_car.vin }}";
+  var meta = document.querySelector('meta[name="csrf-token"]'), csrf = meta ? meta.getAttribute("content") : "";
+  var busy = false, polling = null;
+  function post(path, body) {
+    return fetch(root + "/check/" + vin + path, { method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": csrf, "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, said: "HTTP " + r.status }; }); });
+  }
+  function show(now) {
+    document.getElementById("cc-car").textContent = (now._state || "—") + " · " + (now._speed == null ? "—" : now._speed) + " km/h";
+    document.querySelectorAll(".cc-step").forEach(function (el) {
+      var v = now[el.dataset.step];
+      el.querySelector("[data-now]").textContent = v == null ? "—" : String(v);
+    });
+  }
+  function poll() {
+    if (polling) clearInterval(polling);
+    var n = 0;
+    polling = setInterval(function () {
+      if (++n > 18) { clearInterval(polling); return; }
+      fetch(root + "/check/" + vin + "/read", { credentials: "same-origin" }).then(function (r) { return r.json(); }).then(show).catch(function () {});
+    }, 10000);
+  }
+  document.querySelectorAll(".cc-step").forEach(function (el) {
+    var said = el.querySelector("[data-said]"), step = el.dataset.step;
+    el.querySelectorAll("[data-send]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (busy) return;
+        busy = true;
+        el.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
+        said.textContent = "Sending…";
+        post("/send", { step: step, which: b.dataset.send }).then(function (r) {
+          said.textContent = (r.said || (r.ok ? "Sent." : "Not sent.")) + (r.ok ? " Watching the car's report…" : "");
+          if (r.ok) poll();
+        }).catch(function () { said.textContent = "Not sent: no answer."; })
+          .finally(function () { busy = false; el.querySelectorAll("button").forEach(function (x) { x.disabled = false; }); });
+      });
+    });
+    el.querySelector("[data-save]").addEventListener("click", function () {
+      post("/verdict", { step: step, verdict: "", note: el.querySelector("[data-note]").value }).then(function (r) { said.textContent = r.ok ? "Note saved." : "Not saved."; });
+    });
+    el.querySelectorAll("[data-v]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        post("/verdict", { step: step, verdict: b.dataset.v, note: el.querySelector("[data-note]").value }).then(function (r) {
+          if (r.ok) { var v = el.querySelector("[data-verdict]"); v.textContent = b.dataset.v; v.className = "cc-v small" + (b.dataset.v === "worked" ? " ok" : b.dataset.v === "failed" ? " bad" : ""); }
+        });
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}

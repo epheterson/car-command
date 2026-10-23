@@ -35,6 +35,13 @@ SECTIONS: tuple[tuple[str, str, str, tuple[tuple[str, str, str], ...]], ...] = (
 )
 # Settings sits at the sidebar's foot; its pages are its sections, each at its own URL.
 SETTINGS = ("settings", "Settings", "/settings", tuple((f"settings-{k}", label, f"/settings/{k}") for k, label in _SETTING_SECTIONS))
+
+
+def settings_without(hidden) -> tuple:
+    """SETTINGS with the sections in `hidden` left out of its pages."""
+    return (*SETTINGS[:3], tuple(p for p in SETTINGS[3] if p[0].removeprefix("settings-") not in hidden))
+
+
 PHONE_TABS = ("now", "timeline", "stats", "map")
 
 _OWNER = {page[0]: key for key, _label, _path, pages in SECTIONS + (SETTINGS,) for page in pages}

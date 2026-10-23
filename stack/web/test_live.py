@@ -65,7 +65,7 @@ def test_the_now_card_calls_the_guard_mode_by_the_cars_make(env):
     for make, word, other in (("Lucid", "Halo Secure", "Sentry"), ("Tesla", "Sentry", "Halo Secure")):
         ctx = {**now_ctx(), "car": {**CAR, "live": True, "sentry": True, "sentry_threat": True, "make": make}}
         hero = env.get_template("_now_hero.html").render(**ctx)
-        assert f"{word} reacting to something" in hero and f"<dt>{word}</dt>" in hero and other not in hero
+        assert f"{word} reacting to something" in hero and f"</svg>{word}</span>" in hero and other not in hero, "the tile and the line name the guard"
 
 
 def test_the_now_card_is_a_partial_the_page_includes(env):
@@ -117,7 +117,7 @@ def test_an_unchanged_card_is_not_sent_again():
 
 def test_only_the_card_that_changed_is_sent():
     sent, prev = livestream.changed({"V1": "<a>1</a>", "V2": "<a>2</a>"}, {"V1": card("<a>1</a>"), "V2": card("<a>2!</a>", 41.0, -73.0)})
-    assert sent == [{"vin": "V2", "html": "<a>2!</a>", "lat": 41.0, "lon": -73.0}] and prev["V2"] == "<a>2!</a>"
+    assert sent == [{"vin": "V2", "html": "<a>2!</a>", "lat": 41.0, "lon": -73.0, "heading": None}] and prev["V2"] == "<a>2!</a>"
 
 
 def test_a_card_that_is_gone_is_forgotten_and_not_sent():
@@ -154,7 +154,7 @@ def test_the_stream_is_an_event_stream_that_proxies_leave_alone(bounded, client,
     r = client.get("/stream?vin=V1")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
     assert r.headers["cache-control"] == "no-cache" and r.headers["x-accel-buffering"] == "no"
-    assert frames(r.text) == [{"vin": "V1", "html": '<section data-live="V1">58%</section>', "lat": 40.7, "lon": -74.0}]
+    assert frames(r.text) == [{"vin": "V1", "html": '<section data-live="V1">58%</section>', "lat": 40.7, "lon": -74.0, "heading": None}]
 
 
 def test_a_card_that_cannot_be_drawn_sends_nothing_and_does_not_end_the_stream(bounded, client, monkeypatch):  # noqa: F811
@@ -268,7 +268,9 @@ def test_the_streamed_card_gets_everything_the_page_gives_it(bare, monkeypatch):
     Both now take the card's data from one place."""
     monkeypatch.setattr(bare, "live_vehicle", lambda vin=None: dict(CAR))
     monkeypatch.setattr(bare, "all_vehicles", lambda: [{"vin": "V1", "name": "Alpha"}])
-    monkeypatch.setattr(bare, "now_card_data", lambda car: {"today": None, "due": [], "tread_last": {"measured_on": T0, "front_left": 8.0, "front_right": 8.0, "rear_left": 7.0, "rear_right": 7.0}})
+    monkeypatch.setattr(
+        bare, "now_card_data", lambda car: {"today": None, "due": [], "cmd": None, "tread_last": {"measured_on": T0, "front_left": 8.0, "front_right": 8.0, "rear_left": 7.0, "rear_right": 7.0}}
+    )
     bare._cache.clear()
     html = bare.live_cards("V1", "")["V1"]["html"]
     assert "tread" in html.lower()

@@ -142,7 +142,8 @@ def test_an_install_from_before_plans_gets_the_plan_it_was_pricing_with():
     db = _Store({"units": "imperial"})  # never saved Money: the built-in rates and schedule
     plan = settings.load(db)["rate_plan"]
     assert plan == cost.compile_rows(cost.LEGACY_PLAN_NAME, cost.LEGACY_RATES, cost.LEGACY_SCHEDULE) and db.rows["rate_plan"] == plan
-    assert plan["name"] == "PG&E EV2A", "the name its charges were priced and labelled under, so stored facts and pages agree"
+    assert plan["name"] == "Earlier rates", "a neutral label; the rates and schedule stay as they were, so no money figure moves"
+    assert [pd["price"] for pd in plan["versions"][0]["periods"]] == [0.40, 0.60, 0.63]
     rates = [{"from": "2024-01-01", "off_peak": 0.3, "part_peak": 0.4, "peak": 0.5}]
     sched = [{"period": "peak", "days": "weekdays", "start": 17, "end": 20, "months": None}]
     db = _Store({"plan": "Springfield EV", "rates": rates, "schedule": sched})
@@ -150,3 +151,12 @@ def test_an_install_from_before_plans_gets_the_plan_it_was_pricing_with():
     assert plan["name"] == "Springfield EV" and plan["source"] == "manual" and cost.plan_rows(plan) == (rates, sched)
     db.rows["rates"] = [{"from": "2025-01-01", "off_peak": 9, "part_peak": 9, "peak": 9}]
     assert settings.load(db)["rate_plan"] == plan, "decided once: the old keys are not read again"
+
+
+def test_satellite_starts_off_and_a_save_turns_it_on():
+    from settingsform import DEFAULTS, parse
+
+    assert DEFAULTS["satellite"] is False
+    got = parse("maps", {"public_tiles_shown": "1", "satellite_shown": "1", "satellite": "on"}, DEFAULTS)
+    assert got["satellite"] is True and got["public_tiles"] is False
+    assert parse("maps", {"satellite_shown": "1"}, dict(DEFAULTS, satellite=True))["satellite"] is False, "an unticked box posts nothing"

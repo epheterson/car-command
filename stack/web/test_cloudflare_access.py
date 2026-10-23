@@ -91,7 +91,8 @@ def test_without_a_configured_team_there_is_nothing_to_tap(cf):
     assert r.status_code == 303 and app.stored == app.seed and app.AUTH["enabled"] is False and app.CF["team"] is None
     assert app.cf_candidate(type("R", (), {"headers": {HDR: jwt()}, "scope": {app.TruePeer.KEY: LAN}})()) is False
     html = render_access(auth_enabled=False, cf_team=None, cf_offer=False)
-    assert "Set CF_ACCESS_TEAM in .env" in html and 'form="cfon"' not in html
+    assert "Set CF_ACCESS_TEAM in .env, or sign in with the password to type it here" in html and 'form="cfon"' not in html
+    assert "or type the team below" in render_access(auth_enabled=True, cf_team=None, cf_offer=False, cf_can_set=True)
 
 
 def test_a_token_from_another_team_pins_nothing_even_with_its_own_valid_certs(cf, monkeypatch):

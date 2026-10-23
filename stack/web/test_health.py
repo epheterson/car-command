@@ -9,7 +9,7 @@ H = timedelta(hours=1)
 D = timedelta(days=1)
 
 
-def kitt(**over):
+def bravo(**over):
     """Alpha, a car whose feed is current: rebuild ok, nothing logged in 27 days."""
     car = {
         "vin": "V1",
@@ -27,7 +27,7 @@ def kitt(**over):
 
 
 def test_the_erosion_case_is_two_findings():
-    kinds = {f["kind"]: f for f in check(kitt(), NOW)}
+    kinds = {f["kind"]: f for f in check(bravo(), NOW)}
     assert set(kinds) == {"stale", "miles"}
     assert "nothing has been logged" in kinds["stale"]["text"] and kinds["stale"]["level"] == "bad"
     assert kinds["miles"]["text"].startswith("115 of the 115 mi Alpha drove this week")
@@ -35,28 +35,28 @@ def test_the_erosion_case_is_two_findings():
 
 
 def test_a_healthy_feed_car_is_quiet():
-    assert check(kitt(derived_newest=NOW - 2 * H, trips_7d=112.0), NOW) == []
+    assert check(bravo(derived_newest=NOW - 2 * H, trips_7d=112.0), NOW) == []
 
 
 def test_a_parked_week_is_not_stale():
     # readings arrive, nothing logged for a week, but the car never moved: fine
-    assert check(kitt(derived_newest=NOW - 9 * D, active_since_derived=False, odo_7d=0.0, trips_7d=0.0), NOW) == []
+    assert check(bravo(derived_newest=NOW - 9 * D, active_since_derived=False, odo_7d=0.0, trips_7d=0.0), NOW) == []
 
 
 def test_short_gaps_are_ignored():
-    assert check(kitt(derived_newest=NOW - H, odo_7d=100.0, trips_7d=96.0), NOW) == [], "under five miles"
-    assert check(kitt(derived_newest=NOW - H, odo_7d=100.0, trips_7d=85.0), NOW) == [], "under a fifth"
-    assert [f["kind"] for f in check(kitt(derived_newest=NOW - H, odo_7d=100.0, trips_7d=70.0), NOW)] == ["miles"]
+    assert check(bravo(derived_newest=NOW - H, odo_7d=100.0, trips_7d=96.0), NOW) == [], "under five miles"
+    assert check(bravo(derived_newest=NOW - H, odo_7d=100.0, trips_7d=85.0), NOW) == [], "under a fifth"
+    assert [f["kind"] for f in check(bravo(derived_newest=NOW - H, odo_7d=100.0, trips_7d=70.0), NOW)] == ["miles"]
 
 
 def test_a_silent_source_is_one_finding_only():
-    out = check(kitt(raw_newest=NOW - 3 * D), NOW)
+    out = check(bravo(raw_newest=NOW - 3 * D), NOW)
     assert [f["kind"] for f in out] == ["quiet"] and "3 days" in out[0]["text"]
-    assert check(kitt(raw_newest=None), NOW)[0]["text"].startswith("Nothing has ever arrived")
+    assert check(bravo(raw_newest=None), NOW)[0]["text"].startswith("Nothing has ever arrived")
 
 
 def test_rebuild_marker_is_read():
-    ok = kitt(derived_newest=NOW - H, trips_7d=114.0)
+    ok = bravo(derived_newest=NOW - H, trips_7d=114.0)
     assert check(dict(ok, rebuild=f"error {(NOW - H).isoformat()} relation does not exist"), NOW)[0]["kind"] == "rebuild"
     late = check(dict(ok, rebuild=f"ok {(NOW - 5 * H).isoformat()} trips=1 from=x"), NOW)
     assert late and late[0]["level"] == "warn" and "5 h" in late[0]["text"]
@@ -71,7 +71,7 @@ def test_history_only_and_live_cars():
 
 
 def test_round_trip_keeps_datetimes_readable():
-    car = kitt()
+    car = bravo()
     got = decode(encode(car, check(car, NOW)))
     assert got["car"]["raw_newest"] == car["raw_newest"].isoformat() and got["findings"][0]["kind"] == "stale"
     assert decode(None) is None and decode("{not json") is None
@@ -127,3 +127,28 @@ def test_worker_stores_the_answer_and_alerts_once_a_day():
     conn.answers["health_sent:"] = NOW.date().isoformat()
     w.round(NOW)
     assert len(sent) == 2
+
+
+def test_gather_measures_odometer_and_drives_over_the_same_stretch():
+    """A drive that began before the week's edge, or is still under way, is in the
+    odometer's span and not in the drives' sum; both now run from the first whole drive's
+    start to the newest drive's end."""
+    first, last = NOW - 6 * D, NOW - 2 * H
+    seen = {}
+
+    class Spy(Conn):
+        def execute(self, sql, params=None):
+            if "MIN(start_date)" in sql:
+                self.last = first
+            elif "MAX(destination_date) FROM trips" in sql:
+                self.last = last
+            elif "(data->>'odometer')" in sql or "SUM(destination_odometer" in sql:
+                seen["odo" if "odometer')" in sql else "sum"] = params
+                self.last = 1.0
+            else:
+                return super().execute(sql, params)
+            return self
+
+    gather(Spy({}), "V1", "Alpha", "feed", NOW)
+    assert seen["odo"] == ("V1", first, last)
+    assert seen["sum"] == ("V1", first)

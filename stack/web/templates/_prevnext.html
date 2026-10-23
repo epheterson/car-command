@@ -1,0 +1,26 @@
+{# Previous and next drive, charge or parked stretch of the same car (neighbours.py): an arrow
+   each side with the neighbour's date and a short label. ← and → follow them (shell.js).
+   `q` is appended to each link ("?vin=…"). #}
+{% macro label(x) -%}
+{%- set bits = [] -%}
+{%- if x.kind == 'drive' and x.miles is not none %}{% set _ = bits.append((x.miles|dist(1)) ~ ' ' ~ u.dist) %}{% endif -%}
+{%- if x.kind == 'charge' and x.gained is not none %}{% set _ = bits.append(('+' if x.gained >= 0 else '−') ~ (x.gained|abs|num) ~ '%') %}{% endif -%}
+{%- if x.kind == 'parked' %}{% set _ = bits.append(x.duration|duration if x.duration else 'parked now') %}{% endif -%}
+{%- if x.where %}{% set _ = bits.append(x.where|short_place) %}{% endif -%}
+{{ bits|join(' · ') }}
+{%- endmacro %}
+{% macro side(x, rel, root, q) -%}
+{% if x %}<a class="pn-{{ rel }}" rel="{{ rel }}" href="{{ root }}{{ x.href }}{{ q }}" aria-keyshortcuts="{{ 'ArrowLeft' if rel == 'prev' else 'ArrowRight' }}" title="{{ 'Previous' if rel == 'prev' else 'Next' }} {{ x.kind }}"><span class="pn-ar" aria-hidden="true">{{ '‹' if rel == 'prev' else '›' }}</span><span class="pn-tx"><span class="pn-d">{{ x.start|local('%a %b %-d, %-I:%M %p') }}</span><span class="pn-l">{{ label(x) }}</span></span></a>
+{%- else %}<span class="pn-{{ rel }} pn-none" aria-hidden="true"></span>{% endif %}
+{%- endmacro %}
+{% macro prevnext(n, root="", q="") -%}
+{% if n and (n.prev or n.next) %}<nav class="prevnext" aria-label="Previous and next">{{ side(n.prev, 'prev', root, q) }}{{ side(n.next, 'next', root, q) }}</nav>{% endif %}
+{%- endmacro %}
+
+{# The same two neighbours as small links for a page's header bar: "‹ Fri 7:44 PM · 4.7 mi". #}
+{% macro fig(x) -%}
+{%- if x.kind == 'drive' and x.miles is not none %}{{ x.miles|dist(1) }} {{ u.dist }}{% elif x.kind == 'charge' and x.gained is not none %}{{ '+' if x.gained >= 0 else '−' }}{{ x.gained|abs|num }}%{% elif x.kind == 'parked' %}{{ x.duration|duration if x.duration else 'parked now' }}{% endif -%}
+{%- endmacro %}
+{% macro inline(n, root="", q="") -%}
+{% if n and (n.prev or n.next) %}<nav class="prevnext pn-in" aria-label="Previous and next">{% for x, rel in [(n.prev, 'prev'), (n.next, 'next')] %}{% if x %}<a class="pn-{{ rel }}" rel="{{ rel }}" href="{{ root }}{{ x.href }}{{ q }}" aria-keyshortcuts="{{ 'ArrowLeft' if rel == 'prev' else 'ArrowRight' }}" title="{{ 'Previous' if rel == 'prev' else 'Next' }} {{ x.kind }}{{ (', ' ~ x.where) if x.where }}">{{ '‹ ' if rel == 'prev' }}{{ x.start|local('%a %-I:%M %p') }} · {{ fig(x) }}{{ ' ›' if rel == 'next' }}</a>{% else %}<span class="pn-{{ rel }} pn-none" aria-hidden="true"></span>{% endif %}{% endfor %}</nav>{% endif %}
+{%- endmacro %}

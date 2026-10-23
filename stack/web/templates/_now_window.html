@@ -1,0 +1,20 @@
+{# The two things the 24 h / 7 d switch changes: the strip and the battery chart. Drawn with the page, and alone by
+   /now/window when the switch is pressed (static/shell.js swaps it in place). #}
+{% import "_parts.html" as parts %}
+<div id="now-win" data-win="{{ win }}" data-win-src="{{ root }}/now/window{{ q }}">
+<section>
+  {% set wq = (q ~ '&') if q else '?' %}
+  <h2>{{ 'Last 24 hours' if win == '24h' else 'Last 7 days' }} <span class="more win">{% for w, lab in (('24h', '24 h'), ('7d', '7 d')) %}<a href="{{ root }}/{{ wq }}win={{ w }}" data-keep-scroll data-win-to="{{ w }}"{% if win == w %} aria-current="true"{% endif %}>{{ lab }}</a>{% endfor %}</span></h2>
+  {{ parts.strip(ribbon, ticks or [], strip_marks, root, car.vin, u, win) }}
+  <p class="legend muted" data-strip-tip><span class="key sleeping"></span>Asleep <span class="key idle"></span>Parked, awake <span class="key caron"></span>Car on, parked <span class="key driving"></span>Driving <span class="key charging"></span>Charging</p>
+</section>
+
+<section>
+  <h2>Battery</h2>
+  {% if spark %}
+  <svg class="spark" viewBox="0 0 600 80" preserveAspectRatio="none" role="img" aria-label="Battery level over the last {{ '24 hours' if win == '24h' else 'seven days' }}">
+    <polyline points="{{ spark }}"/>
+  </svg>
+  {% else %}<p class="muted">No drives in this window.</p>{% endif %}
+</section>
+</div>

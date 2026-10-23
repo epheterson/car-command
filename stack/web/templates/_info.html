@@ -1,5 +1,5 @@
 {# A small (i) that opens how a figure was worked out: a native details element, so a tap,
-   a click or Enter opens it with no script. The note is the caller's body. #}
+   a click or Enter opens it with no script. shell.js keeps it on the line of the word before it. The note is the caller's body. #}
 {% macro info(label="How this is worked out") -%}
 <details class="info"><summary aria-label="{{ label }}" title="{{ label }}">i</summary><span class="tip" role="note">{{ caller() }}</span></details>
 {%- endmacro %}

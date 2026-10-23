@@ -8,22 +8,32 @@
 {% if g.limit %}<div class="gauge-l"><span></span><span>limit {{ g.limit|round|int }}%</span></div>{% endif %}
 {%- endmacro %}
 
-{% macro strip(segments, ticks) -%}
-<div class="strip"><div class="strip-bar" role="img" aria-label="What the car did over the last 24 hours">{% for s in segments %}<span class="seg {{ s.label }}" style="width:{{ '%.3f'|format(s.width * 100) }}%" title="{{ s.label }} {{ s.start|local('%-I:%M %p') }} to {{ s.end|local('%-I:%M %p') }}"></span>{% endfor %}</div>
-{% if ticks %}<div class="strip-ax">{% for t in ticks %}<span style="left:{{ t.left }}%">{{ t.label }}</span>{% endfor %}</div>{% endif %}</div>
+{# The 24-hour strip. Given `marks` (nowpage.strip_marks), each stretch says what it was on hover
+   or focus and opens the drive, the charge or the day. #}
+{% macro strip(segments, ticks, marks=none, root="", vin=none, u=none, win="24h") -%}
+{% set WORD = {'sleeping': 'Asleep', 'idle': 'Parked', 'caron': 'Car on, parked', 'driving': 'Driving', 'charging': 'Charging', 'unknown': 'No data'} %}
+<div class="strip"><div class="strip-wrap">{% for t in ticks if t.kind in ('day', 'hour') %}<i class="strip-{{ 'mid' if t.kind == 'day' else 'hr' }}" style="left:{{ t.left }}%" aria-hidden="true"></i>{% endfor %}<div class="strip-bar"{% if not marks %} role="img"{% endif %} aria-label="What the car did over the last {{ '24 hours' if win == '24h' else '7 days' }}">{% for s in segments %}{% set w = 'width:%.3f%%'|format(s.width * 100) %}{% set when = s.start|local('%-I:%M') ~ '–' ~ s.end|local('%-I:%M %p') %}
+{%- if marks -%}{% set m = marks[loop.index0] %}{% set tip = WORD.get(s.label, s.label) ~ ' · ' ~ when %}
+{%- if m.drive %}{% set d = m.drive %}{% set tip = tip ~ ((' · ' ~ (d.miles|dist(1)) ~ ' ' ~ u.dist) if d.miles is not none else '') ~ ((' ' ~ heading(d.to|short_place)) if d.to else '') %}<a class="seg {{ s.label }}" style="{{ w }}" href="{{ root }}/drives/{{ d.id }}?vin={{ vin }}" data-tip="{{ tip }}" aria-label="{{ tip }}"></a>
+{%- elif m.charge %}{% set c = m.charge %}{% set tip = tip ~ ((' · ' ~ (c.kwh|num(1)) ~ ' kWh') if c.kwh else '') ~ ((' at ' ~ (c.where|short_place)) if c.where else '') %}<a class="seg {{ s.label }}" style="{{ w }}" href="{{ root }}/charges/{{ c.id }}?vin={{ vin }}" data-tip="{{ tip }}" aria-label="{{ tip }}"></a>
+{%- else %}<a class="seg {{ s.label }}" style="{{ w }}" href="{{ root }}/day?date={{ s.start|local('%Y-%m-%d') }}&vin={{ vin }}" data-tip="{{ tip }}" aria-label="{{ tip }}"></a>{% endif %}
+{%- else %}<span class="seg {{ s.label }}" style="{{ w }}" title="{{ s.label }} {{ s.start|local('%-I:%M %p') }} to {{ s.end|local('%-I:%M %p') }}"></span>{% endif %}{% endfor %}</div></div>
+{% if ticks %}<div class="strip-ax" aria-hidden="true">{% for t in ticks if t.label %}<span class="ax-{{ t.kind or 'hour' }}" style="left:{{ t.left }}%">{{ t.label }}</span>{% endfor %}</div>{% endif %}</div>
 {%- endmacro %}
 
 {# `kind` ("drive", "charge") tells the two apart at a glance: a tinted bolt chip for a charge (solid when it was a fast one), the route sparkline (or the route icon) in a quiet chip for a drive #}
-{% macro row(href, time, title, pills, big, sub, thumb="", dot=none, extra=none, refs=none, kind="", mix=none) -%}{% set fast = kind == 'charge' and 'fast' in pills %}
+{# `elev`: a drive's elevation profile (driveview.elevation_spark), drawn small under its figures #}
+{% macro row(href, time, title, pills, big, sub, thumb="", dot=none, extra=none, refs=none, kind="", mix=none, elev=none, garage=none) -%}{% set fast = kind == 'charge' and 'fast' in pills %}
 <a class="row-b{% if kind %} k-{{ kind }}{% endif %}" href="{{ href }}"><span class="row-t">{{ time|replace(' AM', '\u00a0AM')|replace(' PM', '\u00a0PM') }}</span>{% if kind %}<span class="row-thumb{% if fast %} fast{% endif %}"{% if fast %} title="Fast charge"{% endif %}>{% if thumb %}{{ thumb|safe }}{% else %}{{ _ic('charge' if kind == 'charge' else 'drive') }}{% endif %}</span>{% elif thumb %}<span class="row-thumb">{{ thumb|safe }}</span>{% endif %}
-<span class="row-m"><span class="row-title">{% if dot is not none %}<span class="dot c{{ dot }}"></span>{% endif %}{{ place_refs(title, refs, true) }}</span><span class="row-s">{% for p in pills if p %}<span>{{ p }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>{% if extra %}<span class="row-x">{% for x in extra %}<span>{{ x }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}{% if mix %}<span class="mixbar" role="img" aria-label="{{ mix.label }}" style="{{ mix.grad }}"></span>{% if mix.note %}<span class="mixnote">{{ mix.note }}</span>{% endif %}{% endif %}</span>
+<span class="row-m"><span class="row-title">{% if dot is not none %}<span class="dot c{{ dot }}"></span>{% endif %}{{ place_refs(title, refs, true) }}</span><span class="row-s">{% for p in pills if p %}<span>{{ p }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>{% if extra %}<span class="row-x">{% for x in extra %}<span>{{ x }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}{% for g in garage or [] %}<span class="row-g" title="Garage door">{{ _ic('garage') }}{{ g }}</span>{% endfor %}{% if mix %}<span class="mixbar" role="img" aria-label="{{ mix.label }}" style="{{ mix.grad }}"></span>{% if mix.note %}<span class="mixnote">{{ mix.note }}</span>{% endif %}{% endif %}{% if elev %}<span class="row-el" title="Elevation along the drive, {{ elev.lo|elev }} to {{ elev.hi|elev }} {{ u.elev }}"><svg viewBox="0 0 100 20" preserveAspectRatio="none" aria-hidden="true"><path d="{{ elev.d }}"/></svg><span>{{ elev.lo|elev }}–{{ elev.hi|elev }} {{ u.elev }}</span></span>{% endif %}</span>
 <span class="row-n"><b>{{ big }}</b>{% if sub %}<span>{{ sub }}</span>{% endif %}</span></a>
 {%- endmacro %}
 
 {# A parked line ("Parked 18 min at Elm Street"): its place opens the naming card (`refs`, as
    placespage.ref gives them); a name that is not in the text is just left as text. #}
-{% macro gap_row(text, dot=none, refs=none) -%}
-<div class="row-gap">{% if dot is not none %}<span class="dot c{{ dot }}"></span>{% endif %}{{ place_refs(text, refs) }}</div>
+{# A parked stretch between two rows; with `href` the whole row opens its page (the place name keeps its own card). #}
+{% macro gap_row(text, dot=none, refs=none, href=none) -%}
+<div class="row-gap{{ ' go' if href }}">{% if dot is not none %}<span class="dot c{{ dot }}"></span>{% endif %}{{ place_refs(text, refs) }}{% if href %}<a class="gap-go" href="{{ href }}" aria-label="This parked stretch">›</a>{% endif %}</div>
 {%- endmacro %}
 
 {# The car's paint as a small swatch beside its year, make and model (identity.describe gives `ident`). #}
@@ -32,12 +42,13 @@
 {%- endmacro %}
 
 {# Sentry or Halo Secure on: a small red dot beside the car's name, on its card only #}
-{% macro guard_dot(c) -%}{% if c.get('sentry') is true %}{% set g = guard_name(c.get('make')) ~ ' on' %}<span class="guard" role="img" title="{{ g }}" aria-label="{{ g }}"></span>{% endif %}{%- endmacro %}
-{% macro car_card(c, root, colors, u, today, ticks) -%}{% set sw = state_word(c.get('status')) %}{% set t = today or {} %}{% set soc = c.get('soc') %}{% set rng = c.get('range_mi') %}
+{# The guard (Sentry, Halo Secure) on: its red dot stands in for the state's own, named in the title. #}
+{# Red only while the guard can watch: a moving car reports it set but idle #}
+{% macro guarded(c) -%}{% if c.get('sentry') is true and not c.get('offline') and state_word(c.get('status'))[1] != 'driving' %} guarding" title="{{ guard_name(c.get('make')) }} on{% endif %}{%- endmacro %}
+{% macro car_card(c, root, colors, u, today, ticks) -%}{% set sw = ('Offline', 'offline') if c.get('offline') else state_word(c.get('status')) %}{% set t = today or {} %}{% set soc = c.get('soc') %}{% set rng = c.get('range_mi') %}
 <a class="cc" href="{{ root }}/?vin={{ c.vin }}" data-live="{{ c.vin }}">
-  <span class="cc-hd"><span class="dot c{{ colors.get(c.vin, 0) }}"></span><span class="cc-nm">{{ c.name }}</span>{{ guard_dot(c) }}<span class="state {{ sw[1] }}"><i></i>{{ sw[0] }}</span></span>
-  {% if c.get('ident') %}<span class="cc-id">{{ carpic(c.ident, root) }}<span class="idline" title="{{ c.ident.line }}">{{ c.ident.short or c.ident.line }}</span></span>{% endif %}
-  <span class="cc-where">{% if c.get('route') %}to {{ c.route.name }}{% if c.route.minutes is not none %}, {{ c.route.minutes }} min{% endif %}{% elif sw[1] == 'driving' %}On the road{% elif c.get('place') and c.get('lat') is not none %}{{ place_refs(c.place, [{'name': c.place, 'lat': c.lat, 'lon': c.lon, 'new': false}], true) }}{% else %}{{ (c.get('place') or c.get('address') or '—')|places }}{% endif %}{% if c.get('updated_age') %} · {{ 'live ' if c.get('live') else '' }}{{ c.updated_age }}{% endif %}</span>
+  <span class="cc-hd"><span class="dot c{{ colors.get(c.vin, 0) }}"></span><span class="cc-nm">{{ c.name }}</span><span class="state {{ sw[1] }}{{ guarded(c) }}"><i></i>{{ sw[0] }}</span></span>
+  <span class="cc-where">{% if c.get('route') %}{{ heading(c.route.name) }}{% if c.route.minutes is not none %}, {{ c.route.minutes }} min{% endif %}{% elif sw[1] == 'driving' %}On the road{% elif c.get('place') and c.get('lat') is not none %}{{ place_refs(c.place, [{'name': c.place, 'lat': c.lat, 'lon': c.lon, 'new': false}], true) }}{% elif c.get('place') or c.get('address') or c.get('locality') %}{{ (c.get('place') or c.get('address') or c.get('locality'))|places }}{% else %}{{ 'Unnamed spot' if c.get('lat') is not none else 'Location unknown' }}{% endif %}{% if c.get('offline') %} · last seen {{ c.last_seen|when }}{% elif c.get('updated_age') %} · {{ 'live ' if c.get('live') else '' }}{{ c.updated_age }}{% endif %}</span>
   <span class="cc-bat"><span class="cc-pct">{% if soc is not none %}{{ soc|num }}<small>%</small>{% else %}—{% endif %}</span><span class="cc-rng">{% if rng is not none %}{{ rng|dist }}<small>{{ u.dist }}</small>{% else %}—{% endif %}</span></span>
   {{ gauge(soc, c.get('charge_target')) }}
   <span class="pills">{% if t.drives %}{{ pill(t.drives ~ (' drive' if t.drives == 1 else ' drives') ~ ' · ' ~ (t.miles|dist) ~ ' ' ~ u.dist, 'drv') }}{% endif %}{% if sw[1] == 'driving' %}{{ pill('driving now', 'drv') }}{% elif not t.drives %}{{ pill('no drives', 'none') }}{% endif %}{% if t.kwh and t.kwh >= 1 %}{{ pill('charged ' ~ (t.kwh|num) ~ ' kWh', 'chg') }}{% endif %}{% if sw[1] == 'charging' %}{{ pill('charging now', 'chg') }}{% elif not (t.kwh and t.kwh >= 1) %}{{ pill('no charge', 'none') }}{% endif %}</span>
@@ -46,16 +57,19 @@
 </a>
 {%- endmacro %}
 
-{# `big`: what the headline says at rest (a drive's 86→85%), when the last reading would read as the record's own figure #}
-{% macro chart(id, data, now_text="", big=none) -%}{% set pts = data.primary.points %}
+{# `big`: what the headline says at rest (a drive's 86→85%), when the last reading would read as the record's own figure.
+   `sync`: a group name; charts in the same group follow each other's pointer. The chips switch extra lines on and off, several at once. #}
+{# `title=false` leaves the headline out, when the page above already says it. The key names only the states and bands the chart has. #}
+{% macro chart(id, data, now_text="", big=none, sync=none, title=true) -%}{% set pts = data.primary.points %}
 {% if not pts %}<p class="muted small chart-none">No {{ data.primary.label|lower }} readings logged in this window.</p>{% else %}
-<div class="chartbox" id="{{ id }}">
+<div class="chartbox" id="{{ id }}"{% if sync %} data-sync="{{ sync }}"{% endif %}>
   <div class="chart-top">
-    <span class="chart-now"><span class="chart-big">{% if big is not none %}{{ big }}{% else %}{{ pts[-1][1]|num }}{{ data.primary.unit }}{% endif %}</span>{% if now_text %}<span class="muted">{{ now_text }}</span>{% endif %}</span>
-    {% if data.extras %}<div class="chart-segs" role="radiogroup" aria-label="Second line"><span class="muted small">Also show</span><button type="button" role="radio" aria-checked="true" data-extra="" class="on">Nothing</button>{% for x in data.extras %}<button type="button" role="radio" aria-checked="false" data-extra="{{ x.key }}">{{ x.label }}</button>{% endfor %}</div>{% endif %}
+    {% if title %}<span class="chart-now"><span class="chart-big">{% if big is not none %}{{ big }}{% else %}{{ pts[-1][1]|num }}{{ data.primary.unit }}{% endif %}</span>{% if now_text %}<span class="muted">{{ now_text }}</span>{% endif %}</span>{% endif %}
+    {% if data.extras %}<div class="chart-segs chart-chips" role="group" aria-label="Also show">{% for x in data.extras %}{% set on = x.key in (data.on or []) %}<button type="button" aria-pressed="{{ 'true' if on else 'false' }}" data-extra="{{ x.key }}" class="s-{{ x.tone or ('x' ~ loop.index0 % 4) }}{{ ' on' if on }}"><i class="sw" aria-hidden="true"></i>{{ x.label }}</button>{% endfor %}</div>{% endif %}
   </div>
   <div class="chart-area"><svg class="chart-svg" role="img" aria-label="{{ data.primary.label }} over time, with what the car was doing underneath"></svg><div class="chart-hov" role="status" aria-live="polite"></div></div>
-  {% if data.lane %}<div class="chart-key"><span><i class="k-asleep"></i>Asleep</span><span><i class="k-parked"></i>Parked, awake</span><span><i class="k-driving"></i>Driving</span><span><i class="k-charging"></i>Charging</span></div>{% endif %}
+  {% set ks = [] %}{% for r in (data.lane or []) + (data.bands or []) %}{% if r[2] not in ks %}{% set _ = ks.append(r[2]) %}{% endif %}{% endfor %}
+  {% if ks|length > 1 or (data.bands or []) %}<div class="chart-key">{% for k, word in [('asleep', 'Asleep'), ('parked', 'Parked, awake'), ('caron', 'Car on, parked'), ('driving', 'Driving'), ('charging', 'Charging'), ('sentry', 'Sentry'), ('climate', 'Climate')] if k in ks %}<span><i class="k-{{ k }}"></i>{{ (data.bands|selectattr(2, 'equalto', k)|map(attribute=3)|first or word) if k in ('sentry', 'climate') and data.bands else word }}</span>{% endfor %}</div>{% endif %}
   <script type="application/json" class="chart-data">{{ data|tojson }}</script>
 </div>{% endif %}
 {%- endmacro %}

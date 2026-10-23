@@ -1,0 +1,2 @@
+{# A bill's reading, carried by a form that leads to another step (billread.query_keys). #}
+{% for k in bill_keys or () %}{% if request.query_params.get(k) %}<input type="hidden" name="{{ k }}" value="{{ request.query_params.get(k) }}">{% endif %}{% endfor %}

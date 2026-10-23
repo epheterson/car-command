@@ -19,7 +19,12 @@ A charge none of these prices shows as unpriced, not $0.
 
 **Settings › Money** holds the home plan: periods and prices, a schedule by month, day and hour, and dated versions, so a charge from two years ago is priced at what was in force then.
 
-**Find my plan** (US): type your utility's name or a ZIP code and pick a plan from OpenEI's [Utility Rate Database](https://openei.org/wiki/Utility_Rate_Database); Car Command imports every version of it. Energy charges are priced at the first tier; fixed and demand charges are listed as a note. It needs an OpenEI API key on that page, or `CC_URDB_URL` in `stack/.env` pointing at a relay that holds one. A search goes out only when you press Search, with only what you typed. The list of US utilities (EIA Form 861) is bundled.
+**Find my plan** (US), **Settings › Money › Change plan**, has two ways in.
+
+- **Your bill (PDF):** the most accurate. The bill is read on the server and never stored: only its rate schedule, its community-choice provider (MCE, SVCE and the rest), its start date and its prices per kWh are kept. Car Command finds the plan the bill names and prices it as the bill does, delivery and generation together, from the bill's first day on; earlier charges keep the plan they had. A bill covers one season, so the other season's prices are scaled from it and marked ≈ until a bill from that season is read.
+- **Your utility:** pick it (your home's ZIP code suggests it, matched on your machine against NREL's [U.S. Electric Utility Companies and Rates: Look-up by Zipcode](https://data.openei.org/submissions/6225), CC BY 4.0), then a plan from OpenEI's [Utility Rate Database](https://openei.org/wiki/Utility_Rate_Database); Car Command imports every version of it, at the utility's published prices. A community-choice provider's prices are not in OpenEI: read them from your bill.
+
+Each plan is shown with what it would have cost on your own home charging over the last year, beside the plan you have. Energy charges are priced at the first tier; fixed and demand charges are listed as a note. Picking a utility needs an OpenEI API key on that page, or `CC_URDB_URL` in `stack/.env` pointing at a relay that holds one. A request goes out only when you pick a utility or a plan, with only the utility or what you typed. The lists of US utilities (EIA Form 861), utilities by ZIP code (NREL) and California community-choice providers are bundled.
 
 Outside the US, type your rates in.
 

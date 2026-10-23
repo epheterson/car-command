@@ -17,12 +17,12 @@
 <p class="crumb"><a href="{{ root }}/places">&larr; Places</a></p>
 <div class="pbar pd-head">
   <h1>{% if eff %}<span class="pd-ic">{{ ic.place_icon(eff) }}</span>{% endif %}{{ p.name or "Add a place" }}</h1>
-  {% if not new %}<span class="muted">{% if p.city %}{{ p.city }} · {% endif %}{{ (p.visits or 0)|num }} visit{{ 's' if (p.visits or 0) != 1 }}{% if p.home %} · home{% endif %}</span>{% endif %}{% if not new %}<span class="sp"></span><button type="button" class="btn sm" data-pd-edit>Edit</button>{% endif %}
+  {% if not new %}<span class="muted">{% if p.city %}{{ p.city }}{% if p.visits %} · {% endif %}{% endif %}{% if p.visits %}{{ p.visits|num }} {{ p.visits|plural('visit') }}{% endif %}{% if p.home %}{{ ' · ' if p.city or p.visits }}Home{% endif %}</span>{% endif %}{% if not new %}<span class="sp"></span>{% if not p.home and not p.auto %}<form method="post" action="{{ root }}/places/{{ p.id }}/edit" class="pd-home"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="icon" value="home"><button type="submit" class="btn sm" title="Makes this your one home; the place that was home stops being it">This is home</button></form>{% endif %}<button type="button" class="btn sm" data-pd-edit>Edit</button>{% endif %}
 </div>
 {% if request and request.query_params.get('saved') %}<p class="notice ok pd-said" role="status">Saved</p>{% endif %}
 {% if request and request.query_params.get('merged') %}<p class="notice ok pd-said" role="status">Merged into this place.</p>{% endif %}
 {% if nav and p.auto %}<form method="post" action="{{ root }}/places/{{ p.id }}/use-name" class="pd-said pd-nav"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="pick" value="0"><input type="hidden" name="back" value="/places/{{ p.id }}">
-  <span><b>{{ nav.name }}</b> <span class="muted small">{{ nav.source }}{% if nav.n > 1 %}, {{ nav.n }} drives{% endif %}{% if nav.alternates %}; also {{ nav.alternates|join(', ') }}{% endif %}</span></span> <button type="submit">Use this name</button></form>{% endif %}
+  <span><b>{{ nav.name }}</b> <span class="muted small">{{ nav.source }}{% if nav.n > 1 %}, {{ nav.n }} {{ nav.n|plural('drive') }}{% endif %}{% if nav.alternates %}; also {{ nav.alternates|join(', ') }}{% endif %}</span></span> <button type="submit">Use this name</button></form>{% endif %}
 <div class="pdetail">
   <div class="pd-mapcol">
     <div id="pd-map" class="pd-map" role="application" aria-label="Map of {{ p.name or 'the new place' }}: drag the pin to move it"
@@ -65,7 +65,7 @@
 {% if not new %}
 {% if st %}<section class="group pd-stays">
   <h2 class="sec">Visits</h2>
-  <p class="group-b pd-vis">{{ p.visits|num }} visit{{ 's' if p.visits != 1 }}{% if st.by_car|length > 1 %}: {% for v, n in st.by_car|dictsort(by='value', reverse=true) %}{{ names.get(v, v) }} {{ n|num }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if st.median %} · usually {{ st.median|duration }}{% endif %}{% if st.usual %} · {{ st.usual }}{% endif %}.</p>
+  <p class="group-b pd-vis">{{ p.visits|num }} {{ p.visits|plural('visit') }}{% if st.by_car|length > 1 %}: {% for v, n in st.by_car|dictsort(by='value', reverse=true) %}{{ names.get(v, v) }} {{ n|num }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if st.median %} · usually {{ st.median|duration }}{% endif %}{% if st.usual %} · {{ st.usual }}{% endif %}.</p>
 </section>{% endif %}
 <section class="group pd-more">
   <h2 class="sec">More</h2>
@@ -105,9 +105,9 @@
   var lat = parseFloat(el.dataset.lat), lon = parseFloat(el.dataset.lon);
   var latIn = document.querySelector("[data-pd-lat]"), lonIn = document.querySelector("[data-pd-lon]");
   var save = document.querySelector("#pd-form .picker-save");
-  // The map, and what hangs on it, starts at once, like the fields above;
-  // nothing waits for the brand's arrival.
-  (function () {
+  // The map, and what hangs on it, starts once its deferred scripts have run; the fields above
+  // work from the first frame, and nothing waits for the brand's arrival.
+  document.addEventListener("DOMContentLoaded", function () {
   if (!window.CCMap || !window.L) return;
   var map = CCMap.base(el, { scrollWheelZoom: false });
   var colour = getComputedStyle(document.documentElement).getPropertyValue("--ink").trim() || "#1B1A21", circle = null, pin = null, parts = [];
@@ -168,7 +168,7 @@
   });
   if (move) move.addEventListener("click", function () { if (picked) place(picked, true, true); move.hidden = true; });
   window.CCPlaceMap = { center: function () { var c = circle ? circle.getLatLng() : map.getCenter(); return { lat: c.lat, lon: c.lng }; } };
-  })();
+  });
 })();
 </script>
 {% endblock %}

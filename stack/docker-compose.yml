@@ -11,8 +11,8 @@ services:
       context: ./cc
       args:
         # Which connectors the image carries; see CC_CONNECTORS in .env.example.
-        CC_CONNECTORS: ${CC_CONNECTORS:-carconnectivity-connector-lucid==0.1.8}
-    image: carcommand-cc
+        CC_CONNECTORS: ${CC_CONNECTORS:-carconnectivity-connector-lucid==0.4.0}
+    image: ${COMPOSE_PROJECT_NAME:-carcommand}-cc
     container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-cc
     restart: always
     depends_on:
@@ -80,9 +80,9 @@ services:
 
   web:
     # Car Command's own site: live state from cc's REST plugin, history from
-    # Postgres. Nothing of its own to persist.
+    # Postgres. Its only files are the terrain tiles, which download again if lost.
     build: ./web
-    image: carcommand-web
+    image: ${COMPOSE_PROJECT_NAME:-carcommand}-web
     container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-web
     restart: always
     depends_on:
@@ -101,13 +101,14 @@ services:
       - REST_PASSWORD=${REST_PASSWORD}
       # Sign-in. On by default: the first person to open the site chooses the password.
       # Set CC_PASSWORD to choose it here instead, or CC_AUTH=off when a proxy in front
-      # already signs people in. CC_SECRET pins the cookie-signing key; left unset, one
-      # is generated on first start and kept in the database.
+      # already signs people in. CC_SECRET signs sessions (make setup writes one); left
+      # unset, one is generated on first start and kept in the database.
       - CC_AUTH=${CC_AUTH:-on}
       - CC_PASSWORD=${CC_PASSWORD:-}
       - CC_SECRET=${CC_SECRET:-}
       # Optional: only these exact redirect addresses may connect an app (see docs/api.md); empty allows any app scheme.
       - CC_APP_REDIRECTS=${CC_APP_REDIRECTS:-}
+      - CC_PUBLIC_URL=${CC_PUBLIC_URL:-}
       # Optional: sign in through Cloudflare Access (docs/install.md). The team is never learned from a request.
       - CF_ACCESS_TEAM=${CF_ACCESS_TEAM:-}
       - CF_ACCESS_AUD=${CF_ACCESS_AUD:-}
@@ -153,12 +154,54 @@ services:
       # Pushover as a fourth channel: the application token and your user key.
       - PUSHOVER_TOKEN=${PUSHOVER_TOKEN:-}
       - PUSHOVER_USER=${PUSHOVER_USER:-}
+      # Any JSON receiver as a fifth channel (a home hub's /alert): its URL and, if it asks, a Bearer token.
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+      - ALERT_WEBHOOK_TOKEN=${ALERT_WEBHOOK_TOKEN:-}
+      # The garage door from Home Assistant (garagedoor.py): its URL, a long-lived token, the cover entity.
+      - HA_URL=${HA_URL:-}
+      - HA_TOKEN=${HA_TOKEN:-}
+      - HA_GARAGE_ENTITY=${HA_GARAGE_ENTITY:-}
+      # The driveway watcher (profile driveway), asked to look while a car comes home: http://<project>-driveway:8090
+      - DRIVEWAY_URL=${DRIVEWAY_URL:-}
       - MAPS_URL=${MAPS_URL:-}
+      # Tesla commands (the commands profile below): where the signing proxy answers. Empty = no
+      # Tesla commands. The site writes the proxy's key and certificate into TESLA_PROXY_DIR.
+      - TESLA_PROXY_URL=${TESLA_PROXY_URL:-}
+      - TESLA_PROXY_DIR=/run/tesla-proxy
+      # Where the terrain model's tiles are kept (Settings > Maps > Terrain).
+      - TERRAIN_DIR=/data/terrain
+      - CC_IMPORT_DIR=/data/imports
+    volumes:
+      - tesla_proxy:/run/tesla-proxy
+      - terrain:/data/terrain
+      # Uploaded history exports wait here while an import runs (Settings › Cars and sources).
+      - imports:/data/imports
     ports:
       - ${CC_PORT:-3044}:8000 # LAN only; put a tunnel or reverse proxy in front for the WAN
     # carcommand: the database and the connector. tesla: to hear the receiver and to answer
     # the Funnel node for the app's key; the two internet-facing containers live only there.
-    networks: [carcommand, tesla]
+    # tesla-commands: the signing proxy, which nothing else reaches.
+    networks: [carcommand, tesla, tesla-commands]
+
+  # Tesla's signing proxy (optional): `docker compose --profile commands up -d tesla-proxy`,
+  # with TESLA_PROXY_URL=https://tesla-proxy:4443 in .env. Tesla's own tesla-http-proxy
+  # (teslamotors/vehicle-command), pinned. It signs the site's commands with the app's key,
+  # which the site writes 0600 into the shared volume; it runs as the site's user id to read
+  # it. Reached only from the site (tesla-commands, internal); it goes out to Tesla alone.
+  tesla-proxy:
+    profiles: ["commands"]
+    image: tesla/vehicle-command:0.4.1@sha256:e8adac679bf5e72790c588e620bb4a7992a8f80d4c3bd98da6d1129f59daf482
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-tesla-proxy
+    restart: unless-stopped
+    labels: ["com.centurylinklabs.watchtower.enable=false"]
+    user: "10002:10002"
+    depends_on: [web]
+    entrypoint: ["tesla-http-proxy"]
+    # 0.0.0.0 inside its own container; the network it listens on holds only the site.
+    command: ["-key-file", "/run/tesla-proxy/key.pem", "-cert", "/run/tesla-proxy/tls.crt", "-tls-key", "/run/tesla-proxy/tls.key", "-host", "0.0.0.0", "-port", "4443"]
+    volumes:
+      - tesla_proxy:/run/tesla-proxy:ro
+    networks: [tesla-commands, tesla-proxy-out]
 
   # Local maps (optional): `docker compose --profile maps up -d maps`. OpenStreetMap
   # regions download as drives need them; place names are looked up here instead of on
@@ -171,6 +214,22 @@ services:
     restart: unless-stopped
     volumes:
       - carcommand_maps:/data
+    networks: [carcommand]
+
+  # The driveway camera (optional): `docker compose --profile driveway build driveway`. Read only
+  # while the site asks, during a car's approach home. DRIVEWAY_RTSP in .env is the stream.
+  driveway:
+    profiles: ["driveway"]
+    build: ./driveway
+    image: ${COMPOSE_PROJECT_NAME:-carcommand}-driveway
+    container_name: ${COMPOSE_PROJECT_NAME:-carcommand}-driveway
+    restart: unless-stopped
+    environment:
+      - DRIVEWAY_RTSP=${DRIVEWAY_RTSP:-}
+      - DRIVEWAY_ZONE=${DRIVEWAY_ZONE:-}
+      - DRIVEWAY_KEEP_DAYS=${DRIVEWAY_KEEP_DAYS:-7}
+    volumes:
+      - carcommand_driveway:/data
     networks: [carcommand]
 
   # Tesla's live stream (optional): `make tesla-net-key`, then
@@ -263,6 +322,9 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-carcommand}_pgdata
   carcommand_maps:
     name: ${COMPOSE_PROJECT_NAME:-carcommand}_maps
+  # The driveway watcher's few frames of each arrival it saw, deleted after a week.
+  carcommand_driveway:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_driveway
   # Other brands' connector plugins (pip --user into /plugins); safe to delete, they reinstall.
   cc_plugins:
     name: ${COMPOSE_PROJECT_NAME:-carcommand}_cc_plugins
@@ -271,6 +333,15 @@ volumes:
     name: ${COMPOSE_PROJECT_NAME:-carcommand}_tesla_net
   tesla_certs:
     name: ${COMPOSE_PROJECT_NAME:-carcommand}_tesla_certs
+  # Terrain tiles for ground elevation; safe to delete, they download again.
+  terrain:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_terrain
+  # History exports uploaded in Settings, kept only while an import runs.
+  imports:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_imports
+  # The signing proxy's key and certificate, written by the site; made again from the database if lost.
+  tesla_proxy:
+    name: ${COMPOSE_PROJECT_NAME:-carcommand}_tesla_proxy
 
 secrets:
   tailscale-authkey:
@@ -290,3 +361,14 @@ networks:
     ipam:
       config:
         - subnet: ${CC_TESLA_SUBNET:-192.168.62.0/24}
+  # The site and the signing proxy, and no way out: the proxy's way to Tesla is the next one.
+  tesla-commands:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${CC_TESLA_COMMANDS_SUBNET:-192.168.63.0/24}
+  # The signing proxy's way out to Tesla, and nobody else on it.
+  tesla-proxy-out:
+    ipam:
+      config:
+        - subnet: ${CC_TESLA_PROXY_OUT_SUBNET:-192.168.64.0/24}

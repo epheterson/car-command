@@ -1,0 +1,8 @@
+{# Who sells the generation where a utility's homes may buy it from a community provider
+   (rates/cca.json): the utility, picked, or a community provider, which leads to reading the
+   bill, as OpenEI lists no provider's prices. The providers are named in the tooltip. #}
+{% from "_info.html" import info %}
+{% if providers %}
+<div class="set-row stack find-gen"><span class="set-l">Generation {% call info("Who sells your generation") %}Many homes in {{ utility_short }}'s area buy generation from a community provider: {{ providers|map(attribute='label')|join(', ') }}. Their prices are not in OpenEI, so they come from your bill. Providers by utility: the California Community Choice Association's member list.{% endcall %}</span>
+  <div class="chips"><span class="btn sm on" aria-current="true">{{ utility_short }}</span><a class="btn sm" href="{{ root }}/settings/money/plan?{{ {'cca': 'your community provider'}|urlencode }}{{ q|replace('?', '&') }}#bill" title="{{ providers|map(attribute='name')|join(', ') }}">Community provider</a></div></div>
+{% endif %}

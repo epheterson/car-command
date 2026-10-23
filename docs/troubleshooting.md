@@ -15,6 +15,14 @@ Commands below use `docker compose -f stack/docker-compose.yml` from the checkou
 
 The first password needs no code only from a device on your home network that reaches the site directly, in the first hour after its first start. On Docker Desktop (Mac, Windows), through a proxy, or after the first hour, use the code. [Signing in](install.md#signing-in) has the rules.
 
+## "still CHANGE_ME"
+
+The site or the connector stops at start with `... is still CHANGE_ME, the placeholder from stack/.env.example`: `stack/.env` was copied from the example rather than written by `make setup`. Move it aside, run `make setup`, and copy over any settings you had added. If the database already started with that password, give it the new one:
+
+```sh
+docker compose -f stack/docker-compose.yml exec db psql -U carcommand -c "ALTER ROLE carcommand PASSWORD 'the DB_PASSWORD from the new stack/.env'"
+```
+
 ## Port 3044 is already in use
 
 Docker says the port is already allocated, or the address is in use. Publish another one: `-p 8080:3044` on the one container, or `CC_PORT=8080` in `stack/.env` under compose.

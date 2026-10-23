@@ -74,7 +74,7 @@ def test_efficiency_bins_by_temperature_and_speed():
     bins = efficiency_bins(drives, 75.0)
     temp = {(b["lo"], b["hi"]): round(b["wh_per_mi"]) for b in bins["temp"]}
     assert temp == {(40, 50): 450, (70, 80): 300}  # 75 kWh x 12 % / 20 mi = 450 Wh/mi; the short and the unknown-temp drives are out
-    assert [b["share"] for b in bins["temp"]] == [1.0, 0.15], "the bars span the rows' own range: the least is a stub, not a third of the most"
+    assert [round(b["share"], 3) for b in bins["temp"]] == [1.0, 0.667], "bars from zero, each against the longest: a third less is a third shorter"
     speed = {(b["lo"], b["hi"]): b["drives"] for b in bins["speed"]}
     assert speed == {(25, 35): 7}  # 20 mi in 40 min = 30 mph; the 80 mph pair is under the 3-drive floor
     assert efficiency_bins(drives, None) == {"temp": [], "speed": []}
@@ -267,3 +267,14 @@ def test_the_split_by_period_prices_a_plan_with_more_than_three():
     c = {"at_home": True, "session_start_date": T0, "off_peak_kwh": 10.0, "part_peak_kwh": 11.0, "peak_kwh": 1.0, "period_kwh": {"a": 10.0, "b": 10.0, "c": 1.0, "d": 1.0}}
     by = {p["key"]: p for p in tou_split([c])["periods"]}
     assert round(by["part_peak"]["cost"], 6) == round(10 * 0.2 + 1 * 0.5, 6) and round(by["peak"]["cost"], 6) == 0.9 and round(by["off_peak"]["cost"], 6) == 1.0
+
+
+def test_charged_to_shares_are_of_every_charge_and_bars_of_the_top_row():
+    """The share column read 100% for the commonest level: it divided by the top row. It is
+    the share of all charges that ended at a level; only the bar is scaled to the top row."""
+    from stats import charging_summary
+
+    mk = lambda end: {"session_start_date": T0, "where": "Home", "kwh": 10.0, "start_level": end - 20, "end_level": end, "gained": 20.0}  # noqa: E731
+    ends = {e["level"]: e for e in charging_summary([mk(80), mk(80), mk(80), mk(100)])["ends"]}
+    assert (ends[80]["share"], ends[100]["share"]) == (0.75, 0.25), "three of four charges, and one of four"
+    assert (ends[80]["bar"], round(ends[100]["bar"], 2)) == (1.0, 0.33)

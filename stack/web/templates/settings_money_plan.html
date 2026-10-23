@@ -1,0 +1,182 @@
+{% extends "settings_base.html" %}
+{# Find my plan, a step at a time, each its own link: the OpenEI key (when there is none), your
+   utility, its plans (the few an EV household chooses between, then all of them), one plan
+   beside yours, and Use. Links that would ask OpenEI are kept out of prefetching. #}
+{% from "_info.html" import info %}
+{% block section %}
+{% set f = find or {} %}
+{% set fz = finder or {} %}
+{% set steps = (('utility', 'Utility'), ('plans', 'Plan'), ('compare', 'Compare')) %}
+{% set at = {'key': 0, 'utility': 0, 'plans': 1, 'compare': 2}[step] %}
+<div class="groups settings find">
+<ol class="find-steps" aria-label="Steps">{% for key, name in steps %}<li class="{{ 'done' if loop.index0 < at else 'now' if loop.index0 == at else '' }}"{% if loop.index0 == at %} aria-current="step"{% endif %}>{% if loop.index0 < at %}<a href="{{ root }}{{ link(label=none) if key == 'plans' else '/settings/money/plan' ~ q }}"{% if key == 'plans' %} data-no-prefetch{% endif %}>{{ name }}</a>{% else %}<span>{{ name }}</span>{% endif %}</li>{% endfor %}</ol>
+{% if f.error %}<p class="notice err" role="alert">{{ f.error }}</p>{% endif %}
+
+{% if step == 'key' %}
+<section class="group"><h2 class="sec">OpenEI key {% call info("About the key") %}Plan search covers US utilities only. Get a free key from OpenEI by email: <a href="{{ fz.signup or 'https://apps.openei.org/services/api/signup/' }}" target="_blank" rel="noopener">sign up</a>.{% endcall %}</h2>
+  <form class="group-b" method="post" action="{{ root }}/settings/money/plan-search/key{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="set-row"><label class="set-l" for="openei-key">API key<span class="set-s">Free, by email · <a href="{{ fz.signup or 'https://apps.openei.org/services/api/signup/' }}" target="_blank" rel="noopener">sign up</a></span></label>
+      <div class="set-c"><input class="field" id="openei-key" name="key" type="password" autocomplete="off" spellcheck="false" maxlength="80" required autofocus><button type="submit" class="btn primary">Save key</button></div></div>
+    {% if not fz.vault_ready %}<p class="notice warn">A key cannot be kept: {{ fz.vault_problem }}.</p>{% endif %}
+    {% if f.key_error %}<p class="notice err" role="alert">{{ f.key_error }}</p>{% endif %}
+  </form>
+</section>
+
+{% elif step == 'utility' %}
+<section class="group" id="bill"><h2 class="sec">Your plan {% call info("Two ways in") %}A bill read here gives the prices you actually pay, generation from a community provider included. Picking your utility gives its published prices from OpenEI's Utility Rate Database{% if fz.relay %}, through this install's plan relay{% endif %}. Nothing about your cars or your home is sent.{% endcall %}</h2>
+  <div class="group-b">
+  <form class="find-billf" method="post" enctype="multipart/form-data" action="{{ root }}/settings/money/plan/bill?csrf_token={{ csrf }}{{ q|replace('?', '&') }}">
+    <div class="set-row"><label class="set-l" for="bill-pdf">Your bill (PDF)<span class="set-s">Most accurate · reads generation too</span></label>
+      <div class="set-c"><label class="btn primary find-filebtn"><input class="find-file" type="file" id="bill-pdf" name="bill" accept="application/pdf,.pdf" required>Choose bill PDF</label><button type="submit" class="btn find-read">Read bill</button></div></div>
+    <p class="set-s find-reading" hidden aria-live="polite"></p>
+    {% if cca and not f.bill_error %}<p class="notice find-bill">{{ cca[:1]|upper }}{{ cca[1:] }} · read its prices from your bill</p>{% endif %}
+    {% if f.bill_error %}<p class="notice err" role="alert">{{ f.bill_error }}</p>{% endif %}
+  </form>
+  <form method="get" action="{{ root }}/settings/money/plan" id="find-utility">{% if request.query_params.get('vin') %}<input type="hidden" name="vin" value="{{ request.query_params.get('vin') }}">{% endif %}{% include "_find_hidden.html" %}
+    <div class="set-row stack"><label class="set-l" for="urdb-q">{% if f.guessed %}Your utility, from your home's ZIP code<span class="set-s">Check it against your bill</span>{% else %}Or pick your utility{% endif %}</label>
+      <input class="field wide" id="urdb-q" name="q" value="{{ f.q or '' }}" maxlength="120" placeholder="Name or ZIP code, e.g. pg&amp;e" autocomplete="off" spellcheck="false" required{% if said == 'key' and not f.guessed %} autofocus{% endif %} data-list="{{ root }}/settings/money/utilities.json"><input type="hidden" id="urdb-eia" name="eia" value="{{ f.eia or '' }}">
+      <ul id="urdb-pick" class="chips find-pick"></ul>
+      {% if likely and likely.rows %}
+      <div class="find-near"><span class="set-s">{% if likely.zip %}Serving {{ likely.zip }}, your home's ZIP code{% else %}Largest in {{ likely.state }}{% endif %} {% call info("Where these come from") %}{% if likely.zip %}Your home place's address as stored here, against a bundled list of the utilities serving each ZIP code: NREL, U.S. Electric Utility Companies and Rates: Look-up by Zipcode (2023), CC BY 4.0. The list is approximate.{% else %}Your home place's state, worked out here from its position, against the bundled list of utilities by state (EIA Form 861).{% endif %} Nothing is sent.{% endcall %}</span>
+        <div class="chips">{% for u in likely.rows %}<a class="btn sm" href="{{ root }}{{ link(eia=u.eia, q=u.name) }}" data-no-prefetch>{{ u.name }}</a>{% endfor %}</div></div>
+      {% endif %}</div>
+    <div class="set-row acts find-go"><button type="submit" class="btn primary">Show plans</button></div>
+  </form>
+  </div>
+  {% if fz.key_hint and not fz.relay %}
+  <form class="group-b" method="post" action="{{ root }}/settings/money/plan-search/key{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <div class="set-row"><span class="set-l">OpenEI key<span class="set-s">saved, ends {{ fz.key_hint }}</span></span><div class="set-c"><button type="submit" class="btn sm danger" name="remove" value="1">Remove</button></div></div>
+  </form>
+  {% endif %}
+</section>
+
+{% elif step == 'plans' %}
+<section class="group"><h2 class="sec">{{ (f.utilities or [f.name or f.q])|join(', ') }} <a class="find-change" href="{{ root }}/settings/money/plan{{ q }}">change</a>{% if f.more %} {% call info("Older rates") %}The oldest rates aren't listed. A plan's older versions still come with it.{% endcall %}{% endif %}</h2>
+  {% if bill %}<p class="notice find-bill">Read from your bill · <b>{{ bill.schedule or 'no rate schedule named' }}</b>{% if bill.provider %} · {{ bill.provider }}{% endif %}{% if bill.schedule and not (f.rows or [])|selectattr('like')|list %} · no plan by that name, pick one{% endif %}</p>{% endif %}
+  {% if not f.rows %}
+  <div class="group-b"><div class="empty">No home plans for “{{ f.q or f.name }}” · pick it from the list, or try a ZIP code</div></div>
+  {% else %}
+  <div class="group-b">
+    {% if not bill %}{% include "_find_gen.html" %}{% endif %}
+    {% if not show_all %}
+    <ul class="find-list">{% with short = true %}{% for r in f.short %}{% include "_find_row.html" %}{% endfor %}{% endwith %}</ul>
+    {% if not f.short %}<div class="empty">No time-of-use or EV plan open to new customers</div>{% endif %}
+    <a class="set-row set-nav find-all" href="{{ root }}{{ link(all='1') }}" data-no-prefetch><span class="set-l">Show all {{ f.total }} plans<span class="set-s">Closed and ended plans, tiered and flat ones, every regional variant</span></span></a>
+    {% else %}
+    {% set open_rows = f.rows|selectattr('open')|list %}
+    {% set old_rows = f.rows|rejectattr('open')|list %}
+    <div class="set-row find-head"><span class="find-n">{{ f.total }} plans</span><input class="field find-filter" id="urdb-c" type="search" value="{{ f.contains or '' }}" maxlength="60" placeholder="Filter, e.g. EV2" aria-label="Filter plans by name" autocomplete="off" spellcheck="false"></div>
+    {% if f.total > f.rows|length %}<p class="group-f">Showing the first {{ f.rows|length }} of {{ f.total }}</p>{% endif %}
+    <ul class="find-list">{% for r in open_rows %}{% include "_find_row.html" %}{% endfor %}</ul>
+    {% if old_rows %}<details class="find-more old"><summary><span>Closed or ended</span><span class="find-n">{{ old_rows|length }}</span></summary>
+      <ul class="find-list">{% for r in old_rows %}{% include "_find_row.html" %}{% endfor %}</ul></details>{% endif %}
+    <p class="empty find-none" hidden>No plan by that name</p>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
+{% elif step == 'compare' %}
+<section class="group">
+  <div class="group-b">{% if preview %}{% include "_find_preview.html" %}{% else %}<div class="empty"><a href="{{ root }}{{ link(label=none) }}" data-no-prefetch>Back to the plans</a></div>{% endif %}</div>
+</section>
+{% endif %}
+</div>
+
+<script>
+/* Find my plan: the utility list is fetched once, on focus, and matched as you type, in the same
+   order as urdb.suggest: an alias, the whole name, a start of the name or its initials, then
+   anywhere in it; picking one shows its plans at once. The filter narrows the full list here,
+   sending nothing; a variant picked opens at once. */
+(function () {
+  var data = null, loading = null;
+  function $(id) { return document.getElementById(id); }
+  function compact(s) { return (s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+  function initials(s) { return ((s || "").toLowerCase().match(/[a-z0-9]+/g) || []).map(function (w) { return w[0]; }).join(""); }
+  function load(box) {
+    return loading || (loading = fetch(box.getAttribute("data-list"), { credentials: "same-origin" }).then(function (r) { return r.json(); }).then(function (d) {
+      var alias = {}, k;
+      for (k in d.aliases || {}) alias[compact(k)] = d.aliases[k];
+      data = { alias: alias, rows: (d.utilities || []).map(function (u) { return { eia: u[0], name: u[1], states: u[2], c: compact(u[1]), i: initials(u[1]) }; }) };
+    }).catch(function () { data = { alias: {}, rows: [] }; }));
+  }
+  function match(text) {
+    var w = compact(text), out = [];
+    if (!w || !data) return [];
+    data.rows.forEach(function (u, n) {
+      var r = data.alias[w] === u.eia ? 0 : u.c === w ? 1 : (u.c.indexOf(w) === 0 || u.i.indexOf(w) === 0) ? 2 : u.c.indexOf(w) >= 0 ? 3 : -1;
+      if (r >= 0) out.push([r, n, u]);
+    });
+    return out.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; }).slice(0, 8).map(function (x) { return x[2]; });
+  }
+  function pick(u) {
+    $("urdb-q").value = u.name;
+    $("urdb-eia").value = u.eia;
+    $("find-utility").submit();
+  }
+  var page = document.querySelector(".find");
+  if (page) page.classList.add("js");
+  // the bill: choosing the file reads it, no second tap; its name shows while it is read
+  var file = $("bill-pdf");
+  if (file) file.addEventListener("change", function () {
+    if (!file.files || !file.files.length) return;
+    var said = document.querySelector(".find-reading");
+    if (said) { said.textContent = "Reading " + file.files[0].name + "…"; said.hidden = false; }
+    file.closest("label").classList.add("busy");
+    file.form.submit();
+  });
+  var box = $("urdb-q"), go = document.querySelector(".find-go"), near = document.querySelector(".find-near");
+  function shown() { if (go) go.classList.toggle("empty", !box.value.trim()); }
+  if (box) {
+    shown();
+    box.addEventListener("focus", function () { load(box); });
+    box.addEventListener("input", function () {
+      $("urdb-eia").value = "";
+      shown();
+      load(box).then(function () {
+        var list = $("urdb-pick");
+        list.textContent = "";
+        if (near) near.hidden = !!match(box.value).length;  // one list of utilities at a time
+        match(box.value).forEach(function (u) {
+          var li = document.createElement("li"), b = document.createElement("button");
+          b.type = "button";
+          b.className = "btn sm";
+          b.textContent = u.name + (u.states ? " · " + u.states.replace(/,/g, ", ") : "");
+          b.addEventListener("click", function () { pick(u); });
+          li.appendChild(b);
+          list.appendChild(li);
+        });
+      });
+    });
+    // Enter on a name the list knows takes its best match
+    $("find-utility").addEventListener("submit", function (e) {
+      var first = $("urdb-eia").value ? null : match(box.value)[0];
+      if (first) { e.preventDefault(); pick(first); }
+    });
+  }
+  var c = $("urdb-c");
+  function filter() {
+    var w = c.value.trim().toLowerCase(), shown = 0;
+    document.querySelectorAll(".find-row").forEach(function (li) {
+      li.hidden = !!w && li.getAttribute("data-name").indexOf(w) < 0;
+      if (!li.hidden) shown++;
+    });
+    document.querySelectorAll(".find-more").forEach(function (g) {
+      var any = g.querySelectorAll(".find-row:not([hidden])").length, n = g.querySelector("summary .find-n");
+      if (n) n.textContent = any;
+      g.hidden = !any;
+      if (w && any) g.open = true;
+    });
+    var none = document.querySelector(".find-none");
+    if (none) none.hidden = shown > 0;
+  }
+  if (c) { c.addEventListener("input", filter); if (c.value) filter(); }
+  var v = $("find-variant");
+  if (v) {
+    v.addEventListener("change", function () { v.form.submit(); });
+    var go = document.querySelector(".find-kin-go");
+    if (go) go.hidden = true;
+  }
+})();
+</script>
+{% endblock %}

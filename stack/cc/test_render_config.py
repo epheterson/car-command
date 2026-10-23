@@ -139,6 +139,8 @@ def test_the_entrypoint_default_connectors_block_is_lucid_at_the_environment_rat
 
     block = json.loads(desired([], {"CC_POLL_IDLE_S": "60", "CC_POLL_DRIVING_S": "15"}, "/tmp/t")["connectors"])
     assert block[0]["type"] == "lucid" and block[0]["config"]["interval"] == 60 and block[0]["config"]["driving_interval"] == 15
+    # the connector takes commands; Settings › Commands on the site decides whether any are sent
+    assert block[0]["config"]["commands"] is True
     got = desired([], {"CC_CONNECTORS_JSON": '[{"type":"volkswagen","config":{"username":"u"}}]'}, "/tmp/t")["connectors"]
     assert json.loads(got)[0]["type"] == "volkswagen", "a block from the environment is used as given"
     template = (SCRIPT.parent.parent / "config" / "carconnectivity.json.template").read_text()

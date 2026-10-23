@@ -275,6 +275,19 @@ jobs:
       - name: It says it is healthy
         run: docker exec carcommand carcommand health && docker exec carcommand carcommand status
 
+      - name: Tesla's stream is in the image, and with no Tailscale key none of it runs
+        run: |
+          docker exec carcommand sh -c 'tailscale version && tailscaled --version && test -x /usr/local/bin/containerboot && test -x /usr/local/bin/fleet-telemetry'
+          if docker exec carcommand carcommand status | grep -E '^(tesla-net|receiver) '; then
+            echo "::error::the stream's processes are supervised without a key"
+            exit 1
+          fi
+          if docker exec carcommand sh -c 'cat /proc/[0-9]*/comm' | grep -E '^(containerboot|tailscaled|fleet-telemetry)$'; then
+            echo "::error::a stream process runs without a key"
+            exit 1
+          fi
+          docker exec carcommand test ! -e /data/tesla || { echo "::error::the stream's directories were made without a key"; exit 1; }
+
       - name: CarConnectivity cannot reach the key, the passwords or the database's files
         run: |
           docker cp .github/scripts/one-container-separation.sh carcommand:/tmp/separation.sh
@@ -294,6 +307,9 @@ jobs:
           n=$(curl -s -b "${RUNNER_TEMP}/cc-jar-3057" http://localhost:3057/api/drives | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
           [ "$n" -gt 0 ] || { echo "::error::no drives after the restart"; exit 1; }
           echo "$n drives"
+
+      - name: Tesla's stream, with a stand-in node and certificate
+        run: bash .github/scripts/one-container-stream.sh 3057
 
       - name: A stop is clean, and Postgres says so
         run: |

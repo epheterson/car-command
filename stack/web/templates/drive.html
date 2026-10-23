@@ -1,37 +1,61 @@
 {% extends "base.html" %}
 {% import "_parts.html" as parts %}
 {% import "_info.html" as i %}
+{% import "_prevnext.html" as pn %}
 {% block title %}Drive · {{ trip.start_date|local }} · Car Command{% endblock %}
-{% block head %}
+{% block head %}{% if pos and pos.start_position_latitude and pos.destination_position_latitude %}
 {% include "_maphead.html" %}
-{% endblock %}
+<script src="{{ root }}/static/track.js?v={{ js_v }}" defer></script>
+{% endif %}{% endblock %}
 {% block body %}
-{% set dq = ('&vin=' ~ car.vin) if q else '' %}
-{# A drive: its map first, one line of what it was, then a tile each for the rest; tag, note
-   and hide fold into one row; the chart's battery axis is drawn from the readings. #}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}{% set timed = timed or [] %}
+{# A drive: what it was in one line (its battery bold at the end), the maps with the speed key and
+   replay under them, two headline figures, the chart, then every other figure in a quiet grid. #}
 <div class="pbar">
-  <h1>{{ place_refs(trip.from, [trip.get('from_ref')]) }} → {{ place_refs(trip.to, [trip.get('to_ref')]) }}</h1><span class="pbar-ctx">{{ trip.start_date|local('%a %b %-d, %-I:%M %p') }}</span>
-  <span class="sp"></span><a class="btn sm" href="{{ root }}/day?date={{ trip.start_date|local('%Y-%m-%d') }}{{ dq }}">Day ›</a>
+  <h1>{{ place_refs(trip.from, [trip.get('from_ref')]) }} → {{ place_refs(trip.to, [trip.get('to_ref')]) }}</h1><span class="pbar-ctx keep">{{ trip.start_date|local('%a %b %-d, %-I:%M %p') }}{% if trip.destination_date %} → {{ trip.destination_date|local('%-I:%M %p') if trip.destination_date|local('%Y-%m-%d') == trip.start_date|local('%Y-%m-%d') else trip.destination_date|local('%a %-I:%M %p') }}{% else %}, still going{% endif %}</span>
+  <span class="sp"></span>{{ pn.inline(near, root, '?vin=' ~ car.vin) }}<a class="btn sm" href="{{ root }}/day?date={{ trip.start_date|local('%Y-%m-%d') }}{{ dq }}">Day ›</a>
 </div>
-{% set has_map = pos and pos.start_position_latitude and pos.destination_position_latitude %}
-{% if has_map %}<div id="map" class="map drv-map" role="img" aria-label="Map of this drive"></div>{% endif %}
+{% if said %}<p class="said">{{ said }}</p>{% endif %}
 {% set line = [] %}{% if trip.miles is not none %}{% set _ = line.append((trip.miles|dist(1)) ~ ' ' ~ u.dist) %}{% endif %}{% if trip.duration %}{% set _ = line.append(trip.duration|duration) %}{% elif not trip.destination_date %}{% set _ = line.append('in progress') %}{% endif %}{% if stats.wh_per_mi %}{% set _ = line.append((stats.wh_per_mi|econ) ~ ' ' ~ u.econ) %}{% endif %}
-<div class="drv-sum"><b>{{ line|join(' · ') }}{% if trip.cost %}{{ ' · ' if line }}{{ est(trip.cost_estimate, 'the home rate is partly the regional average') }}{{ cur }}{{ trip.cost|num(2) }}{% endif %}</b>{% if stats.wh_per_mi %}{% call i.info('How efficiency is worked out') %}{{ stats.kwh_basis }}{% endcall %}{% endif %}<span class="sp"></span>{% if lvl_start is not none and lvl_end is not none %}<span>{{ lvl_start|num }}→{{ lvl_end|num }}%</span>{% endif %}</div>
-{% if has_map %}{% if matched %}<div class="set-row drv-readings"><label class="set-l" for="show-readings">The car's own readings</label><label class="switch"><input type="checkbox" role="switch" id="show-readings"><span aria-hidden="true"></span></label></div>{% endif %}{% endif %}
-{% if navigated %}<p class="small navto">Navigated to <b>{{ navigated }}</b></p>{% endif %}
-<div class="tiles pair">
-  {% if stats.kwh or stats.rated_used is not none %}<div class="tile"><span class="l">Energy</span><span class="v">{% if stats.kwh %}{{ stats.kwh|num(1) }}<small>kWh</small>{% else %}{{ stats.rated_used|dist(1) }}<small>{{ u.dist }} rated</small>{% endif %}</span></div>{% endif %}
-  {% if stats.rated_efficiency %}<div class="tile"><span class="l">Of rated</span><span class="v">{{ (stats.rated_efficiency * 100)|num }}<small>%</small></span></div>{% endif %}
-  {% if stats.avg_mph %}<div class="tile"><span class="l">Average</span><span class="v">{{ stats.avg_mph|speed }}<small>{{ u.speed }}</small></span>{% call i.info('Average speed') %}Moving and stopped, start to end.{% endcall %}</div>{% endif %}
-  {% if stats.max_mph %}<div class="tile"><span class="l">Top speed</span><span class="v">{{ stats.max_mph|speed }}<small>{{ u.speed }}</small></span></div>{% endif %}
-  {% if stats.outside_start is defined or trip.temp_f is not none %}<div class="tile"><span class="l">Outside</span><span class="v">{% if stats.outside_start is defined %}{{ stats.outside_start|temp }}→{{ stats.outside_end|temp }}{% else %}{{ trip.temp_f|temp }}{% endif %}<small>{{ u.temp }}</small></span></div>{% endif %}
-  {% if stats.inside_start is defined %}<div class="tile"><span class="l">Cabin</span><span class="v">{{ stats.inside_start|temp }}→{{ stats.inside_end|temp }}<small>{{ u.temp }}</small></span></div>{% endif %}
-  {% if stats.climb_ft %}<div class="tile"><span class="l">Climb</span><span class="v">{{ stats.climb_ft|elev }}<small>{{ u.elev }}</small></span><span class="d">{{ stats.descent_ft|elev }} {{ u.elev }} down</span></div>{% endif %}
-  {% if stats.peak_draw_kw %}<div class="tile"><span class="l">Peak power</span><span class="v">{{ stats.peak_draw_kw|num }}<small>kW</small></span></div>{% endif %}
-  {% if trip.fsd_miles %}<div class="tile"><span class="l">On FSD</span><span class="v">{{ trip.fsd_miles|dist(1) }}<small>{{ u.dist }}</small></span></div>{% endif %}
-  {% if stats.cells_new %}<div class="tile"><span class="l">New ground</span><span class="v">{{ stats.cells_new|num }}<small>cells</small></span>{% call i.info('New ground') %}100 m squares new to this car, of {{ stats.cells_covered|num }} on this drive.{% endcall %}</div>{% endif %}
+<div class="drv-sum"><b>{{ line|join(' · ') }}{% if trip.cost %}{{ ' · ' if line }}{{ est(trip.cost_estimate, 'the home rate is partly the regional average') }}{{ cur }}{{ trip.cost|num(2) }}{% endif %}</b>{% if stats.wh_per_mi %}{% call i.info('How efficiency is worked out') %}{{ stats.kwh_basis }}{% endcall %}{% endif %}<span class="sp"></span>{% if lvl_start is not none and lvl_end is not none %}<b class="drv-bat">{{ lvl_start|num }}→{{ lvl_end|num }}%</b>{% endif %}</div>
+{% set has_map = pos and pos.start_position_latitude and pos.destination_position_latitude %}
+{% if has_map %}
+<div id="drv-maps" class="drv-maps" role="img" aria-label="Map of this drive: where it started, the route coloured by speed, where it ended"></div>
+{% endif %}
+{# under the maps: the replay, the drive's time at each speed as one bar (the bands it used), then the speed figures #}
+{% set used = (shares or [])|selectattr('share', 'ge', 0.005)|list %}
+<div class="drv-key">
+  {% if has_map and timed|length >= 2 %}<button type="button" class="tr-play" aria-pressed="false" aria-label="Replay the drive"><svg class="tr-i" viewBox="0 0 16 16" aria-hidden="true"><path class="tr-pl" d="M4 2.5v11l9.5-5.5z"/><path class="tr-pa" d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z"/></svg><span class="tr-w">Replay</span></button>{% endif %}
+  {% if has_map and used %}<div class="spd-key" role="list" aria-label="Time at each speed"><span class="spd-bar" aria-hidden="true">{% for b in shares if b.share >= 0.005 %}<i class="spd{{ shares.index(b) }}" data-band="{{ shares.index(b) }}" style="flex-grow:{{ (b.share * 1000)|round|int }}"></i>{% endfor %}</span><span class="spd-ls">{% for b in shares if b.share >= 0.005 %}<span class="spd-b" role="listitem" data-band="{{ shares.index(b) }}" title="{{ b.minutes|round|int }} min at {{ b.label }} {{ u.speed }}"><i class="spd{{ shares.index(b) }}"></i>{{ b.label }}{% if loop.last %} {{ u.speed }}{% endif %} <b>{{ (b.share * 100)|round|int }}%</b></span>{% endfor %}</span></div>{% endif %}
+  {% if stats.avg_mph or stats.max_mph or trip.fsd_miles %}<span class="drv-spd">{% if stats.avg_mph %}<span title="Moving and stopped, start to end">average <b>{{ stats.avg_mph|speed }}</b></span>{% endif %}{% if stats.max_mph %}<span>top <b>{{ stats.max_mph|speed }}</b> {{ u.speed }}</span>{% endif %}{% if trip.fsd_miles and trip.miles %}<span title="What the car's self-driving meter counted on this drive">FSD <b>{{ [trip.fsd_miles, trip.miles]|min|dist(1) }}</b> of {{ trip.miles|dist(1) }} {{ u.dist }}</span>{% endif %}</span>{% endif %}
+  {% if has_map and matched %}<label class="drv-own"><input type="checkbox" id="show-readings"> The car's own readings</label>{% endif %}
 </div>
-{{ parts.chart('drive-' ~ trip.id, chart, big=((lvl_start|num) ~ '→' ~ (lvl_end|num) ~ '%') if chart.primary.key == 'level' and lvl_start is not none and lvl_end is not none else none) }}
+{% if navigated %}<p class="small navto">Navigated to <b>{{ navigated }}</b></p>{% endif %}
+{# two headline figures: what the drive took and the ground it climbed #}
+<div class="tiles pair heroes">
+  {% if stats.kwh or stats.rated_used is not none %}<div class="tile"><span class="l">Energy</span><span class="v">{% if stats.kwh %}{{ stats.kwh|num(1) }}<small>kWh</small>{% else %}{{ stats.rated_used|dist(1) }}<small>{{ u.dist }} rated</small>{% endif %}</span><span class="d">{% if stats.rated_efficiency %}{{ (stats.rated_efficiency * 100)|num }}% of rated{% endif %}{% if stats.peak_draw_kw %}{{ ' · ' if stats.rated_efficiency }}peak {{ stats.peak_draw_kw|num }} kW{% endif %}</span></div>{% endif %}
+  {% if stats.climb_ft or stats.elev_hi is defined %}{% set net = (stats.climb_ft or 0) - (stats.descent_ft or 0) %}{# turn to turn, as the two figures beside it #}<div class="tile"><span class="l">Climb</span><span class="v">↑{{ (stats.climb_ft or 0)|elev }} ↓{{ (stats.descent_ft or 0)|elev }}<small>{{ u.elev }}</small></span><span class="d">net {{ '+' if net >= 0 else '−' }}{{ net|abs|elev }} {{ u.elev }}{% if stats.elev_hi is defined %} · {{ stats.elev_lo|elev }} to {{ stats.elev_hi|elev }} {{ u.elev }}{% endif %}{% if stats.ground %} · <span title="Heights from the terrain model on this box, not the car's GPS">terrain</span>{% endif %}</span></div>{% endif %}
+</div>
+{{ parts.chart('drive-' ~ trip.id, chart, title=false) }}
+{# Split… arms the chart: the next tap picks the reading to cut at (a tap on the chart otherwise only scrubs). A tap on a row of the readings table picks that row. The bar names the reading and offers what can be done with it. #}
+{% if chart.primary.points and (cut_ats or samples) %}
+<div class="drv-tools">{% if trip.destination_date and cut_ats|length > 1 %}<button type="button" class="btn sm drv-arm" aria-pressed="false">Split…</button><span class="drv-arm-h" hidden>Tap the chart where the drive should be cut</span>{% endif %}</div>
+<form method="post" action="{{ root }}/drives/{{ trip.id }}/split" class="drv-pick" data-hold hidden><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><input type="hidden" name="at" value="">
+  <span class="drv-pick-l"><b data-pick-t></b></span>{% if trip.destination_date %}<button type="submit" class="btn sm primary" data-pick-split>Split here</button>{% endif %}<button type="submit" class="btn sm" formaction="{{ root }}/drives/{{ trip.id }}/exclude" data-pick-out>Leave out</button><button type="button" class="btn sm" data-pick-no>Cancel</button>
+</form>
+{% endif %}
+{# every other figure, a step quieter #}
+<dl class="dgrid">
+  <div><dt>Left</dt><dd>{{ trip.start_date|local('%-I:%M %p') }}</dd></div>
+  {% if trip.destination_date %}<div><dt>Arrived</dt><dd>{{ trip.destination_date|local('%-I:%M %p') }}</dd></div>{% endif %}
+  {% if trip.start_odometer is not none %}<div><dt>Odometer</dt><dd>{{ trip.start_odometer|dist(1) }}{% if trip.destination_odometer is not none %}–{{ trip.destination_odometer|dist(1) }}{% endif %} {{ u.dist }}</dd></div>{% endif %}
+  {% if stats.rated_used is not none %}<div><dt>Rated used</dt><dd>{{ stats.rated_used|dist(1) }} {{ u.dist }}{% if trip.miles %}<small>for {{ trip.miles|dist(1) }} {{ u.dist }} driven</small>{% endif %}</dd></div>{% endif %}
+  {% if stats.outside_start is defined or trip.temp_f is not none %}<div><dt>Outside</dt><dd>{% if stats.outside_start is defined %}{{ stats.outside_start|temp }}→{{ stats.outside_end|temp }}{% else %}{{ trip.temp_f|temp }}{% endif %} {{ u.temp }}</dd></div>{% endif %}
+  {% if stats.inside_start is defined %}<div><dt>Cabin</dt><dd>{{ stats.inside_start|temp }}→{{ stats.inside_end|temp }} {{ u.temp }}{% if stats.inside_lo is defined and stats.inside_lo != stats.inside_hi %}<small>{{ stats.inside_lo|temp }}–{{ stats.inside_hi|temp }} on the way</small>{% endif %}</dd></div>{% endif %}
+  {% if stats.peak_regen_kw %}<div><dt>Regeneration</dt><dd>{{ stats.peak_regen_kw|num }} kW peak{% if stats.regen_minutes %}<small>{{ stats.regen_minutes|num }} min of it</small>{% endif %}</dd></div>{% endif %}
+  {% if tires %}<div><dt>Tires</dt><dd>{{ tires.fl|num }} {{ tires.fr|num }} · {{ tires.rl|num }} {{ tires.rr|num }} psi<small>front, then rear, as it left</small></dd></div>{% endif %}
+  {% if stats.cells_new %}<div><dt>Roads new to the car</dt><dd>{{ (stats.cells_new / stats.cells_covered * 100)|num }}%<small>of the ground it covered</small></dd></div>{% endif %}
+</dl>
 <section class="group drv-more">
   <div class="group-b">
     <details class="set-x"{% if hidden %} open{% endif %}><summary class="set-row"><span class="set-l">Tag and note</span><span class="set-v">{{ trip.tag or ('Hidden' if hidden else '') }}</span></summary>
@@ -45,20 +69,36 @@
       </div>
     </details>
     <form method="post" action="{{ root }}/drives/{{ trip.id }}/{{ 'unhide' if hidden else 'hide' }}" class="set-row"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><span class="set-l">{% if hidden %}Hidden from every list and total{% else %}In every list and total{% endif %}</span><span class="set-c"><button type="submit" class="btn sm">{% if hidden %}Unhide{% else %}Hide{% endif %}</button></span></form>
+    {% if merge_offer %}<form method="post" action="{{ root }}/drives/{{ trip.id }}/merge" class="set-row drv-merge drv-confirm" data-hold><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="partner" value="{{ merge_offer.start.isoformat() }}"><input type="hidden" name="vin" value="{{ car.vin }}">
+      <span class="set-l">The next drive left {% if merge_offer.gap.total_seconds() < 60 %}right after this one arrived{% else %}{{ (merge_offer.gap.total_seconds() / 60)|round|int }} min after this one arrived{% endif %}{% if merge_offer.miles %}<span class="set-s">{{ merge_offer.miles|dist(1) }} {{ u.dist }} more</span>{% endif %}</span>
+      <span class="set-c"><button type="button" class="btn sm drv-ask" aria-expanded="false">Merge</button></span>
+      <div class="pd-confirm" hidden><span>Make them one drive? Undo puts them back.</span><button type="submit" class="btn primary">Merge</button><button type="button" class="btn drv-keep">Keep apart</button></div>
+    </form>{% endif %}
+    {% if last_edit %}<form method="post" action="{{ root }}/drives/{{ trip.id }}/undo" class="set-row drv-undo{{ ' drv-confirm' if last_edit.loses }}" data-hold><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><input type="hidden" name="edit" value="{{ last_edit.id }}">
+      <span class="set-l">{% if last_edit.kind == 'merge' %}Merged with the drive after it{% elif last_edit.made_here %}The rest of a drive cut at {{ last_edit.b_start|local('%-I:%M:%S %p') }}{% else %}Cut at {{ last_edit.b_start|local('%-I:%M:%S %p') }}; the rest is the next drive{% endif %}</span>
+      {% if last_edit.loses %}<span class="set-c"><button type="button" class="btn sm drv-ask" aria-expanded="false">Undo</button></span>
+      <div class="pd-confirm" hidden><span>The second half is tagged “{{ last_edit.loses }}”, and this half has its own tag. Undoing drops the second half's.</span><button type="submit" class="btn primary">Undo</button><button type="button" class="btn drv-keep">Keep the cut</button></div>
+      {% else %}<span class="set-c"><button type="submit" class="btn sm">Undo</button></span>{% endif %}
+    </form>{% endif %}
+    {% for w in waiting or [] %}<form method="post" action="{{ root }}/drives/{{ trip.id }}/undo" class="set-row drv-undo" data-hold><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><input type="hidden" name="edit" value="{{ w.id }}">
+      <span class="set-l">A {{ 'merge' if w.kind == 'merge' else 'cut' }} made at {{ w.a_start|local('%b %-d, %-I:%M %p') }} is waiting<span class="set-s">The history no longer holds the drive it was made on</span></span><span class="set-c"><button type="submit" class="btn sm">Undo</button></span>
+    </form>{% endfor %}
     {% if trip.get('by_hand') %}<form method="post" action="{{ root }}/drives/{{ trip.id }}/remove" class="set-row"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"><span class="set-l">Entered by hand</span><span class="set-c"><button type="submit" class="btn sm danger">Remove</button></span></form>{% endif %}
   </div>
 </section>
 <section>
-  <h2>Every reading <span class="more">{% if samples %}{{ fixes|num }} recorded{% if every > 1 %}, 1 in {{ every|num }} shown{% endif %}{% endif %}</span></h2>
+  <h2>Every reading <span class="more">{% if samples %}{{ fixes|num }} recorded{% if every > 1 %}, 1 in {{ every|num }} shown{% endif %}{% if left_out %}, {{ left_out|num }} left out{% endif %}{% endif %}</span></h2>
   {% if samples %}
-  <details class="readings">
-    <summary>Show the readings</summary>
+  {# A tap on a row picks it (the bar above the table); a reading that looks wrong, or was left out, has its button in place #}
+  {% for act in ('exclude', 'include') %}<form id="rd-{{ act }}" method="post" action="{{ root }}/drives/{{ trip.id }}/{{ act }}" data-hold hidden><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="vin" value="{{ car.vin }}"></form>{% endfor %}
+  <details class="readings"{% if left_out or suspects %} open{% endif %}>
+    <summary>Show the readings{% if suspects %} <span class="rd-hint">{{ suspects|num }} look wrong</span>{% endif %}</summary>
     <table class="readings">
       <thead><tr><th>Time</th><th class="r">{{ u.speed }}</th><th class="r">kW</th><th class="r">Battery</th><th class="r">Rated {{ u.dist }}</th><th class="r">Odometer</th><th class="r">Elevation</th><th class="r">Outside</th><th class="r">Inside</th></tr></thead>
       <tbody>
       {% for s in samples %}
-        <tr>
-          <td>{{ s.at|local('%-I:%M:%S %p') }}</td>
+        <tr{% if s.excluded %} class="out"{% else %} class="pickable{{ ' odd' if s.suspect }}" tabindex="0" data-at="{{ s.at.isoformat() }}" data-t="{{ s.at.timestamp() }}"{% endif %}>
+          <td>{{ s.at|local('%-I:%M:%S %p') }}{% if s.excluded %} <button type="submit" form="rd-include" name="at" value="{{ s.at.isoformat() }}" class="rd-b" title="Count this reading again">Include</button>{% elif s.suspect %} <button type="submit" form="rd-exclude" name="at" value="{{ s.at.isoformat() }}" class="rd-b" title="The position or height is far from the readings either side: leave it out of the route, the speeds, the climb and the chart">Leave out</button>{% endif %}</td>
           <td class="r">{{ s.speed|speed }}</td>
           <td class="r">{% if s.power_kw is not none %}{{ s.power_kw|num }}{% endif %}</td>
           <td class="r">{% if s.level is not none %}{{ s.level|num }}%{% endif %}</td>
@@ -74,24 +114,71 @@
   </details>
   {% else %}<div class="empty">No positions recorded inside this drive</div>{% endif %}
 </section>
+<script>
+(function () {
+  // Merge (and an Undo that would drop a tag) asks first, in place; Keep closes it again.
+  document.querySelectorAll(".drv-confirm").forEach(function (f) {
+    var ask = f.querySelector(".drv-ask"), box = f.querySelector(".pd-confirm"), keep = f.querySelector(".drv-keep");
+    if (!ask || !box) return;
+    ask.addEventListener("click", function () { box.hidden = false; ask.hidden = true; ask.setAttribute("aria-expanded", "true"); box.querySelector("button[type=submit]").focus(); });
+    keep.addEventListener("click", function () { box.hidden = true; ask.hidden = false; ask.setAttribute("aria-expanded", "false"); ask.focus(); });
+  });
+  var bar = document.querySelector(".drv-pick");
+  if (!bar) return;
+  var chart = document.getElementById("drive-{{ trip.id }}"), tz = {{ chart.get("tz")|tojson }}, h12 = {{ chart.get("h12")|tojson }}, cuts = {{ (cut_ats or [])|tojson }};
+  var at = bar.querySelector("[name=at]"), label = bar.querySelector("[data-pick-t]"), out = bar.querySelector("[data-pick-out]");
+  var arm = document.querySelector(".drv-arm"), hint = document.querySelector(".drv-arm-h"), armed = false, picked = null;
+  function clock(t) {
+    try { return new Date(t * 1000).toLocaleTimeString([], Object.assign({ minute: "2-digit", second: "2-digit", timeZone: tz }, window.CCClock ? CCClock.hour(h12) : {})); } catch (x) { return new Date(t * 1000).toLocaleTimeString(); }
+  }
+  function show(value, t, row, tr) {
+    at.value = value; label.textContent = clock(t); out.hidden = !row; bar.hidden = false;
+    if (picked) picked.classList.remove("picked");
+    picked = tr || null; if (picked) picked.classList.add("picked");
+  }
+  function disarm() { armed = false; if (arm) { arm.setAttribute("aria-pressed", "false"); arm.classList.remove("on"); } if (hint) hint.hidden = true; if (chart) chart.classList.remove("arming"); }
+  if (arm && chart) {
+    arm.addEventListener("click", function () {
+      armed = !armed; arm.setAttribute("aria-pressed", String(armed)); arm.classList.toggle("on", armed); hint.hidden = !armed; chart.classList.toggle("arming", armed);
+      if (!armed) bar.hidden = true;
+    });
+    // the reading the cut will fall on: the nearest one inside the drive, the label says which
+    chart.addEventListener("cc:chart-pick", function (e) {
+      if (!armed || !cuts.length) return;
+      var t = e.detail.t, best = cuts[0];
+      cuts.forEach(function (c) { if (Math.abs(c - t) < Math.abs(best - t)) best = c; });
+      show(String(best), best, false, null); disarm(); bar.hidden = false;
+    });
+  }
+  bar.querySelector("[data-pick-no]").addEventListener("click", function () { bar.hidden = true; if (picked) picked.classList.remove("picked"); disarm(); });
+  document.querySelectorAll("tr.pickable").forEach(function (tr) {
+    function pick(ev) { if (ev.target.closest("button")) return; disarm(); show(tr.dataset.at, parseFloat(tr.dataset.t), true, tr); bar.scrollIntoView({ block: "nearest" }); }
+    tr.addEventListener("click", pick);
+    tr.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(ev); } });
+  });
+})();
+</script>
 {% if has_map %}
 <script>
-  // the map starts at once; it never waits for the brand's arrival
-  (function () {
-    var a = [{{ pos.start_position_latitude }}, {{ pos.start_position_longitude }}], b = [{{ pos.destination_position_latitude }}, {{ pos.destination_position_longitude }}];
-    var map = CCMap.base("map", { zoomControl: false }), colour = CCMap.palette[{{ colors.get(car.vin, 0) }}];
-    var route = {{ route|tojson }};
-    if (route.length >= 2) { CCMap.route(map, route, colour, 4); } else { L.polyline([a, b], { color: colour, weight: 3, dashArray: "6 8" }).addTo(map); }
-    L.circleMarker(a, { radius: 7, color: colour, fillColor: "#fff", fillOpacity: 1, weight: 3 }).addTo(map).bindTooltip("Start");
-    L.circleMarker(b, { radius: 7, color: "#fff", fillColor: colour, fillOpacity: 1, weight: 3 }).addTo(map).bindTooltip("End");
-    map.fitBounds(route.length >= 2 ? route : [a, b], { padding: [30, 30] });
-    var readings = {{ (readings or [])|tojson }}, box = document.getElementById("show-readings");
-    if (box && readings.length) {
-      var own = L.layerGroup([L.polyline(readings, { color: colour, weight: 1.5, opacity: 0.7, dashArray: "3 5", interactive: false })].concat(
-        readings.map(function (p) { return L.circleMarker(p, { radius: 3, color: colour, weight: 1.5, fillColor: "#fff", fillOpacity: 1, interactive: false }); })));
-      box.addEventListener("change", function () { if (box.checked) own.addTo(map); else own.remove(); });
-    }
-  })();
+  // the maps start once their deferred scripts have run; they never wait for the brand's arrival
+  document.addEventListener("DOMContentLoaded", function () { CCTrack.drive({
+    el: "drv-maps",
+    pts: {{ timed|tojson }},
+    {# the line's own ends when there is one: it runs from where the car was parked to where it parked again #}
+    start: {{ 'null' if timed|length >= 2 else '[' ~ pos.start_position_latitude ~ ', ' ~ pos.start_position_longitude ~ ']' }},
+    end: {{ 'null' if timed|length >= 2 else '[' ~ pos.destination_position_latitude ~ ', ' ~ pos.destination_position_longitude ~ ']' }},
+    steps: {{ (steps or [])|list|tojson }},
+    colour: CCMap.palette[{{ colors.get(car.vin, 0) }}],
+    tz: {{ chart.get("tz")|tojson }},
+    h12: {{ chart.get("h12")|tojson }},
+    box: document.getElementById("drive-{{ trip.id }}"),
+    legend: document.querySelector(".spd-key"),
+    play: document.querySelector(".tr-play"),
+    readings: {{ (readings or [])|tojson }},
+    toggle: document.getElementById("show-readings"),
+    from: {{ (trip.from|short_place if trip.from else '')|tojson }},
+    to: {{ (trip.to|short_place if trip.to else '')|tojson }}
+  }); });
 </script>
 {% endif %}
 {% endblock %}

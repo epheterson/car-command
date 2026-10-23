@@ -1,0 +1,26 @@
+{# The time zone picker: a search box above a select of every zone, grouped by region, each with its city and offset now.
+   Only a listed zone can be chosen. Without script the full select still works; with it the box narrows the list. #}
+{% macro tzpick(current, groups, id='tz', invalid=False) %}<div class="tzpick"><input class="field" type="search" id="{{ id }}-find" data-tz-find="{{ id }}" placeholder="Search city or region" aria-label="Search time zones" autocomplete="off" spellcheck="false" enterkeyhint="search">
+<select class="sel" id="{{ id }}" name="timezone" data-tz required{{ ' aria-invalid=true' if invalid }}>{% for region, items in groups %}<optgroup label="{{ region }}">{% for name, label in items %}<option value="{{ name }}"{{ ' selected' if name == current }}>{{ label }}</option>{% endfor %}</optgroup>{% endfor %}</select></div>{% endmacro %}
+{% macro tzscript() %}<script>
+(() => {
+  document.querySelectorAll("[data-tz-find]").forEach(box => {
+    const sel = document.getElementById(box.dataset.tzFind);
+    if (!sel) return;
+    const all = Array.from(sel.querySelectorAll("optgroup")).map(g => ({ label: g.label, opts: Array.from(g.children).map(o => [o.value, o.textContent]) }));
+    const build = () => {
+      const words = box.value.toLowerCase().split(/\s+/).filter(Boolean), keep = sel.value;
+      sel.textContent = "";
+      all.forEach(g => {
+        const hit = g.opts.filter(([v, t]) => v === keep || words.every(w => (t + " " + v + " " + g.label).toLowerCase().includes(w.replace(/_/g, " ")) || v.toLowerCase().includes(w)));
+        if (!hit.length) return;
+        const og = document.createElement("optgroup"); og.label = g.label;
+        hit.forEach(([v, t]) => { const o = new Option(t, v); if (v === keep) o.selected = true; og.appendChild(o); });
+        sel.appendChild(og);
+      });
+    };
+    box.addEventListener("input", build);
+    box.addEventListener("keydown", e => { if (e.key === "Enter") e.preventDefault(); });  // a search is not a submit
+  });
+})();
+</script>{% endmacro %}

@@ -1,0 +1,11 @@
+{# The one-time offer of map backgrounds and place names: the two Settings › Maps switches, asked once after the first
+   import, with what each service sees. `back` is where the answer returns to. #}
+{% macro offer(settings, root, csrf, back, inset=false) %}
+{% if settings is defined and settings.get('maps_offer') is none and not settings.get('public_tiles') and not settings.get('public_geocoder') %}
+<aside class="notice bar offer{{ ' inset' if inset }}" id="maps-offer" aria-label="Map backgrounds and place names">
+  <span class="offer-t"><b>Map backgrounds and place names</b><span class="muted small">OpenFreeMap sees the area you view · OpenStreetMap sees each stop, to about 100 m · <a href="{{ root }}/settings/maps">choose one by one</a></span></span>
+  <form method="post" action="{{ root }}/settings/maps/offer" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="back" value="{{ back }}">
+    <button type="submit" name="answer" value="on" class="btn sm primary">Turn on</button> <button type="submit" name="answer" value="no" class="btn sm">Not now</button></form>
+</aside>
+{% endif %}
+{% endmacro %}

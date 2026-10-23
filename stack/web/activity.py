@@ -27,7 +27,7 @@ def kind(car: dict, now: datetime) -> str | None:
     """'driving' or 'charging' when the car is doing it now, else None. A status read from
     history long ago (the newest state row of a car that has gone quiet) is not now."""
     k = KINDS.get(car.get("status") or "")
-    if not k:
+    if not k or car.get("offline"):  # out of reach: its last values are not an outing under way
         return None
     at = car.get("updated")
     if at is None or now - at > FRESH:
@@ -84,9 +84,11 @@ def sentry_on(raw) -> bool | None:
     if isinstance(raw, bool):
         return raw
     s = str(raw).strip().lower()
-    if s in ("true", "3", "idle", "armed", "aware", "panic", "quiet"):  # the stream's words: on unless Off (tesla_stream)
+    # The stream's Idle is the feed's 1: Sentry not on. Read as on, a car with Sentry off flipped on and off
+    # each minute as the feed and the stream took turns.
+    if s in ("true", "3", "armed", "aware", "panic", "quiet"):
         return True
-    if s in ("false", "0", "1", "off", "unknown"):
+    if s in ("false", "0", "1", "off", "idle", "unknown"):
         return False
     return None
 
@@ -107,33 +109,104 @@ def truth(value) -> bool | None:
 
 
 def stream_now(carried: dict | None, now: datetime, fresh: timedelta = timedelta(minutes=10)) -> dict:
-    """What the Tesla stream's newest values say about now: driving, Sentry, the odometer and
-    the battery. Empty when the stream has said nothing for a while."""
+    """What the Tesla stream's newest values say about now. Two kinds: what needs a fresh word
+    (driving, Sentry, charging, the temperatures; said only when the stream spoke in `fresh`), and
+    what the car keeps until it says otherwise (lock, doors, windows, the charge limit, plugged in;
+    the last thing it said, with `said_at`, since a sleeping car changes none of them). Empty when
+    the stream has never spoken."""
     c = carried or {}
     at = c.get("_at")
-    if at is None or now - at > fresh:
+    if at is None:
         return {}
-    gear, speed = c.get("Gear"), c.get("VehicleSpeed")
-    out = {"at": at, "driving": gear in ("D", "R", "N") or (isinstance(speed, (int, float)) and speed > 0.5)}
-    if "SentryMode" in c:
-        out["sentry"] = sentry_on(c["SentryMode"])
+    out: dict = {"at": at, "said_at": at, "fresh": now - at <= fresh}
+    if out["fresh"]:
+        gear, speed = c.get("Gear"), c.get("VehicleSpeed")
+        out["driving"] = gear in ("D", "R", "N") or (isinstance(speed, (int, float)) and speed > 0.5)
+        if "SentryMode" in c:
+            out["sentry"] = sentry_on(c["SentryMode"])
+            # The alarm itself, not Aware: Aware is someone walking past, several times a day
+            out["sentry_threat"] = c["SentryMode"] == "Panic"
+        if isinstance(c.get("Odometer"), (int, float)):
+            out["odometer"] = float(c["Odometer"])
+        if isinstance(c.get("BatteryLevel"), (int, float)):
+            out["level"] = float(c["BatteryLevel"])
+        for key, name in (("InsideTemp", "inside_f"), ("OutsideTemp", "outside_f"), ("HvacLeftTemperatureRequest", "climate_set_f")):
+            if isinstance(c.get(key), (int, float)):
+                out[name] = round(c[key] * 9 / 5 + 32, 1)  # the stream sends Celsius
+        # climate as CarConnectivity words where they fit; Cabin Overheat Protection is its own, not climate
+        hvac = {"On": "on", "Off": "off", "Precondition": "precondition", "OverheatProtect": "overheat"}.get(c.get("HvacPower"))
+        if hvac:
+            out["climate"] = hvac
+        if c.get("ClimateKeeperMode") in ("Off", "On", "Dog", "Party"):
+            out["climate_keeper"] = {"Off": None, "On": "keep", "Dog": "dog", "Party": "camp"}[c["ClimateKeeperMode"]]
+        if c.get("DefrostMode") in ("Off", "Normal", "Max", "AutoDefog"):
+            out["window_heating"] = c["DefrostMode"] != "Off"
+        power = sum(c[k] for k in ("ACChargingPower", "DCChargingPower") if isinstance(c.get(k), (int, float)))
+        if any(isinstance(c.get(k), (int, float)) for k in ("ACChargingPower", "DCChargingPower")):
+            out["charging_power_kw"] = round(power, 2)
+        for key, name in (("ChargerVoltage", "charger_volts"), ("ChargeAmps", "charger_amps"), ("ChargeRateMilePerHour", "charge_rate_mph"), ("ChargeCurrentRequest", "charge_amps_set")):
+            if isinstance(c.get(key), (int, float)):
+                out[name] = round(float(c[key]), 1)
+        energy = [c[k] for k in ("ACChargingEnergyIn", "DCChargingEnergyIn") if isinstance(c.get(k), (int, float))]
+        if energy:
+            out["charge_session_kwh"] = round(max(energy), 2)
+        if isinstance(c.get("TimeToFullCharge"), (int, float)):
+            out["charge_minutes_left"] = round(c["TimeToFullCharge"] * 60)  # Tesla sends hours
+        if isinstance(c.get("DriverSeatOccupied"), bool):
+            out["driver_present"] = c["DriverSeatOccupied"]
+        if isinstance(c.get("PreconditioningEnabled"), bool):
+            out["preconditioning"] = c["PreconditioningEnabled"]
     if "Locked" in c:
         out["locked"] = truth(c["Locked"])
     if isinstance(c.get("DoorState"), dict):
         out["doors_open"] = any(c["DoorState"].values())  # an empty one is all closed: the stream leaves out every false
+        out["trunk_open"] = bool(c["DoorState"].get("TrunkRear"))
+        out["frunk_open"] = bool(c["DoorState"].get("TrunkFront"))
     windows = [c[k] for k in ("FdWindow", "FpWindow", "RdWindow", "RpWindow") if k in c]
     if windows:
         known = [w for w in windows if w in ("Closed", "PartiallyOpen", "Opened")]
         out["windows_open"] = any(w != "Closed" for w in known) if known else None
-    if isinstance(c.get("Odometer"), (int, float)):
-        out["odometer"] = float(c["Odometer"])
-    if isinstance(c.get("BatteryLevel"), (int, float)):
-        out["level"] = float(c["BatteryLevel"])
+    charge = c.get("DetailedChargeState") if c.get("DetailedChargeState") not in (None, "Unknown") else c.get("ChargeState")
+    if isinstance(charge, str) and charge not in ("", "Unknown"):
+        out["plugged"] = charge != "Disconnected"
+        if out["fresh"]:
+            out["charging"] = charge in ("Starting", "Charging")
+    if isinstance(c.get("ChargeLimitSoc"), (int, float)):
+        out["charge_limit"] = float(c["ChargeLimitSoc"])
+    if isinstance(c.get("ChargePortDoorOpen"), bool):
+        out["port_open"] = c["ChargePortDoorOpen"]
+    if c.get("ChargePortLatch") in ("Engaged", "Disengaged", "Blocking"):
+        out["cable_latched"] = c["ChargePortLatch"] == "Engaged"
+    rated = c.get("RatedRange")
+    if isinstance(rated, (int, float)):
+        out["range_mi"] = round(float(rated), 1)
+        level = c.get("BatteryLevel")
+        if isinstance(level, (int, float)) and level >= 5:  # below that the ratio says more about rounding than the pack
+            out["range_full_mi"] = round(rated / level * 100, 1)
+    if isinstance(c.get("Version"), str) and c["Version"]:
+        out["software"] = c["Version"].split(" ")[0]
+    if "SoftwareUpdateVersion" in c:
+        waiting = str(c.get("SoftwareUpdateVersion") or "").strip()
+        out["update_available"] = bool(waiting) and waiting.split(" ")[0] != out.get("software")
     return out
 
 
 def _pick(*xs):
     return next((x for x in xs if x is not None), None)
+
+
+def is_home_name(name: str | None, home_names) -> bool:
+    """Whether a destination or origin name is the home place: the name it was given (any case), or the
+    word Home on its own, which is what a car's navigation says."""
+    n = " ".join((name or "").split()).casefold()
+    return bool(n) and (n == "home" or n in {" ".join((h or "").split()).casefold() for h in home_names})
+
+
+def heading(name: str | None, home_names) -> str:
+    """The words for going somewhere: "home" for the home place, "to Work" for anywhere else."""
+    if not name:
+        return ""
+    return "home" if is_home_name(name, home_names) else f"to {name}"
 
 
 def banner(
@@ -145,6 +218,8 @@ def banner(
     route: dict | None = None,
     capacity_kwh: float | None = None,
     kwh_per_rated_mi: float | None = None,
+    last_drive: dict | None = None,
+    home_names=(),
 ) -> dict:
     """One car's banner: who, what, where to, and the figures so far. A figure that cannot be
     worked out from the readings is None and the banner leaves it out.
@@ -165,6 +240,8 @@ def banner(
         "kind": k,
         "since": since if since is None or since >= timedelta(0) else None,
         "dest": None,
+        "origin": None,
+        "dest_home": False,
         "minutes_left": None,
         "miles": None,
         "wh_per_mi": None,
@@ -176,8 +253,13 @@ def banner(
         "kwh_added": None,
     }
     if k == "driving":
+        # where it set out from: the end of the drive before, if that ended before this one began
+        began = first.get("at") or now
+        if last_drive and last_drive.get("destination_date") and last_drive["destination_date"] <= began:
+            out["origin"] = last_drive.get("to")
         if route:
             out["dest"], out["minutes_left"] = route.get("name"), route.get("minutes")
+            out["dest_home"] = is_home_name(out["dest"], home_names)
         o0 = first.get("odometer")
         if o0 is not None and odo_now is not None and odo_now >= o0:
             out["miles"] = odo_now - o0

@@ -1,0 +1,28 @@
+{
+  "source": "California Community Choice Association member list, https://cal-cca.org/cca-impact/ (retrieved 2026-10-13); each provider's utility from its own service area",
+  "licence": "A list of names and service areas: facts, compiled here by hand. No text from the source is copied, so no licence attaches.",
+  "providers": [
+    {"name": "Apple Valley Choice Energy", "label": "AVCE", "short": ["AVCE"], "utilities": [17609]},
+    {"name": "Ava Community Energy", "label": "Ava", "short": ["Ava", "East Bay Community Energy", "EBCE"], "utilities": [14328]},
+    {"name": "Central Coast Community Energy", "label": "3CE", "short": ["3CE", "Monterey Bay Community Power"], "utilities": [14328, 17609]},
+    {"name": "Clean Energy Alliance", "label": "CEA", "short": ["CEA"], "utilities": [16609]},
+    {"name": "Clean Power Alliance", "label": "CPA", "short": ["CPA"], "utilities": [17609]},
+    {"name": "CleanPowerSF", "label": "CleanPowerSF", "short": [], "utilities": [14328]},
+    {"name": "Desert Community Energy", "label": "DCE", "short": ["DCE"], "utilities": [17609]},
+    {"name": "Energy for Palmdale's Independent Choice", "label": "EPIC", "short": ["EPIC"], "utilities": [17609]},
+    {"name": "King City Community Power", "label": "KCCP", "short": ["KCCP"], "utilities": [14328]},
+    {"name": "MCE", "label": "MCE", "short": ["Marin Clean Energy"], "utilities": [14328]},
+    {"name": "Orange County Power Authority", "label": "OCPA", "short": ["OCPA"], "utilities": [17609]},
+    {"name": "Pioneer Community Energy", "label": "Pioneer", "short": [], "utilities": [14328]},
+    {"name": "Pomona Choice Energy", "label": "Pomona", "short": [], "utilities": [17609]},
+    {"name": "Rancho Mirage Energy Authority", "label": "RMEA", "short": ["RMEA"], "utilities": [17609]},
+    {"name": "Redwood Coast Energy Authority", "label": "RCEA", "short": ["RCEA"], "utilities": [14328]},
+    {"name": "San Diego Community Power", "label": "SDCP", "short": ["SDCP"], "utilities": [16609]},
+    {"name": "San José Clean Energy", "label": "SJCE", "short": ["San Jose Clean Energy", "SJCE"], "utilities": [14328]},
+    {"name": "Santa Barbara Clean Energy", "label": "SBCE", "short": ["SBCE"], "utilities": [17609]},
+    {"name": "Silicon Valley Clean Energy", "label": "SVCE", "short": ["SVCE"], "utilities": [14328]},
+    {"name": "Sonoma Clean Power", "label": "SCP", "short": ["SCP"], "utilities": [14328]},
+    {"name": "Valley Clean Energy", "label": "VCE", "short": ["VCE"], "utilities": [14328]},
+    {"name": "WestLight Energy", "label": "WestLight", "short": ["Peninsula Clean Energy", "PCE"], "utilities": [14328]}
+  ]
+}

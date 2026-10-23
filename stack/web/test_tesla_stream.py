@@ -117,8 +117,23 @@ def test_a_commute_is_one_drive_and_the_samples_have_the_replays_shape():
     assert out[-1]["odometer"] == 12004.0 and out[-1]["level"] == 69.0 and out[-1]["range"] == 210.0, "carried forward"
 
 
-def test_a_short_stop_in_park_continues_the_drive():
-    assert drives(run(commute(stop_at_light=True), 20)) == [1]
+def test_a_stop_in_park_ends_the_drive_even_a_short_one():
+    """A drop-off: in park for 90 s, the driver out, then reversing away. Every drive in the
+    history ends at park, so this is two drives, as it is from TeslaFi."""
+    assert drives(run(commute(stop_at_light=True), 20)) == [1, 2]
+    p = commute()[:5] + [payload(5, Gear="ShiftStateP"), invalid(5.2, "Gear"), payload(6.5, Gear="ShiftStateR")]
+    p += [payload(7, VehicleSpeed=10.0), payload(9, VehicleSpeed=0.0, Gear="ShiftStateP", Odometer=12004.0)]
+    assert drives(run(p, 20)) == [1, 2]
+
+
+def test_a_tap_of_park_while_manoeuvring_is_still_one_drive():
+    p = commute()[:5] + [payload(5, Gear="ShiftStateP"), payload(5.5, Gear="ShiftStateD")]
+    assert drives(run(p + commute()[-2:], 20)) == [1]
+
+
+def test_a_red_light_in_drive_is_still_one_drive():
+    p = commute()[:5] + [payload(5, VehicleSpeed=0.0), payload(7.5, VehicleSpeed=20.0)]
+    assert drives(run(p + commute()[-2:], 20)) == [1]
 
 
 def test_a_stop_of_more_than_three_minutes_makes_two_drives():
@@ -216,6 +231,12 @@ def test_sentry_reads_as_on_or_off():
     on = run([connectivity(0, "CONNECTED"), {"vin": ALPHA, "createdAt": at(0), "data": [{"key": "SentryMode", "value": {"sentryModeStateValue": "SentryModeStateArmed"}}]}], 1)[-1]
     off = run([connectivity(0, "CONNECTED"), {"vin": ALPHA, "createdAt": at(0), "data": [{"key": "SentryMode", "value": {"sentryModeStateValue": "SentryModeStateOff"}}]}], 1)[-1]
     assert on["sentry_raw"] == "true" and off["sentry_raw"] == "false"
+    said = lambda state: run([connectivity(0, "CONNECTED"), {"vin": ALPHA, "createdAt": at(0), "data": [{"key": "SentryMode", "value": {"sentryModeStateValue": "SentryModeState" + state}}]}], 1)[-1][
+        "sentry_raw"
+    ]
+    assert said("Aware") == "true", "something came near: Sentry at work"
+    assert said("Idle") == "false", "Idle is Sentry off for here, as the live reading has it (activity.sentry_on)"
+    assert said("Unknown") == "", "the car not saying is not off"
 
 
 def test_two_cars_are_kept_apart():
@@ -302,3 +323,24 @@ def test_a_charge_that_loses_the_car_closes_when_it_leaves_not_at_sleep():
 def test_an_unknown_detailed_state_does_not_hide_the_plain_one():
     p = [connectivity(0, "CONNECTED"), payload(0, DetailedChargeState="DetailedChargeStateUnknown", ChargeState="ChargeStateCharging", ACChargingPower=7.0)]
     assert run(p, 1)[-1]["charging"]
+
+
+def test_a_home_charge_counts_what_reached_the_pack_not_what_left_the_wall():
+    """The car reports both meters on an AC charge: the on-board charger's input (wall side)
+    and its output (pack side). Every charge in the history is pack side, and so is the
+    efficiency every page shows, so the stream reads the pack side too."""
+    p = [connectivity(0, "CONNECTED"), payload(0, Gear="ShiftStateP", Location=HOME, BatteryLevel=40.0)]
+    p += [payload(1, DetailedChargeState="DetailedChargeStateCharging", ACChargingPower=7.6, ACChargingEnergyIn=0.0, DCChargingEnergyIn=0.0)]
+    p += [
+        payload(60, ACChargingEnergyIn=7.4, DCChargingEnergyIn=6.9),
+        payload(90, DetailedChargeState="DetailedChargeStateComplete", ACChargingPower=0.0, ACChargingEnergyIn=11.0, DCChargingEnergyIn=10.3),
+    ]
+    import teslafi_import
+
+    out = teslafi_import.replay(run(p, 100))
+    assert [c["real_charged"] for c in out["charging_sessions"]] == [10.3]
+
+
+def test_a_charge_with_only_the_wall_meter_still_counts():
+    out = run(charging(0, (1, "Charging", 7.6, 0.0), (60, "Complete", 0.0, 7.4)), 70)
+    assert max(s["energy_added"] or 0 for s in out) == 7.4

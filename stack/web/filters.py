@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from jinja2 import pass_context
 
+import clockfmt
 import identity
 import units as units_mod
 from averages import month_label
@@ -29,13 +30,11 @@ def est_mark(flag, why: str = "estimate"):
 
 
 def adapt(fmt: str, clock: str = "12", date_order: str = "mdy") -> str:
-    """A strftime pattern rewritten for the clock and date order chosen on Settings, so
-    every template keeps asking for the familiar pattern and gets the chosen one."""
-    if clock == "24":
-        fmt = fmt.replace("%-I:%M %p", "%H:%M").replace("%I:%M %p", "%H:%M").replace("%-I %p", "%H:00")
-    if date_order == "dmy":
-        fmt = fmt.replace("%b %-d, %Y", "%-d %b %Y").replace("%b %-d %Y", "%-d %b %Y").replace("%b %-d", "%-d %b").replace("%m/%d/%Y", "%d/%m/%Y").replace("%m/%d", "%d/%m")
-    return fmt
+    """clockfmt.adapt with the settings spelled out (the tests and register pass them)."""
+    return clockfmt.adapt(fmt, clock, date_order)
+
+
+tied = clockfmt.tied
 
 
 @pass_context
@@ -54,12 +53,45 @@ def _places_filter(context, text):
     return places(text, context.get("place_icon_map"))
 
 
+@pass_context
+def _leads_filter(context, text):
+    """The `leads_with_icon` filter, reading the same icon map as `places`."""
+    return leads_with_icon(text, context.get("place_icon_map"))
+
+
+# What the date filters read, at the moment they run. Jinja keeps an {% import %}ed template's
+# macros with the filters they were first built with, so a filter that captured the clock when
+# it was registered went on saying 7:05 PM in every macro after the switch to 24 hours.
+def plural(count, one: str, many: str | None = None) -> str:
+    """The word for a count: 1 charge, 0 charges, 2 charges. The count itself is the page's to format."""
+    return one if count == 1 else many or one + "s"
+
+
+def filesize(size) -> str:
+    """A file's size for a person: 50 KB under a megabyte, 12.5 MB above."""
+    size = int(size or 0)
+    return f"{max(1, round(size / 1024)):,} KB" if size < 1_048_576 else f"{size / 1_048_576:.1f} MB"
+
+
+NOW = {"tz": ZoneInfo("America/Los_Angeles"), "clock": "12", "date_order": "mdy"}
+
+
 def register(env, tz: ZoneInfo | None = None, clock: str = "12", date_order: str = "mdy", place_icons=None) -> None:
-    tz = tz or ZoneInfo("America/Los_Angeles")
-    env.filters["local"] = lambda dt, fmt="%a %b %-d, %-I:%M %p": dt.astimezone(tz).strftime(adapt(fmt, clock, date_order)) if dt else ""
-    env.filters["when"] = lambda dt: when(dt, tz, clock=clock, date_order=date_order)
+    NOW.update(tz=tz or ZoneInfo("America/Los_Angeles"), clock=clock, date_order=date_order)
+    clockfmt.PREFS.update(clock=clock, date_order=date_order)
+    env.filters["dfmt"] = lambda d, fmt="%b %-d, %Y": tied(d.strftime(adapt(fmt, NOW["clock"], NOW["date_order"]))) if d else ""  # a date or naive time, no zone
+    env.filters["local"] = lambda dt, fmt="%a %b %-d, %-I:%M %p": tied(dt.astimezone(NOW["tz"]).strftime(adapt(fmt, NOW["clock"], NOW["date_order"]))) if dt else ""
+    # pass_context keeps Jinja from evaluating these on a constant (a placeholder, '21:00'|tod) once,
+    # when the template compiles, with the clock of that moment: the page then ignored the setting.
+    env.filters["tod"] = pass_context(lambda _ctx, value: clockfmt.tod(value, NOW["clock"]))  # a stored "21:00" as the chosen clock says it
+    env.filters["hour"] = pass_context(lambda _ctx, h: clockfmt.hour_label(h, NOW["clock"]))  # a whole hour, 0 to 23
+    env.filters["when"] = lambda dt: when(dt, NOW["tz"], clock=NOW["clock"], date_order=NOW["date_order"])
+    env.filters["plural"] = plural
+    env.filters["filesize"] = filesize
     env.filters["short_place"] = short_place
+    env.globals.setdefault("heading", lambda name: f"to {name}" if name else "")  # app.py swaps in the one that knows which place is home
     env.filters["places"] = _places_filter
+    env.filters["leads_with_icon"] = _leads_filter
     env.globals["place_refs"] = _place_refs_global  # place names that open the naming card
     env.filters["place_road"] = place_road
     env.filters["place_city"] = place_city
@@ -110,6 +142,10 @@ def register(env, tz: ZoneInfo | None = None, clock: str = "12", date_order: str
     import nowpage
 
     env.globals["state_word"] = nowpage.state_word
+    env.globals["paused_word"] = nowpage.paused_word
+    env.globals["alarm_word"] = nowpage.alarm_word
+    env.globals["security_notes"] = nowpage.security_notes
+    env.globals["occupant_level"] = nowpage.occupant_level
     env.globals["gauge_of"] = nowpage.gauge
     import daypage
 
@@ -159,7 +195,7 @@ def when(dt, tz, now=None, clock: str = "12", date_order: str = "mdy") -> str:
     Which pattern comes from the distance to now; the clock and date order from Settings."""
     if not dt:
         return ""
-    f = lambda pat: local.strftime(adapt(pat, clock, date_order))
+    f = lambda pat: tied(local.strftime(adapt(pat, clock, date_order)))
     now = (now or datetime.now(timezone.utc)).astimezone(tz)
     local = dt.astimezone(tz)
     days = (now.date() - local.date()).days
@@ -216,6 +252,19 @@ def places(text: str | None, icon_map=None):
         return f'<span class="pl">{glyph}{word}</span>' if glyph else word
 
     return Markup(pattern.sub(sub, escaped))
+
+
+def leads_with_icon(text: str | None, icon_map=None) -> bool:
+    """Whether `places` draws a glyph before the text's first word: a column of names where
+    some start with one keeps the others in line with an empty slot (Records)."""
+    from markupsafe import escape
+
+    if not text:
+        return False
+    imap = (icon_map() if callable(icon_map) else icon_map) or {}
+    names = {str(escape(n)) for n, v in imap.items() if v is not None} | {"home", "work"}
+    m = _place_pattern(names).match(str(escape(text)))
+    return bool(m) and bool(_place_svg(_resolve_icon(m.group(1), imap.get(m.group(1).lower()))))
 
 
 def place_refs(text: str | None, refs, icon_map=None, inlink: bool = False):

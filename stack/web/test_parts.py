@@ -103,8 +103,11 @@ def test_chart_embeds_its_data_and_offers_extras_only_when_there_are_some():
     assert json.loads(blob)["primary"]["points"][1] == [86400, 23.0]
     assert "<b>x</b>" not in blob, "a title with markup cannot close the script block"
     assert ">Range<" in html and 'data-extra="range"' in html and "23%" in html
+    assert 'aria-pressed="false"' in html and 'class="s-x0"' in html and "radiogroup" not in html, "the lines are toggles, several at once"
+    shown = render("{{ parts.chart('c', data, sync='day') }}", data=dict(data, extras=[dict(data["extras"][0], tone="range")], on=["range"]))
+    assert 'data-sync="day"' in shown and 'aria-pressed="true" data-extra="range" class="s-range on"' in shown
     none = render("{{ parts.chart('c', data) }}", data=dict(data, extras=[]))
-    assert "data-extra" not in none
+    assert "data-extra" not in none and "data-sync" not in none
     empty = render("{{ parts.chart('c', data) }}", data=dict(data, primary=dict(data["primary"], points=[])))
     assert "No battery readings logged in this window." in empty
 

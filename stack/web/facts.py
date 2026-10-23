@@ -14,17 +14,21 @@ background. Both calls are cheap when nothing is missing.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from bisect import bisect_left
 from dataclasses import dataclass, replace
 from datetime import datetime
 
 import billed
+import driveedits
 import placeprice
 from cost import session_cost
 from places import distance_m, place_for
 from regions import region_of
 from samples import with_measured_power
+
+LOG = logging.getLogger(__name__)
 
 DDL = """
 CREATE TABLE IF NOT EXISTS cc_trip_facts (
@@ -36,6 +40,16 @@ ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS temp_f DOUBLE PRECISION;
 ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS range_start DOUBLE PRECISION;
 ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS range_end DOUBLE PRECISION;
 ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS max_mph DOUBLE PRECISION;
+-- The highest and lowest ground the drive reached, metres, spikes left out (backfill).
+ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS elev_max_m DOUBLE PRECISION;
+ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS elev_min_m DOUBLE PRECISION;
+-- The same drive measured against the downloaded terrain model rather than the car's GPS
+-- height (terrain.py): climb and descent turn to turn, and the highest and lowest ground,
+-- metres. -1 in the climb: looked, the model does not cover the drive (yet).
+ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS ground_climb_m DOUBLE PRECISION;
+ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS ground_descent_m DOUBLE PRECISION;
+ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS ground_hi_m DOUBLE PRECISION;
+ALTER TABLE cc_trip_facts ADD COLUMN IF NOT EXISTS ground_lo_m DOUBLE PRECISION;
 CREATE TABLE IF NOT EXISTS cc_vehicle_facts (
     vin              VARCHAR PRIMARY KEY,
     kwh_per_rated_mi DOUBLE PRECISION,
@@ -95,6 +109,15 @@ ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS cost_source VARCHAR;
 -- for an average-priced charge the month whose figure priced it.
 ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS region VARCHAR;
 ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS rate_month VARCHAR;
+-- The charge's highest power, and the pack's range at a full charge as the charge left it (the car's
+-- own estimate, else rated range over the level), with that level and the odometer: one
+-- point each of the battery's lifetime report, so the report never reads the raw runs.
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS peak_kw DOUBLE PRECISION;
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS full_range DOUBLE PRECISION;
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS full_level DOUBLE PRECISION;
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS odometer DOUBLE PRECISION;
+-- When the energy and cost were last worked out: a figure taken before the session ended is part of it.
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS computed_at TIMESTAMPTZ;
 -- What a loader knew about a charge that the sessions table has no column for, keyed
 -- like cc_trip_extras so a re-import that renumbers sessions keeps it: the fast-charging
 -- network ('supercharger'), where the source said.
@@ -104,6 +127,19 @@ CREATE TABLE IF NOT EXISTS cc_charge_extras (
     network    VARCHAR,
     PRIMARY KEY (vin, start_date)
 );
+-- The car's own meter for a live charge (the Lucid connector's charge_session_energy, from
+-- 0.4.0): the last reading it gave while charging, since it reads nothing once charging stops.
+-- A charge's facts take the larger of it and the power estimate (an export's real_charged outright).
+CREATE TABLE IF NOT EXISTS cc_charge_meter (
+    session_id INTEGER PRIMARY KEY,
+    kwh        DOUBLE PRECISION NOT NULL,
+    at         TIMESTAMPTZ NOT NULL
+);
+-- A charge paused and resumed is one session to the plugin, and the car's meter may restart
+-- from zero on resume: `last` is the meter's latest reading, `carried` what it had counted
+-- before each restart, and kwh their sum, the charge's whole energy.
+ALTER TABLE cc_charge_meter ADD COLUMN IF NOT EXISTS last DOUBLE PRECISION;
+ALTER TABLE cc_charge_meter ADD COLUMN IF NOT EXISTS carried DOUBLE PRECISION NOT NULL DEFAULT 0;
 """
 
 
@@ -186,15 +222,126 @@ def backfill(conn, vin: str, batch: int = BATCH) -> dict[str, int]:
         FROM todo WHERE f.session_id = todo.session_id""",
         (vin, batch),
     ).rowcount
-    done["max_mph"] = conn.execute(
-        """
-        WITH todo AS (SELECT f.trip_id FROM cc_trip_facts f JOIN trips t ON t.id = f.trip_id
-                      WHERE t.vin = %s AND f.max_mph IS NULL AND t.destination_date IS NOT NULL LIMIT %s)
-        UPDATE cc_trip_facts f SET max_mph = COALESCE((SELECT MAX(p.speed) FROM cc_positions p WHERE p.vin = t.vin AND p.at BETWEEN t.start_date AND t.destination_date), -1)
-        FROM todo JOIN trips t ON t.id = todo.trip_id WHERE f.trip_id = todo.trip_id""",
-        (vin, batch),
-    ).rowcount
+    done["max_mph"] = conn.execute(MAX_MPH_SQL, (vin, batch)).rowcount
+    done["elevation"] = conn.execute(ELEVATION_SQL, (vin, batch)).rowcount
+    done["charge_points"] = conn.execute(CHARGE_POINT_SQL, (vin, batch)).rowcount
     return done
+
+
+# A drive's top speed from its own fixes, not counting a reading left out by hand (driveedits), or
+# from a Tesla's stream where it has one: a feed's fix a minute missed peaks (a drive averaging
+# 47 mph topped out at 16), the stream sends speed every second. A top below the drive's own
+# average (its odometer over its time) is a peak the samples missed: not known, not shown.
+# -1 marks "looked, nothing there" and "not known".
+MAX_MPH_SQL = f"""
+        WITH todo AS (SELECT f.trip_id FROM cc_trip_facts f JOIN trips t ON t.id = f.trip_id
+                      WHERE t.vin = %s AND f.max_mph IS NULL AND t.destination_date IS NOT NULL LIMIT %s),
+        seen AS (SELECT todo.trip_id, GREATEST(
+            (SELECT MAX(p.speed) FROM cc_positions p WHERE p.vin = t.vin AND p.at BETWEEN t.start_date AND t.destination_date{driveedits.left_out()}),
+            (SELECT MAX((e->'value'->>'doubleValue')::float) FROM cc_tesla_raw r, jsonb_array_elements(r.record->'data') e
+              WHERE r.vin = t.vin AND r.kind = 'V' AND r.at BETWEEN t.start_date AND t.destination_date
+                AND e->>'key' = 'VehicleSpeed' AND e->'value' ? 'doubleValue')) AS top,
+            (SELECT (MAX(p.odometer) - MIN(p.odometer)) / NULLIF(EXTRACT(EPOCH FROM t.destination_date - t.start_date) / 3600, 0)
+               FROM cc_positions p WHERE p.vin = t.vin AND p.at BETWEEN t.start_date AND t.destination_date) AS avg
+          FROM todo JOIN trips t ON t.id = todo.trip_id)
+        UPDATE cc_trip_facts f SET max_mph = CASE WHEN seen.top IS NULL OR seen.top < seen.avg THEN -1 ELSE seen.top END
+        FROM seen WHERE f.trip_id = seen.trip_id"""
+
+# A drive's highest and lowest ground, from its own fixes. A fix more than SPIKE_M from
+# every fix within two either side of it is the receiver losing the sky, not a hill: no
+# road climbs that in a fix or two, and a bad one once put a drive four kilometres under
+# the sea. Two either side, not one, so the last fix of a drive is not thrown out for
+# sitting next to a spike. Anything outside Earth's roads (the Dead Sea shore to the
+# highest pass) is dropped the same way.
+# -99999 marks "looked, nothing there".
+SPIKE_M = 100
+ELEVATION_SQL = f"""
+        WITH todo AS (SELECT f.trip_id FROM cc_trip_facts f JOIN trips t ON t.id = f.trip_id
+                      WHERE t.vin = %s AND f.elev_max_m IS NULL AND t.destination_date IS NOT NULL LIMIT %s)
+        UPDATE cc_trip_facts f SET elev_max_m = COALESCE(e.hi, -99999), elev_min_m = COALESCE(e.lo, -99999)
+        FROM todo JOIN trips t ON t.id = todo.trip_id
+        LEFT JOIN LATERAL (
+            SELECT MAX(p.e) AS hi, MIN(p.e) AS lo FROM (
+                SELECT elevation AS e, LAG(elevation) OVER w AS a, LEAD(elevation) OVER w AS b,
+                       LAG(elevation, 2) OVER w AS a2, LEAD(elevation, 2) OVER w AS b2
+                FROM cc_positions q WHERE q.vin = t.vin AND q.at BETWEEN t.start_date AND t.destination_date AND q.elevation BETWEEN -450 AND 6000{driveedits.left_out('q')}
+                WINDOW w AS (ORDER BY at)) p
+            WHERE COALESCE(p.a, p.b, p.a2, p.b2) IS NULL
+               OR ABS(p.e - p.a) <= {SPIKE_M} OR ABS(p.e - p.b) <= {SPIKE_M} OR ABS(p.e - p.a2) <= {SPIKE_M} OR ABS(p.e - p.b2) <= {SPIKE_M}) e ON TRUE
+        WHERE f.trip_id = todo.trip_id"""
+
+FT_PER_M = 3.28084
+
+
+def fill_ground(conn, vin: str, terrain, wanted: set | None = None, batch: int = 100) -> int:
+    """Climb, descent and the highest and lowest ground for up to `batch` finished drives not
+    yet measured on the terrain model, newest first, with the same turn-to-turn counting the
+    pages use on a drive's own heights (day.elevation_profile). A drive the model does not
+    cover is marked -1 and the tiles it lacks are added to `wanted`, so they are fetched and
+    the drive looked at again. Does nothing while no tile is downloaded."""
+    if not terrain:
+        return 0
+    from day import elevation_profile
+    from terrain import ground_track
+
+    todo = conn.execute(
+        """SELECT t.id, t.start_date, t.destination_date FROM cc_trip_facts f JOIN trips t ON t.id = f.trip_id
+           WHERE t.vin = %s AND f.ground_climb_m IS NULL AND t.destination_date IS NOT NULL ORDER BY t.id DESC LIMIT %s""",
+        (vin, batch),
+    ).fetchall()
+    for t in todo:
+        track = conn.execute("SELECT at, latitude, longitude FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s ORDER BY at", (vin, t["start_date"], t["destination_date"])).fetchall()
+        try:
+            ground, ok = ground_track(track, terrain)
+            series, climb_ft, descent_ft = elevation_profile(ground) if ok else ([], 0.0, 0.0)
+        except Exception as err:  # noqa: BLE001 - one bad drive must not hold the rest back
+            LOG.warning("ground facts for trip %s: %s", t["id"], err)
+            series, ok = [], True
+        if series:
+            hs = [h for _t, h in series]
+            vals = (climb_ft / FT_PER_M, descent_ft / FT_PER_M, max(hs) / FT_PER_M, min(hs) / FT_PER_M)
+        else:
+            vals = (-1.0, None, None, None)
+            if wanted is not None:
+                wanted |= terrain.missing([(p["latitude"], p["longitude"]) for p in track])
+        conn.execute("UPDATE cc_trip_facts SET ground_climb_m = %s, ground_descent_m = %s, ground_hi_m = %s, ground_lo_m = %s WHERE trip_id = %s", (*vals, t["id"]))
+    return len(todo)
+
+
+def reset_ground(conn) -> int:
+    """Look again at the drives the model did not cover, after new tiles arrive."""
+    return conn.execute("UPDATE cc_trip_facts SET ground_climb_m = NULL WHERE ground_climb_m = -1").rowcount
+
+
+# A charge's peak power and the point it adds to the battery's lifetime report. Only once
+# the charge has been over for half an hour: a live session's end keeps moving while it
+# charges, and a figure taken partway would stand for good. Power from the power runs,
+# else volts times amps (a car that reports only those); range at 100 % from the car's own
+# estimate where it gave one around the end, else rated range over the level, which is
+# what the estimate is. -1 and -999 mark "looked, nothing there".
+CHARGE_POINT_SQL = """
+        WITH todo AS (SELECT f.session_id FROM cc_charge_facts f JOIN charging_sessions c ON c.id = f.session_id
+                      WHERE c.vin = %s AND f.peak_kw IS NULL AND c.session_end_date < now() - interval '30 minutes' LIMIT %s)
+        UPDATE cc_charge_facts f SET
+            peak_kw = COALESCE(
+                (SELECT MAX(p.power) FROM charging_powers p WHERE p.vin = c.vin AND p.power < 1000
+                   AND p.first_date BETWEEN c.session_start_date - interval '12 hours' AND c.session_end_date AND p.last_date >= c.session_start_date),
+                (SELECT MAX(x.volts * x.amps) / 1000 FROM cc_charging_electrics x WHERE x.vin = c.vin
+                   AND x.first_date BETWEEN c.session_start_date - interval '12 hours' AND c.session_end_date AND x.last_date >= c.session_start_date),
+                -1),
+            full_level = COALESCE(le.level, -999),
+            full_range = COALESCE(
+                (SELECT e.range_estimated_full FROM drive_ranges_estimated_full e WHERE e.drive_id = d.id AND e.first_date <= c.session_end_date
+                   AND e.last_date >= c.session_end_date - interval '1 hour' ORDER BY e.first_date DESC LIMIT 1),
+                CASE WHEN le.level >= 10 THEN re.range * 100 / le.level END,
+                -999),
+            odometer = COALESCE(c.session_odometer,
+                (SELECT p.odometer FROM cc_positions p WHERE p.vin = c.vin AND p.at <= c.session_start_date AND p.odometer IS NOT NULL ORDER BY p.at DESC LIMIT 1),
+                -1)
+        FROM todo JOIN charging_sessions c ON c.id = todo.session_id JOIN drives d ON d.vin = c.vin
+        LEFT JOIN LATERAL (SELECT l.level FROM drive_levels l WHERE l.drive_id = d.id AND l.first_date <= c.session_end_date ORDER BY l.first_date DESC LIMIT 1) le ON TRUE
+        LEFT JOIN LATERAL (SELECT r.range FROM drive_ranges r WHERE r.drive_id = d.id AND r.first_date <= c.session_end_date ORDER BY r.first_date DESC LIMIT 1) re ON TRUE
+        WHERE f.session_id = todo.session_id"""
 
 
 # Which charges the measurement is allowed to use, in one place because two queries ask
@@ -550,8 +697,10 @@ def charge_facts(
                 mine.append((a, b, kw))
             i += 1
         integrated = sum(kw * (min(b, end) - max(a, start)).total_seconds() / 3600 for a, b, kw in mine)
+        # An export's meter is the charge's energy. The live car's (live_meter, cc_charge_meter) may
+        # be a poll behind the charge's end, so the larger of it and the power estimate stands.
         meter = s.get("real_charged")
-        kwh = meter if meter else integrated
+        kwh = meter if meter else max(s.get("live_meter") or 0.0, integrated)
         lat, lon = s.get("session_position_latitude"), s.get("session_position_longitude")
         hours = (end - start).total_seconds() / 3600
         profile = mine if integrated > 0 else ([(start, end, kwh / hours)] if hours > 0 and kwh > 0 else [])
@@ -596,10 +745,12 @@ def fill_charge_facts(
     covered = averages.covered("electricity") if averages is not None else []
     sessions = conn.execute(
         """
-        SELECT c.id, c.session_start_date, c.session_end_date, c.session_position_latitude, c.session_position_longitude, c.real_charged, c.charging_type::text AS charging_type, c.real_cost,
-               x.network
+        SELECT c.id, c.session_start_date, c.session_end_date, c.session_position_latitude, c.session_position_longitude,
+               c.real_charged, c.charging_type::text AS charging_type, c.real_cost, x.network, m.kwh AS live_meter
         FROM charging_sessions c LEFT JOIN cc_charge_facts f ON f.session_id = c.id
         LEFT JOIN cc_charge_extras x ON x.vin = c.vin AND x.start_date = c.session_start_date
+        -- the car's own meter for a live charge, where an export has real_charged
+        LEFT JOIN cc_charge_meter m ON m.session_id = c.id
         WHERE c.vin = %s AND c.session_start_date IS NOT NULL AND c.session_end_date IS NOT NULL
           -- no facts at all, facts from before the time-of-use split was stored, or a
           -- stored zero on a session whose car metered energy into the battery
@@ -624,11 +775,11 @@ def fill_charge_facts(
           -- (billed.sessions_for), and the clause for cleared prices below takes them.
           AND (f.session_id IS NULL OR (f.at_home AND f.cost IS NOT NULL AND f.off_peak_kwh IS NULL AND f.plan IS DISTINCT FROM 'entered by hand'
                                         AND COALESCE(f.cost_source, 'plan') NOT IN ('average', 'place', 'billed'))
-               OR (COALESCE(f.kwh, 0) = 0 AND (c.real_charged > 0 OR c.session_end_date > now() - interval '2 days'))
+               OR (COALESCE(f.kwh, 0) = 0 AND (COALESCE(c.real_charged, m.kwh) > 0 OR c.session_end_date > now() - interval '2 days'))
                -- a meter that kept counting after the facts were taken: a streamed session
                -- is first read minutes in (one 24 to 78 charge stored 0.1 of its 36 kWh);
                -- converges, as the stored figure becomes the meter's
-               OR c.real_charged > COALESCE(f.kwh, 0) + 0.05
+               OR COALESCE(c.real_charged, m.kwh) > COALESCE(f.kwh, 0) + 0.05
                -- a fast charge with no price yet, once a rate for its network exists to price
                -- it at; converges as each gets a cost
                OR (f.cost IS NULL AND NOT f.at_home AND c.charging_type = 'DC' AND COALESCE(f.kwh, 0) > 0
@@ -646,7 +797,12 @@ def fill_charge_facts(
         return 0
     sessions = [
         (
-            dict(zip(("id", "session_start_date", "session_end_date", "session_position_latitude", "session_position_longitude", "real_charged", "charging_type", "real_cost", "network"), s))
+            dict(
+                zip(
+                    ("id", "session_start_date", "session_end_date", "session_position_latitude", "session_position_longitude", "real_charged", "charging_type", "real_cost", "network", "live_meter"),
+                    s,
+                )
+            )
             if not isinstance(s, dict)
             else s
         )
@@ -661,9 +817,9 @@ def fill_charge_facts(
     facts = charge_facts(sessions, powers, tz, is_home, dc_price, dc_per_min, averages, sc_price=sc_price, sc_per_min=sc_per_min, place_of=place_of, bills=bills)
     with conn.cursor() as cur:
         cur.executemany(
-            """INSERT INTO cc_charge_facts (session_id, kwh, cost, plan, at_home, off_peak_kwh, part_peak_kwh, peak_kwh, period_kwh, cost_source, region, rate_month)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-               ON CONFLICT (session_id) DO UPDATE SET off_peak_kwh = EXCLUDED.off_peak_kwh,
+            """INSERT INTO cc_charge_facts (session_id, kwh, cost, plan, at_home, off_peak_kwh, part_peak_kwh, peak_kwh, period_kwh, cost_source, region, rate_month, computed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, now())
+               ON CONFLICT (session_id) DO UPDATE SET off_peak_kwh = EXCLUDED.off_peak_kwh, computed_at = now(),
                    part_peak_kwh = EXCLUDED.part_peak_kwh, peak_kwh = EXCLUDED.peak_kwh, period_kwh = EXCLUDED.period_kwh,
                    region = EXCLUDED.region, at_home = EXCLUDED.at_home,
                    -- Energy and cost too, over the zero or where the new figure is
@@ -788,10 +944,157 @@ def drain_reprices(conn, index) -> int:
     return cleared
 
 
+def take_meter(conn, vin: str, kwh: float, now: datetime) -> int | None:
+    """Keep the car's meter reading for the charge under way: the session the database plugin
+    has open for `vin`, and only an open one. A session whose end is set is finished and never
+    takes a reading, so a cable back in a few minutes later cannot hand the old charge the new
+    one's first tenths; while the new session has no start yet, the reading waits for the next
+    tick. A start a little ahead of now (the plugin's clock, or the car's) still counts.
+
+    The stored figure only grows. A reading under the last one is the meter restarting (the
+    plugin reopens a session across a pause, the car may count afresh), so the last peak is
+    carried and the new reading added to it; a dip of a few hundredths is the meter's rounding
+    and is let be. Facts are never lowered here: fill_charge_facts takes the larger of this and
+    the estimate. Returns the session, or None. Idempotent: the same reading writes nothing."""
+    row = conn.execute(
+        """SELECT id FROM charging_sessions WHERE vin = %s AND session_end_date IS NULL
+               AND session_start_date IS NOT NULL AND session_start_date <= %s + interval '2 minutes'
+           ORDER BY session_start_date DESC LIMIT 1""",
+        (vin, now),
+    ).fetchone()
+    if row is None:
+        return None
+    sid = row["id"] if isinstance(row, dict) else row[0]
+    conn.execute(METER_SQL, (sid, kwh, kwh, now))
+    return sid
+
+
+# m.last is NULL on a row kept before `last` was; its kwh was the last reading then.
+METER_SQL = """
+INSERT INTO cc_charge_meter AS m (session_id, kwh, last, carried, at) VALUES (%s, %s, %s, 0, %s)
+ON CONFLICT (session_id) DO UPDATE SET
+    carried = m.carried + CASE WHEN EXCLUDED.last < COALESCE(m.last, m.kwh) - 0.05 THEN COALESCE(m.last, m.kwh) ELSE 0 END,
+    last = EXCLUDED.last,
+    kwh = m.carried + CASE WHEN EXCLUDED.last < COALESCE(m.last, m.kwh) - 0.05 THEN COALESCE(m.last, m.kwh) ELSE 0 END + EXCLUDED.last,
+    at = EXCLUDED.at
+WHERE EXCLUDED.last > COALESCE(m.last, m.kwh) OR EXCLUDED.last < COALESCE(m.last, m.kwh) - 0.05"""
+
+
 def drop_orphans(conn) -> None:
     """Facts whose session was deleted (a re-import replaces sessions under new ids)."""
     conn.execute("DELETE FROM cc_trip_facts f WHERE NOT EXISTS (SELECT 1 FROM trips t WHERE t.id = f.trip_id)")
     conn.execute("DELETE FROM cc_charge_facts f WHERE NOT EXISTS (SELECT 1 FROM charging_sessions c WHERE c.id = f.session_id)")
+
+
+# A drive's or charge's stored facts set against what its readings say now, a batch of
+# sessions (by id, from `since`) at a time. The same lookups fill_trip_facts and the
+# range_added backfill make, so a row that differs was worked out from different readings
+# or a different end: before rebuilds dropped the facts of a session whose end moved
+# (history.moved_ends), a drive first written mid-drive kept its levels from that moment.
+STALE_TRIPS_SQL = """
+        WITH page AS (SELECT t.id FROM trips t WHERE t.vin = %s AND t.start_date >= %s AND t.id > %s AND t.destination_date IS NOT NULL ORDER BY t.id LIMIT %s)
+        SELECT t.id, t.start_date, t.destination_odometer - t.start_odometer AS miles,
+               f.level_start, f.level_end, f.range_start, f.range_end,
+               ls.level AS now_level_start, le.level AS now_level_end, rs.range AS now_range_start, re.range AS now_range_end
+        FROM page JOIN trips t ON t.id = page.id JOIN cc_trip_facts f ON f.trip_id = t.id
+        JOIN drives dv ON dv.vin = t.vin
+        LEFT JOIN LATERAL (SELECT r.range FROM drive_ranges r WHERE r.drive_id = dv.id AND r.first_date <= t.start_date ORDER BY r.first_date DESC LIMIT 1) rs ON TRUE
+        LEFT JOIN LATERAL (SELECT r.range FROM drive_ranges r WHERE r.drive_id = dv.id AND r.first_date <= t.destination_date ORDER BY r.first_date DESC LIMIT 1) re ON TRUE
+        LEFT JOIN LATERAL (SELECT l.level FROM drive_levels l WHERE l.drive_id = dv.id AND l.first_date <= t.start_date ORDER BY l.first_date DESC LIMIT 1) ls ON TRUE
+        LEFT JOIN LATERAL (SELECT l.level FROM drive_levels l WHERE l.drive_id = dv.id AND l.first_date <= t.destination_date ORDER BY l.first_date DESC LIMIT 1) le ON TRUE
+        ORDER BY t.id"""
+
+STALE_CHARGES_SQL = """
+        WITH page AS (SELECT c.id FROM charging_sessions c WHERE c.vin = %s AND c.session_start_date >= %s AND c.id > %s AND c.session_end_date IS NOT NULL ORDER BY c.id LIMIT %s)
+        SELECT c.id, c.session_start_date AS start_date, f.range_added,
+               (SELECT r.range FROM drive_ranges r WHERE r.drive_id = dv.id AND r.first_date <= c.session_end_date ORDER BY r.first_date DESC LIMIT 1)
+             - (SELECT r.range FROM drive_ranges r WHERE r.drive_id = dv.id AND r.first_date <= c.session_start_date ORDER BY r.first_date DESC LIMIT 1) AS now_range_added
+        FROM page JOIN charging_sessions c ON c.id = page.id JOIN cc_charge_facts f ON f.session_id = c.id
+        JOIN drives dv ON dv.vin = c.vin
+        ORDER BY c.id"""
+
+TRIP_ENDS = ("level_start", "level_end", "range_start", "range_end")
+
+
+def _rows(conn, sql: str, args) -> list[dict]:
+    cur = conn.execute(sql, args)
+    names = [d.name for d in cur.description]
+    return [r if isinstance(r, dict) else dict(zip(names, r)) for r in cur.fetchall()]
+
+
+def _differs(key: str, stored, now) -> bool:
+    # a range not filled yet is the backfill's to fill, not wrong; a sentinel (-999:
+    # looked, nothing there) agrees with a lookup that finds nothing
+    if stored is None and key.startswith("range"):
+        return False
+    if stored is not None and stored <= -999:
+        stored = None
+    return (stored is None) != (now is None) or (stored is not None and abs(stored - now) > 0.005)
+
+
+def stale_ends(conn, vin: str, since: datetime, batch: int = BATCH) -> tuple[list[dict], list[dict]]:
+    """The car's drives and charges from `since` whose stored levels, ranges or range added
+    disagree with their readings. Read only; a batch of sessions per statement."""
+    out = []
+    for sql, keys in ((STALE_TRIPS_SQL, TRIP_ENDS), (STALE_CHARGES_SQL, ("range_added",))):
+        found, after = [], 0
+        while True:
+            rows = _rows(conn, sql, (vin, since, after, batch))
+            found += [r for r in rows if any(_differs(k, r[k], r["now_" + k]) for k in keys)]
+            if len(rows) < batch:
+                break
+            after = rows[-1]["id"]
+        out.append(found)
+    return out[0], out[1]
+
+
+def repair_ends(conn, vin: str, since: datetime, dry_run: bool = True, batch: int = BATCH) -> tuple[list[dict], list[dict]]:
+    """Put right what stale_ends finds. A drive's facts go (and its route line, worked out to
+    the same wrong end), for fill_trip_facts and the backfills to work out again; a charge's
+    range added is cleared for the range_added backfill. Run it again and it finds nothing."""
+    trips, charges = stale_ends(conn, vin, since, batch)
+    if dry_run:
+        return trips, charges
+    for i in range(0, len(trips), batch):
+        part = trips[i : i + batch]
+        driveedits.forget(conn, vin, [t["id"] for t in part], [t["start_date"] for t in part])
+        conn.commit()
+    for i in range(0, len(charges), batch):
+        conn.execute("UPDATE cc_charge_facts SET range_added = NULL WHERE session_id = ANY(%s)", ([c["id"] for c in charges[i : i + batch]],))
+        conn.commit()
+    return trips, charges
+
+
+# A charge the connector's database plugin wrote as two rows: a plug reading arrived while the
+# car was charging, the plugin opened a second session on it, and the charge's end went there.
+# One Lucid charge read "12:16 AM, Home" with no end beside an end-only row. The first row takes
+# the end, the level and the unplugging from the end-only row that opened inside it, once that
+# plug-in is over and no other charge started in between. The end-only row stays (it has no
+# start, so no list counts it): the plugin's rows are its own, this only fills a blank.
+HEAL_SPLIT_SQL = """
+        WITH pair AS (
+            SELECT a.id, b.session_end_date, b.end_level, b.plug_disconnected_date
+            FROM charging_sessions a
+            JOIN LATERAL (SELECT b.session_end_date, b.end_level, b.plug_disconnected_date FROM charging_sessions b
+                          WHERE b.vin = a.vin AND b.session_start_date IS NULL AND b.session_end_date > a.session_start_date
+                            AND b.plug_connected_date >= a.session_start_date AND b.plug_disconnected_date IS NOT NULL
+                          ORDER BY b.session_end_date LIMIT 1) b ON TRUE
+            WHERE a.vin = %s AND a.session_start_date IS NOT NULL AND a.session_end_date IS NULL
+              AND NOT EXISTS (SELECT 1 FROM charging_sessions o WHERE o.vin = a.vin AND o.session_start_date > a.session_start_date AND o.session_start_date < b.session_end_date))
+        UPDATE charging_sessions c SET session_end_date = p.session_end_date, end_level = COALESCE(c.end_level, p.end_level),
+               plug_disconnected_date = COALESCE(c.plug_disconnected_date, p.plug_disconnected_date)
+        FROM pair p WHERE c.id = p.id"""
+
+
+def heal_split_charges(conn, vin: str) -> int:
+    return conn.execute(HEAL_SPLIT_SQL, (vin,)).rowcount
+
+
+# A charge's energy and cost for "finished charging" (vin, since): only facts worked out after the session
+# ended. The connector moves a live session's end as it charges, and facts taken partway are its first kWh.
+FINISHED_CHARGE_SQL = """SELECT f.kwh, f.cost FROM charging_sessions s JOIN cc_charge_facts f ON f.session_id = s.id
+    WHERE s.vin = %s AND COALESCE(s.session_end_date, s.session_start_date) >= %s AND f.computed_at >= s.session_end_date
+    ORDER BY s.id DESC LIMIT 1"""
 
 
 def ensure_tables(conn) -> None:
@@ -799,6 +1102,7 @@ def ensure_tables(conn) -> None:
     statement and, while it waits, blocks every reader of the table (the whole site)."""
     conn.execute(DDL)
     conn.execute(billed.DDL)
+    conn.execute(driveedits.DDL)
 
 
 def fill_facts(
@@ -815,6 +1119,7 @@ def fill_facts(
 ) -> tuple[int, int]:
     drop_orphans(conn)
     trips = fill_trip_facts(conn, vin)
+    heal_split_charges(conn, vin)
     fill_charge_regions(conn, vin)
     charges = fill_charge_facts(conn, vin, tz, is_home, dc_price=dc_price, dc_per_min=dc_per_min, averages=averages, sc_price=sc_price, sc_per_min=sc_per_min, place_of=place_of)
     row = conn.execute(

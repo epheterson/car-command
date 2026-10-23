@@ -9,6 +9,8 @@ H = timedelta(hours=1)
 
 
 class Conn:
+    description = None  # no cursor columns: a statement it does not answer returns no rows (driveedits reads by column name)
+
     def __init__(self, deleted=None):
         self.calls = []
         self.deleted = deleted or {}
@@ -52,6 +54,9 @@ def test_rolling_clear_is_bounded_and_keeps_by_hand_rows():
         if "cc_imports" in s:
             assert params == ("teslafi-live:VIN1",)
             continue
+        if s.startswith("SELECT"):
+            assert params[-2:] == (T0, T0), "the stretch the window opens inside is read, to be handed back"
+            continue
         assert params[-2:] == (T0, T0 + H), s
     assert "DELETE FROM cc_positions WHERE import_id = %s AND at >= %s AND at <= %s" in sql
     assert "seen_at >= %s" in sql, "software rows outside the window stay"
@@ -72,6 +77,8 @@ def test_a_rolling_import_clears_its_window_on_its_first_write():
     from history import write_history
 
     class Conn:
+        description = None
+
         def __init__(self):
             self.calls = []
 
@@ -132,11 +139,12 @@ def test_a_rolling_rewrite_hands_back_the_ids_it_removed():
     """The hourly rebuild deleted and re-inserted its window, so every drive in it got a new
     id each hour: an open drive page went 404 and a tag or a hide keyed by the id was
     orphaned. The rows it removes now come back with their ids, keyed by their start."""
-    conn = Conn(deleted={"trips": [(130778, T0)], "charging_sessions": [(39204, T0 + H)]})
+    conn = Conn(deleted={"trips": [(130778, T0, T0 + H / 2)], "charging_sessions": [(39204, T0 + H, T0 + 2 * H)]})
     kept = clear_import(conn, "VIN1", 7, "teslafi-live:VIN1", T0, T0 + 2 * H, rolling=True)
-    assert kept == {"trips": {T0: 130778}, "charging_sessions": {T0 + H: 39204}}
+    assert kept["trips"] == {T0: 130778} and kept["charging_sessions"] == {T0 + H: 39204}
     sql = "\n".join(s for s, _ in conn.calls)
-    assert "RETURNING id, start_date" in sql and "RETURNING id, session_start_date" in sql
+    assert kept["ends"] == {"trips": {130778: T0 + H / 2}, "charging_sessions": {39204: T0 + 2 * H}}, "with where each ended"
+    assert "RETURNING id, start_date, destination_date" in sql and "RETURNING id, session_start_date, session_end_date" in sql
 
 
 def test_rows_take_back_the_id_of_the_row_that_started_at_the_same_moment():
@@ -151,6 +159,8 @@ def test_the_writer_puts_a_rewritten_drive_back_under_its_old_id():
     from history import write_history
 
     class Conn:
+        description = None
+
         def __init__(self):
             self.calls, self.copies = [], []
 
@@ -162,7 +172,7 @@ def test_the_writer_puts_a_rewritten_drive_back_under_its_old_id():
             return (1,) if "FROM drives" in self.calls[-1] else None
 
         def fetchall(self):
-            return [(130778, T0)] if self.calls[-1].startswith("DELETE FROM trips") else []
+            return [(130778, T0, T0 + H / 2)] if self.calls[-1].startswith("DELETE FROM trips") else []
 
         def cursor(self):
             return self
@@ -216,3 +226,46 @@ def test_the_writer_puts_a_rewritten_drive_back_under_its_old_id():
     with_id = [c for c in trips if c[0].startswith("COPY trips (id,")]
     assert with_id and with_id[0][1][:2] == (130778, "VIN1") and with_id[0][1][2] == T0, "the drive that started at the same moment keeps its id"
     assert [r[1] for c in trips if not c[0].startswith("COPY trips (id,") for r in c[1:]] == [T0 + H], "a new drive gets a new one"
+
+
+def test_a_file_over_rows_another_file_loaded_replaces_them_instead_of_colliding():
+    """The TeslaFi re-import that failed with UniqueViolation: a wider export of the same car, a different
+    file (so a different import id), over drives and charges the first one wrote. Its first write owns its span."""
+    from history import write_history
+
+    class Rec(Conn):
+        def __init__(self):
+            super().__init__()
+
+        def fetchone(self):
+            return (1,) if "FROM drives" in self.last else None  # a drive row exists, no previous import of this file
+
+        def cursor(self):
+            return self
+
+        def commit(self):
+            pass
+
+        def copy(self, sql):
+            return self
+
+        def write_row(self, r):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    conn = Rec()
+    out = {k: [] for k in ("states", "connection_states", "charging_states", "outside_temperatures", "charging_powers", "drive_levels", "drive_ranges", "trips", "charging_sessions", "positions", "software")}
+    out.update(first=T0, last=T0 + 10 * H, rows=1, vehicle={})
+    write_history(conn, "VIN1", "Alpha", "Tesla", "Model 3", 75.0, out, "widerfile", "wide.csv", timezone.utc)
+    sql = [(s, p) for s, p in conn.calls if s.startswith("DELETE")]
+    trips = [p for s, p in sql if s.startswith("DELETE FROM trips")]
+    assert trips == [("VIN1", T0, T0 + 10 * H)], "drives that start in the file's span go before its own are written"
+    assert any(s.startswith("DELETE FROM charging_sessions") for s, _ in sql) and any(s.startswith("DELETE FROM cc_trip_extras") for s, _ in sql)
+    others = [(s, p) for s, p in sql if "import_id <> %s" in s]
+    assert len(others) == 2 and all(p == ("VIN1", T0, T0 + 10 * H, "widerfile") for _, p in others), "positions and software an earlier file left inside the span go too"
+    assert all("import_id IS NOT NULL" in s for s, _ in others), "the live recorder's positions (no import id) stay"

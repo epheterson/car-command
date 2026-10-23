@@ -1,0 +1,11 @@
+{# Tire pressure for one car: the four now, every day, the last 30 days. `b` is app.tire_block's. Lives on Service, beside the tire sets. #}
+{% import "_parts.html" as parts %}{% import "_info.html" as i %}
+{% if b.tire_history or b.tires %}
+<h2 class="sec">Tire pressure {% call i.info('Tire pressure') %}Each tire in its colour over the four's average (filled); one scale for the four. A tire 2 psi under the other three is marked.{% endcall %}</h2>
+<div class="tires-head">
+  {% if b.tire_now %}<figure class="tirecar" aria-label="Tire pressures now">{% for t in b.tire_now %}<span class="tc tc-{{ t.key }}{{ ' low' if t.low }}" title="{{ t.label }}{{ ', low against the others' if t.low }}"><b>{{ t.psi|num(1) }}</b><small>{{ t.label }}</small></span>{% endfor %}
+    <svg class="tc-car" viewBox="0 0 40 72" aria-hidden="true"><rect x="5" y="2" width="30" height="68" rx="13"/><path d="M10 22h20M10 50h20"/>{% for t in b.tire_now %}<rect class="tw{{ ' low' if t.low }}" x="{{ 1 if t.key in ('fl', 'rl') else 35 }}" y="{{ 12 if t.key in ('fl', 'fr') else 46 }}" width="4" height="14" rx="2"/>{% endfor %}</svg></figure>{% endif %}
+</div>
+{% if b.tire_history %}<h3 class="sub-h">Every day, {{ b.tire_history.days }} days</h3>{{ parts.chart('tires-' ~ b.vin, b.tire_history, now_text='average of four', sync=none) }}{% endif %}
+{% if b.tires %}<h3 class="sub-h">Last 30 days</h3>{{ parts.chart('tires30-' ~ b.vin, b.tires, now_text='average of four') }}{% endif %}
+{% endif %}

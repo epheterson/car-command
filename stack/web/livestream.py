@@ -17,7 +17,7 @@ def sse(event: str, data: dict) -> str:
 def changed(prev: dict[str, str], cards: dict[str, dict]) -> tuple[list[dict], dict[str, str]]:
     """The cards whose markup differs from what was last sent, and the new record of it.
     A card no longer offered is forgotten: if it comes back, it is sent again."""
-    sent = [{"vin": vin, "html": c["html"], "lat": c.get("lat"), "lon": c.get("lon")} for vin, c in cards.items() if prev.get(vin) != c["html"]]
+    sent = [{"vin": vin, "html": c["html"], "lat": c.get("lat"), "lon": c.get("lon"), "heading": c.get("heading")} for vin, c in cards.items() if prev.get(vin) != c["html"]]
     return sent, {vin: c["html"] for vin, c in cards.items()}
 
 

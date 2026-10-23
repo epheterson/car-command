@@ -1,0 +1,3 @@
+{# A car's last commands, drawn when the Now card's Command log is opened. #}
+{% if rows %}<dl class="cmd-rows">{% for r in rows %}<dt>{{ r.at|local }}</dt><dd><span class="sstate"><span class="sdot {{ 'ok' if r.ok else 'bad' }}" aria-hidden="true"></span>{{ r.label }}{% if r.arg is not none %} {{ '%g'|format(r.arg) }}{% endif %}</span> <span class="muted small">{{ r.source }}{% if r.detail %} · {{ r.detail }}{% endif %}</span></dd>{% endfor %}</dl>
+{% else %}<span class="muted small">No commands yet</span>{% endif %}

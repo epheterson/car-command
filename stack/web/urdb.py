@@ -37,7 +37,7 @@ from urllib.parse import urlencode
 import cost
 
 BASE = "https://api.openei.org/utility_rates"
-SIGNUP = "https://openei.org/services/api/signup/"
+SIGNUP = "https://apps.openei.org/services/api/signup/"
 VERSION = 7
 DEADLINE_S = 20  # every request of one Search, Preview or Use, together
 PAGE = 500  # the most OpenEI returns per request
@@ -312,6 +312,10 @@ def _day(epoch) -> date | None:
         return None
 
 
+def _date_text(d: date) -> str:
+    return f"{d:%b} {d.day}, {d.year}"
+
+
 def _money(x: float) -> str:
     """Dollars to the cent, or to as many places as a price per kWh needs (at least two)."""
     whole, _, frac = f"{x:,.5f}".partition(".")
@@ -409,7 +413,7 @@ def version_of(item: dict) -> dict:
         notes.append("Tiered by use: each period is priced at its first tier. Higher tiers, not priced: " + "; ".join(bits) + ".")
     for amount, unit, what in ((item.get("fixedchargefirstmeter"), item.get("fixedchargeunits"), "Fixed charge"), (item.get("mincharge"), item.get("minchargeunits"), "Minimum charge")):
         if isinstance(amount, (int, float)) and amount > 0:
-            notes.append(f"{what} {_money(float(amount))}{(unit or '').replace('$', '')}, not priced.")
+            notes.append(f"{what} ${float(amount):,.2f}{(unit or '').replace('$', '')}, not priced.")  # to the cent, as a bill shows it
     if item.get("demand"):
         notes.append("Demand charges, not priced.")
     return {
@@ -530,40 +534,158 @@ def kind(v: dict) -> str:
 
 
 def summary(group: list[dict], today: date) -> dict:
-    """One tariff as a row of the list: its newest version's name, kind and fixed charge."""
+    """One tariff as a row of the list: its newest version's name, kind and fixed charge,
+    and whether a new customer can take it today.
+
+    OpenEI dates a rate closed to new customers in one of two ways: "Closed rate" in its
+    name, or an end date before its start (the day it closed, on a version that still
+    applies to the customers already on it: one EV rate reads start 2026-03-27, end
+    2025-12-01). Neither has ended for those customers, so neither is an end."""
     newest = group[-1]
-    end = _day(newest.get("enddate"))
+    start, end = _day(newest.get("startdate")), _day(newest.get("enddate"))
+    closed_since = end if end and start and end < start else None
+    if closed_since:
+        end = None
+    closed = bool(closed_since) or "closed" in _norm(newest.get("name"))
     try:
         v = version_of(newest)
         what, tiered, usable = kind(v), "Tiered" in (v["fixed_note"] or ""), True
     except URDBError:
         what, tiered, usable = "No energy price", False, False
     fixed = newest.get("fixedchargefirstmeter")
+    name = " ".join(str(newest.get("name") or "").split())
+    shown = re.sub(r"\s*;\s*closed rate\b.*$", "", name, flags=re.I) or name  # the status line says it
+    ended = end is not None and end < today
+    status = f"Ended {_date_text(end)}" if ended else "Closed to new customers" + (f" since {_date_text(closed_since)}" if closed_since else "") if closed else None
     return {
         "label": newest["label"],
-        "name": " ".join(str(newest.get("name") or "").split()),
+        "labels": [x["label"] for x in group],
+        "status": status,
+        "since": _date_text(start) if start else None,
+        "name": name,
+        "shown": shown,
         "utility": newest.get("utility") or "",
         "first": _day(group[0].get("startdate")),
-        "start": _day(newest.get("startdate")),
+        "start": start,
         "end": end,
-        "current": end is None or end >= today,
+        "closed": closed,
+        "closed_since": closed_since,
+        "ended": ended,
+        "open": not closed and not ended,
+        "current": not ended,
+        "ev": bool(EV.search(name)),
         "versions": len({x.get("startdate") for x in group}),
         "kind": what,
         "tiered": tiered,
-        "fixed": f"{_money(float(fixed))}{(newest.get('fixedchargeunits') or '').replace('$', '')}" if isinstance(fixed, (int, float)) and fixed > 0 else None,
+        "fixed": f"${fixed:,.2f}{(newest.get('fixedchargeunits') or '').replace('$', '')}" if isinstance(fixed, (int, float)) and fixed > 0 else None,  # to the cent: a list, not a bill
         "usable": usable,
     }
 
 
-def listing(items: list[dict], today: date, contains: str = "") -> dict:
-    """The search as Settings shows it: a row per tariff, current ones first, then by name;
-    `contains` narrows by name. At most SHOWN rows, and how many there were."""
+# The words a tariff's name shares with every other: what is left is its code ("EV2",
+# "E-TOU-C", "EV Rate A"), which is what a bill and a typed-in plan's name carry.
+EV = re.compile(r"\bEV(?![A-Za-z])|(?i:electric vehicle)")
+GENERIC = {"electric", "vehicle", "vehicles", "residential", "sch", "schedule", "rate", "rates", "closed", "service", "plan", "tariff", "the", "and", "for"}
+
+
+def codes(name) -> set[str]:
+    """The codes in a plan's name, flattened: "PG&E EV2A" -> {pge, ev2a, pgeev2a},
+    "Electric Vehicle EV (Sch) Rate A" -> {ev, a, eva}. A code is a word with a digit in
+    it or written in capitals; two codes side by side once the generic words are gone
+    are one more ("EV Rate A" is EV-A)."""
+    words = [w for w in re.findall(r"[A-Za-z0-9][A-Za-z0-9&.\-]*", str(name or "")) if _compact(w) not in GENERIC]
+    coded = [(_compact(w) if any(c.isdigit() for c in w) or (w.upper() == w and any(c.isalpha() for c in w)) else None) for w in words]
+    out = {c for c in coded if c and len(c) >= 2}
+    out |= {a + b for a, b in zip(coded, coded[1:]) if a and b}
+    return out
+
+
+def matched(mine: set[str], theirs: set[str]) -> str | None:
+    """The code of `mine` that made the two alike ("ev2a"), for the badge."""
+    for a in sorted(mine, key=len, reverse=True):
+        if likeness({a}, theirs):
+            return a
+    return None
+
+
+def likeness(mine: set[str], theirs: set[str]) -> int:
+    """2 when a code is the same in both, 1 when one is the other with a letter more (EV2A,
+    EV2: the letter is the rate's option), else 0."""
+    if mine & theirs:
+        return 2
+    for a in mine:
+        for b in theirs:
+            short, long_ = sorted((a, b), key=len)
+            if len(short) >= 3 and len(long_) == len(short) + 1 and long_.startswith(short):
+                return 1
+    return 0
+
+
+# A tariff offered once per baseline region, and again for all-electric homes: one family,
+# the same plan to choose, its variants differing in the baseline allowance.
+VARIANT = re.compile(r"\s*\b(?:Baseline )?Region [A-Z]\b|\s*\(All[- ]Electric(?: Service)?\)", re.I)
+SHORT = 8  # rows in the first list; the rest behind "Show all"
+
+
+def family(name: str) -> str:
+    return " ".join(VARIANT.sub("", name).split()).strip(" -;,")
+
+
+def listing(items: list[dict], today: date, contains: str = "", mine: dict | None = None) -> dict:
+    """The search as Settings shows it: a row per tariff, and a short list of the plans an EV
+    household would choose between. The plan in use (`mine`, the home plan) is flagged: the
+    very tariff when it came from OpenEI, else the one whose name carries the same code
+    ("PG&E EV2A" and "EV2 (Sch)") as like it, one row per family that ties, at most three
+    (more is no answer). The rows: those flagged, then plans a new customer can take, EV
+    plans first, then those closed to new customers or ended, each by name. `short`: the
+    flagged, then open time-of-use and EV plans priced by the hour (not tiered), a row per
+    family, at most SHORT. `contains` narrows by name. At most SHOWN rows, and how many
+    there were."""
     rows = [summary(g, today) for g in groups(items)]
     want = _norm(contains)
     if want:
         rows = [r for r in rows if want in _norm(r["name"])]
-    rows.sort(key=lambda r: (not r["current"], not r["usable"], _norm(r["name"])))
-    return {"rows": rows[:SHOWN], "total": len(rows), "more": bool(getattr(items, "more", False)), "utilities": sorted({r["utility"] for r in rows if r["utility"]})}
+    mine = mine or {}
+    source = str(mine.get("source") or "")
+    picked = source.split(":", 1)[1] if source.startswith("urdb:") else None
+    kin: dict[str, list[dict]] = {}
+    for r in sorted(rows, key=lambda r: _norm(r["name"])):
+        r["mine"], r["like"], r["family"] = bool(picked and picked in r["labels"]), False, family(r["name"])
+        kin.setdefault(_norm(r["family"]), []).append(r)
+    for r in rows:
+        r["variants"] = len(kin[_norm(r["family"])])
+    if not any(r["mine"] for r in rows) and mine.get("name"):
+        have = codes(mine["name"])
+        scored = [((likeness(have, codes(r["name"])), r["open"], r["start"] or date.min), r) for r in rows if r["usable"]]
+        top = max((k for k, _ in scored), default=(0,))
+        tied = {_norm(r["family"]) for k, r in scored if k == top}
+        if top[0] and len(tied) <= 3:  # one of three plans may be yours; one of twenty is no answer
+            for fam in tied:
+                r = next(r for r in kin[fam] if r["usable"])
+                r["like"], r["match"] = True, (matched(have, codes(r["name"])) or "").upper()
+    rows.sort(key=lambda r: (not (r["mine"] or r["like"]), not r["open"], not r["usable"], not r["ev"], _norm(r["name"])))
+    short, seen = [], set()
+    for r in rows:
+        flagged = r["mine"] or r["like"]
+        if flagged or (r["open"] and r["usable"] and not r["tiered"] and (r["ev"] or r["kind"] == "Time-of-use")):
+            if _norm(r["family"]) not in seen:
+                seen.add(_norm(r["family"]))
+                short.append(r)
+    short.sort(key=lambda r: (not (r["mine"] or r["like"]), not r["ev"], _norm(r["name"])))
+    return {
+        "rows": rows[:SHOWN],
+        "short": short[:SHORT],
+        "total": len(rows),
+        "open": sum(r["open"] for r in rows[:SHOWN]),
+        "more": bool(getattr(items, "more", False)),
+        "utilities": sorted({r["utility"] for r in rows if r["utility"]}),
+    }
+
+
+def kin_of(rows: list[dict], label: str) -> list[dict]:
+    """The variants of the plan `label` is a version of (itself among them), by name."""
+    me = next((r for r in rows if label in r["labels"]), None)
+    return [] if me is None else sorted((r for r in rows if r["family"] == me["family"]), key=lambda r: _norm(r["name"]))
 
 
 def preview(plan: dict) -> dict:
@@ -642,3 +764,87 @@ def utility_for(text: str) -> dict | None:
         if e == eia or _compact(name) == want:
             return {"eia": e, "name": name, "states": states}
     return None
+
+
+ZIPS = Path(__file__).parent / "rates" / "zip_utilities.json"
+_ZIPS: dict | None = None
+ZIP_IN = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+
+
+def zip_utilities() -> dict[str, list[int]]:
+    """ZIP code -> the utilities serving homes there (rates/zip_utilities.json, built by
+    scripts/build-zip-utilities.py), read once. Empty when the file is missing."""
+    global _ZIPS  # noqa: PLW0603 - read once, on the first look
+    if _ZIPS is None:
+        _ZIPS = {}
+        try:
+            for eia, text in json.loads(ZIPS.read_text()).get("utilities", {}).items():
+                z = 0
+                for step in text.split():
+                    z += int(step, 16)
+                    _ZIPS.setdefault(f"{z:05d}", []).append(int(eia))
+        except (OSError, ValueError):
+            _ZIPS = {}
+    return _ZIPS
+
+
+def zip_of(*addresses) -> str | None:
+    """The ZIP code an address ends with ("…, Springfield, IL 62701", "…, 62701, United
+    States"): the last five digits standing alone, not the first word (a house number)."""
+    for text in addresses:
+        hits = [m for m in ZIP_IN.finditer(str(text or "")) if m.start() > 0]
+        if hits:
+            return hits[-1].group(1)
+    return None
+
+
+def in_state(state: str | None, n: int = 4, zip_code: str | None = None) -> dict:
+    """The utilities likely to serve the home, from what is known of it here: those the
+    home's ZIP code lists, largest first, then those serving its state ("CA"), the ones
+    serving that state alone first. The ZIP lists are approximate, so even one utility
+    there is a suggestion: `sure` only says the ZIP code names exactly one."""
+    want = str(state or "").upper()
+    known = {eia: (name, states, c or 0) for eia, name, states, c in utilities().get("utilities") or []}
+    near = [e for e in zip_utilities().get(zip_code or "", []) if e in known and (not want or want in str(known[e][1]).split(","))]
+    near.sort(key=lambda e: -known[e][2])
+    # customers are counted across all of a utility's states, so those serving this state
+    # alone rank first, by customers, and the many-state ones (and retailers) after
+    rest = sorted(
+        ((len(str(states).split(",")) > 1, -c, eia) for eia, (name, states, c) in known.items() if want and want in str(states).split(",") and eia not in near),
+    )
+    rows = [{"eia": e, "name": known[e][0], "zip": True} for e in near] + [{"eia": e, "name": known[e][0], "zip": False} for _, _, e in rest]
+    return {"state": want or None, "zip": zip_code if near else None, "rows": rows[: max(n, len(near))], "sure": len(near) == 1}
+
+
+def utility_in(text: str) -> dict | None:
+    """The utility a bill's text names: a known short name ("PG&E", "ComEd") as a word, else
+    the longest full name it contains ("Pacific Gas and Electric" reads as "& Electric")."""
+    u = utilities()
+    low = " ".join(str(text or "").lower().replace(" and ", " & ").split())
+    names = {e: (name, states) for e, name, states, _c in u.get("utilities") or []}
+    for alias, eia in sorted((u.get("aliases") or {}).items(), key=lambda a: -len(a[0])):
+        if eia in names and re.search(rf"(?<![a-z0-9&]){re.escape(alias)}(?![a-z0-9&])", low):
+            return {"eia": eia, "name": names[eia][0], "states": names[eia][1]}
+    hits = []
+    for eia, (name, states) in names.items():
+        core = re.sub(r"\b(co|company|corp|inc|llc)\.?$", "", name.lower()).strip(" ,.")
+        if len(core) >= 8 and core in low:
+            hits.append((len(core), eia, name, states))
+    if hits:
+        _, eia, name, states = max(hits)
+        return {"eia": eia, "name": name, "states": states}
+    return None
+
+
+def short_name(eia, name: str | None = None) -> str:
+    """A utility as people say it: its short name in the bundled list ("PG&E"), else its
+    name without the company suffix."""
+    try:
+        eia = int(eia)
+    except (TypeError, ValueError):
+        eia = None
+    # initials only ("pg&e", "sce"): written in capitals, as they are on a bill
+    aliases = [a for a, e in (utilities().get("aliases") or {}).items() if e == eia and " " not in a and ("&" in a or len(a) <= 4)]
+    if aliases:
+        return sorted(aliases, key=lambda a: (-("&" in a), len(a)))[0].upper()
+    return re.sub(r"\s*\b(co|company|corp|inc|llc)\.?$", "", str(name or ""), flags=re.I).strip(" ,") or "The utility"

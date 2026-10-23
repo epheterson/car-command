@@ -25,14 +25,15 @@ def fleet(*answers):
     return Fleet("client-alpha", "ta-secret.springfield", call=fake), fake
 
 
-def test_the_sign_in_link_asks_for_the_read_scopes_and_the_charging_history_one_and_carries_the_state():
+def test_the_sign_in_link_asks_for_the_read_scopes_the_charging_one_and_commands_and_carries_the_state():
     f, _ = fleet()
     url = f.authorize_url("https://example.test/settings/sources/tesla/callback", "st8")
     q = parse_qs(urlparse(url).query)
     assert url.startswith(tesla_fleet.AUTHORIZE)
     assert q["client_id"] == ["client-alpha"] and q["response_type"] == ["code"] and q["state"] == ["st8"]
     assert q["redirect_uri"] == ["https://example.test/settings/sources/tesla/callback"]
-    assert q["scope"][0].split() == ["openid", "offline_access", "vehicle_device_data", "vehicle_location", "vehicle_charging_cmds"]
+    assert q["scope"][0].split() == ["openid", "offline_access", "vehicle_device_data", "vehicle_location", "vehicle_charging_cmds", "vehicle_cmds"]
+    assert q["prompt_missing_scopes"] == ["true"], "an account that signed in before commands is asked for the new scope"
 
 
 def test_a_code_is_exchanged_with_the_secret_and_the_expiry_becomes_a_time(monkeypatch):

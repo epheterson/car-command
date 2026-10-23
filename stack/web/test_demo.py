@@ -120,7 +120,7 @@ def test_comet_mid_drive_is_a_drive_under_way_with_somewhere_to_be():
     ]
     first, last = activity.run(readings, "Driving", now.replace(tzinfo=utc))
     b = activity.banner({"vin": demo.VIN, "name": demo.NAME, "status": "Driving"}, "driving", (first, last), now.replace(tzinfo=utc), kwh_per_rated_mi=demo.CAPACITY_KWH / demo.RATED_MI_AT_100)
-    assert b["since"] == timedelta(minutes=7) and 4 < b["miles"] < 5 and abs(b["wh_per_mi"] - demo.WH_PER_MI) < 3
+    assert b["since"] == timedelta(minutes=7) and abs(b["miles"] - demo.route("Home", "Work").miles * 7 / 11) < 0.1 and abs(b["wh_per_mi"] - demo.WH_PER_MI) < 3
     recs = [(datetime.strptime(n["at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=utc), n["record"]) for n in reversed(nav)]
     assert tesla_nav.route_from_records(recs, now.replace(tzinfo=utc)) == {"name": "Work", "minutes": 4, "miles": recs[0][1]["data"][1]["value"]["doubleValue"]}
 
@@ -171,21 +171,96 @@ def _off_road_m(p, points) -> float:
 
 
 def test_a_drive_heads_along_the_road_and_its_odometer_is_the_road_length():
+    from datetime import datetime
+
     import demo
 
     road = demo.route("Home", "Work")
     (pos0, h0), (pos1, _) = road.at(0), road.at(1)
     assert pos0 == road.points[0] and pos1 == road.points[-1] and 0 <= h0 < 360
-    rows = [r for r in generate(days=3, seed=7) if r["driveNumber"] == "1"]
+    rows = [r for r in generate(days=3, seed=7, end=datetime(2026, 9, 17, 6, 0)) if r["driveNumber"] == "1"]
     assert abs(float(rows[-1]["odometer"]) - float(rows[0]["odometer"]) - road.miles) < 0.01
 
 
 def test_the_newest_full_saturday_has_a_road_charge_and_the_night_before_a_home_charge():
     """So a timeline of the demo shows both kinds of charge in its newest week, on any date."""
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     rows = generate(days=42, seed=7, end=datetime(2026, 9, 17, 6, 0))
     fast = [r for r in rows if r["fast_charger_present"] == "True"]
     assert fast and {r["Date"][:10] for r in fast} == {"2026-09-12"}
     home = {r["Date"][:10] for r in rows if r["charging_state"] == "Charging" and r["fast_charger_present"] == "False"}
     assert "2026-09-12" in home, "a home charge in the small hours of that Saturday"
+
+
+def test_years_of_history_put_a_long_life_in_front_of_the_six_weeks():
+    """The pages that need years (the battery's lifetime, range per version, records) get a
+    lighter history: updates every month or so, the pack fading with the miles, winters on
+    their own tires, now and then a long Sunday loop."""
+    from datetime import datetime, timedelta
+
+    import demo
+
+    end = datetime(2026, 9, 17, 6, 0)
+    rows = demo.generate(years=1, end=end)
+    versions = []
+    for r in rows:
+        if not versions or versions[-1] != r["car_version"]:
+            versions.append(r["car_version"])
+    assert len(versions) >= 6, "an update every few weeks"
+    assert all(demo._vkey(a) < demo._vkey(b) for a, b in zip(versions, versions[1:])), f"each update newer than the last: {versions}"
+    six = {r["car_version"] for r in rows if r["Date"] >= "2026-08-07"}
+    assert six == {versions[-1]}, "the six weeks on one version, the newest"
+    assert {r["car_version"] for r in demo.generate(end=end)} == {demo.VERSION}, "no history: the six weeks on VERSION"
+    # a year of fade (a few miles) is inside the estimate's own wander; three years are not
+    full = [float(r["battery_range"]) / float(r["battery_level"]) * 100 for r in demo.generate(years=3, end=end) if float(r["battery_level"]) > 50]
+    assert sum(full[:2000]) / 2000 > sum(full[-2000:]) / 2000 + 4, "the pack's range at 100 % fades with the miles"
+    assert max(float(r["odometer"]) for r in rows) - float(rows[0]["odometer"]) > 4_000
+    assert {float(r["elevation"]) for r in rows[:5000]} != {180.0}, "the ground rises and falls"
+    sets = demo.tire_sets(end, 1)
+    assert [n for n, *_ in sets] == ["All-season", "Winter", "All-season"] and sets[-1][2] is None
+    assert demo.tire_sets(end, 0) == []
+    assert demo.generate(days=42, seed=7)[-1] == demo.generate(days=42, seed=7)[-1], "still deterministic"
+
+
+def test_the_six_weeks_are_the_same_six_weeks_whatever_history_comes_before():
+    from datetime import datetime, timedelta
+
+    import demo
+
+    end = datetime(2026, 9, 17, 6, 0)
+    plain, long = demo.generate(end=end), demo.generate(end=end, years=1)
+    schedule = lambda rows: [(r["Date"], r["driveNumber"] != "", r["speed"]) for r in rows if r["shift_state"] == "D"]  # noqa: E731
+    first = plain[0]["Date"]
+    assert schedule(plain) == schedule([r for r in long if r["Date"] >= first]), "the same drives at the same times and paces"
+
+
+def test_the_demo_ends_today_not_on_a_fixed_date():
+    from datetime import datetime, timedelta
+
+    import demo
+
+    assert demo.default_end(datetime(2026, 11, 3, 15, 0)) == datetime(2026, 11, 3, 6, 0)
+    assert demo.default_end(datetime(2026, 11, 3, 1, 30)) == datetime(2026, 11, 3, 6, 0)
+    now = datetime.now()
+    last = datetime.strptime(demo.generate(days=7)[-1]["Date"], "%Y-%m-%d %H:%M:%S")
+    assert last <= now and now - last < timedelta(days=2), "Now, Stats and Calendar open on live-looking data"
+
+
+def test_a_demo_made_overnight_ends_at_the_last_completed_hour_with_yesterdays_rows_in_it():
+    from datetime import datetime
+    from unittest import mock
+
+    import demo
+
+    class Overnight(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 3, 2, 40)
+
+    with mock.patch.object(demo, "datetime", Overnight):
+        rows = demo.generate(days=7)
+    stamps = [r["Date"] for r in rows]
+    assert max(stamps) <= "2026-11-03 02:00:00", "nothing past the last completed hour"
+    assert max(stamps) >= "2026-11-03 01:00:00", "and the data reaches it"
+    assert sum(s >= "2026-11-02 02:00:00" for s in stamps) > 100, "the last 24 hours are full"

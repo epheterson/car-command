@@ -10,6 +10,8 @@ import cost
 
 DEFAULTS = {
     "currency": "$",
+    # vin -> the name pages show for that car instead of its source's (carnames.py); the source is never changed.
+    "car_names": {},
     # "imperial" (miles, mph, °F, Wh/mi, feet) or "metric". Storage is always imperial;
     # this only decides how a page says a number. See units.Units.
     "units": "imperial",
@@ -29,6 +31,7 @@ DEFAULTS = {
     # Alert kinds switched off; every kind is on until it is.
     "muted_alerts": [],
     "alert_routes": None,
+    "alert_routed": None,  # the channels whose routing was ever chosen; one set in .env that is not here starts with the short default set (notify.settle_routes)
     "dc_per_min": None,  # fast charging billed by the minute, on top of dc_price
     "tire_low_psi": None,  # alert when any tire reads below / above these; blank is off
     "tire_high_psi": None,  # kind -> [channels]; None means every kind goes everywhere (or muted_alerts, from before routing)
@@ -41,6 +44,14 @@ DEFAULTS = {
     # existing install to True once, so it keeps the tiles and geocoding it already had.
     "public_tiles": False,
     "public_geocoder": False,
+    # None until the one-time offer of the two switches above is answered after the first import (mapsoffer.py).
+    "maps_offer": None,
+    # Satellite imagery (Esri World Imagery) for the close-up maps: off until switched on, and it is
+    # not migrated on for an existing install; it sends the viewed area to Esri.
+    "satellite": False,
+    # Whether the terrain model (Settings > Maps) may be downloaded: one-degree tiles by name
+    # from a public archive, which sees the squares asked for and nothing else.
+    "terrain": False,
     # The home time-of-use plan, in cost.py's shape. None until one is set: home charges
     # then carry no cost rather than one priced on somebody else's utility.
     "rate_plan": None,
@@ -70,6 +81,19 @@ DEFAULTS = {
     "plan": None,
     "rates": None,
     "schedule": None,
+    # Car commands (Settings › Commands): off until the owner turns them on; then tier 1 works
+    # for every car that has a way to take commands. command_tiers is {vin: 2 or 3} for a car
+    # allowed more; charge_hold is {vin: {"from", "until"}} for a car whose home charging is
+    # held for the cheaper hours (charge_hold.py).
+    "commands_on": False,
+    "command_tiers": {},
+    "charge_hold": {},
+    # Tesla's Fleet API allowance (Settings › Commands): the monthly credit in dollars, what each
+    # kind of call costs, and whether the budget holds polling back near the limit. Defaults are
+    # Tesla's published ones (see fleet_usage.py); Tesla changes them.
+    "fleet_credit": 10.0,
+    "fleet_rates": {"data": 0.002, "commands": 0.001, "wakes": 0.02, "signals": 1 / 150000},
+    "fleet_budget_on": True,
 }
 
 DDL = """

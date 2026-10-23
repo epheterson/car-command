@@ -176,6 +176,103 @@ def test_the_list_is_one_row_per_plan_current_first():
     assert [r["name"] for r in urdb.listing([urdb.trim(x) for x in ITEMS], date(2026, 10, 4), "flat")["rows"]] == ["Residential Flat"]
 
 
+# A large utility's EV plans as OpenEI lists them, shaped on a real listing: one open today
+# with thirteen versions (renamed once, linked by `supersedes`), a sibling open today, a rate
+# closed to new customers whose end date is the day it closed (before its newest version
+# starts), and one that ended. Plus a flat plan open to all.
+def _lab(prefix: str, n: int) -> str:
+    return f"{prefix}{n:023x}"
+
+
+EV2 = [
+    rate(
+        _lab("e", i),
+        "Electric Vehicle EV-2" if i < 6 else "Electric Vehicle EV2 (Sch)",
+        _epoch(2014 + i, 3, 1),
+        None if i == 12 else _epoch(2015 + i, 2, 28),
+        scale=1 + i / 20,
+        supersedes=_lab("e", i - 1) if i else None,
+    )
+    for i in range(13)
+]
+UNTIERED = [[{"unit": "kWh", "rate": 0.16}], [{"unit": "kWh", "rate": 0.3}], [{"unit": "kWh", "rate": 0.42}], [{"unit": "kWh", "rate": 0.55}]]
+EV_OPEN = rate(_lab("f", 1), "Electric Vehicle EV (Sch)", _epoch(2026, 3, 27), energyratestructure=UNTIERED)
+EV_CLOSED = rate(_lab("f", 2), "Electric Vehicle EV (Sch) Rate A; Closed rate", _epoch(2026, 3, 27), _epoch(2025, 12, 1), scale=1.25)
+EV_ENDED = rate(_lab("f", 3), "Electric Vehicle EV-B", _epoch(2019, 4, 12), _epoch(2021, 12, 31))
+FLAT_OPEN = dict(ITEMS[3], label=_lab("f", 4), name="E-1 Residential Service", startdate=_epoch(2026, 3, 27))
+LARGE = [*EV2, EV_OPEN, EV_CLOSED, EV_ENDED, FLAT_OPEN]
+TODAY = date(2026, 10, 13)
+
+
+def test_a_rate_closed_to_new_customers_is_not_read_as_ended_before_it_began():
+    """OpenEI gives a closed rate's newest version the day it closed as its end: start
+    2026-03-27, end 2025-12-01. That is no end, and never a start after an end."""
+    row = urdb.summary([urdb.trim(EV_CLOSED)], TODAY)
+    assert row["start"] == date(2026, 3, 27) and row["end"] is None and row["closed_since"] == date(2025, 12, 1)
+    assert row["closed"] and not row["open"] and not row["ended"] and row["current"]
+    assert row["status"] == "Closed to new customers since Dec 1, 2025"
+    ended = urdb.summary([urdb.trim(EV_ENDED)], TODAY)
+    assert ended["ended"] and not ended["open"] and ended["status"] == "Ended Dec 31, 2021"
+    named = urdb.summary([urdb.trim(dict(FLAT_OPEN, name="E-7 Time of Use; Closed Rate"))], TODAY)
+    assert named["closed"] and named["status"] == "Closed to new customers" and named["closed_since"] is None, "closed by its name alone"
+    assert urdb.summary([urdb.trim(EV_OPEN)], TODAY)["open"]
+
+
+def test_the_list_puts_the_plan_like_yours_first_then_open_ev_plans_then_the_rest():
+    found = urdb.listing([urdb.trim(x) for x in LARGE], TODAY, "", {"name": "Springfield EV2A", "source": "manual"})
+    rows = found["rows"]
+    assert [r["name"] for r in rows] == [
+        "Electric Vehicle EV2 (Sch)",
+        "Electric Vehicle EV (Sch)",
+        "E-1 Residential Service",
+        "Electric Vehicle EV (Sch) Rate A; Closed rate",
+        "Electric Vehicle EV-B",
+    ]
+    assert rows[0]["like"] and rows[0]["versions"] == 13 and rows[0]["first"] == date(2014, 3, 1) and rows[0]["ev"]
+    assert [r["like"] for r in rows[1:]] == [False] * 4 and [r["ev"] for r in rows] == [True, True, False, True, True]
+    assert [r["open"] for r in rows] == [True, True, True, False, False] and found["open"] == 3
+    assert all(r["end"] is None or r["start"] <= r["end"] for r in rows), "no row reads as ending before it starts"
+    # the plan in use came from OpenEI: that very tariff, by any of its versions' ids
+    mine = urdb.listing([urdb.trim(x) for x in LARGE], TODAY, "", {"name": "Whatever", "source": f"urdb:{_lab('e', 4)}"})["rows"]
+    assert mine[0]["mine"] and mine[0]["name"] == "Electric Vehicle EV2 (Sch)" and not any(r["like"] for r in mine)
+    # a typed-in plan named for no tariff flags none
+    assert not any(r["like"] for r in urdb.listing([urdb.trim(x) for x in LARGE], TODAY, "", {"name": "Home", "source": "manual"})["rows"])
+
+
+@pytest.mark.parametrize(
+    "mine, theirs, alike",
+    [
+        ("PG&E EV2A", "Electric Vehicle EV2 (Sch)", 1),  # the rate's option letter
+        ("EV-A", "Electric Vehicle EV (Sch) Rate A; Closed rate", 2),  # "EV Rate A" is EV-A
+        ("E-TOU-C", "E-TOU-C Residential Time of Use Baseline Region P", 2),
+        ("PG&E EV2A", "Electric Vehicle EV (Sch)", 0),
+        ("Home", "Electric Vehicle EV2 (Sch)", 0),
+        ("Time of use", "E-TOU-D Residential Time of Use", 0),  # plain words are no code
+    ],
+)
+def test_a_plan_is_like_another_by_the_code_in_its_name(mine, theirs, alike):
+    assert urdb.likeness(urdb.codes(mine), urdb.codes(theirs)) == alike
+
+
+def test_regional_variants_are_one_plan_and_many_like_plans_flag_none():
+    """Twenty baseline regions of one tariff are one family: flagged once, listed once in the
+    short list with how many variants it has. Four different tariffs alike flag none."""
+    regions = [dict(EV_OPEN, label=_lab("a", i), name=f"E-TOU-C Residential Time of Use Baseline Region {c}{' (All Electric Service)' if i % 2 else ''}") for i, c in enumerate("PPQQRS")]
+    found = urdb.listing([urdb.trim(x) for x in regions], TODAY, "", {"name": "E-TOU-C", "source": "manual"})
+    assert sum(r["like"] for r in found["rows"]) == 1 and len(found["short"]) == 1
+    assert found["short"][0]["family"] == "E-TOU-C Residential Time of Use" and found["short"][0]["variants"] == 6
+    assert [r["name"][-24:] for r in urdb.kin_of(found["rows"], _lab("a", 3))][:2] == ["Time of Use Baseline Region P"[-24:], "line Region P (All Electric Service)"[-24:]]
+    many = [dict(EV_OPEN, label=_lab("b", i), name=f"E-TOU-{c} Residential") for i, c in enumerate("ABCD")]
+    rows = urdb.listing([urdb.trim(x) for x in many], TODAY, "", {"name": "E-TOU", "source": "manual"})["rows"]
+    assert not any(r["like"] for r in rows)
+
+
+def test_the_short_list_is_what_an_ev_household_chooses_between():
+    found = urdb.listing([urdb.trim(x) for x in LARGE], TODAY, "", {"name": "Springfield EV2A", "source": "manual"})
+    assert [r["name"] for r in found["short"]] == ["Electric Vehicle EV2 (Sch)", "Electric Vehicle EV (Sch)"], "the flat plan, the closed and the ended wait behind Show all"
+    assert found["total"] == 5
+
+
 # --- requests --------------------------------------------------------------------------
 
 

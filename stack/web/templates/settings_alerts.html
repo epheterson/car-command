@@ -1,14 +1,16 @@
 {% extends "settings_base.html" %}
 {# Settings › Alerts: the channels set up in .env, then every alert kind in its group as a row
    with a switch per channel, and the few settings an alert needs beside it. One form, one Save
-   bar. A channel's own switch is a shortcut for all of its rows and posts nothing itself. #}
+   bar. A channel's own switch is a shortcut for all of its rows and posts nothing itself.
+   Below, the last alerts as they went out. #}
 {% from "_info.html" import info %}
 {% import "_settings.html" as s %}
 {% set chans = channels or [] %}
-{% set names = {'discord': 'Discord', 'telegram': 'Telegram', 'email': 'Email', 'pushover': 'Pushover'} %}
+{% set names = {'discord': 'Discord', 'telegram': 'Telegram', 'email': 'Email', 'pushover': 'Pushover', 'webhook': 'Webhook'} %}
 {% set kinds = alert_kinds or {} %}
 {% set groups = alert_groups or [('Alerts', kinds.keys()|list)] %}
 {% set r = routes or {} %}
+{% set listed = groups|map(attribute=1)|map('list')|sum(start=[]) %}
 
 {# The extra a kind needs, as its own row beneath it #}
 {% macro extra(k) -%}
@@ -17,42 +19,66 @@
 {% elif k == 'daily_summary' %}
 <div class="set-row sub"><span class="set-l">Send after</span><div class="set-c">{{ s.time('summary_at', st.summary_at or '07:00', 'Daily summary after') }}</div></div>
 {% elif k == 'tire' %}
-<div class="set-row sub"><span class="set-l">Your own limits {% call info("Tire limits") %}Alerts when any tire leaves this range, in addition to the car's own warning. Blank is off.{% endcall %}</span><div class="set-c">{{ s.num('tire_low_psi', s.n(st.tire_low_psi), step='0.5', min=10, max=90, w=4, placeholder='off', label='Under, psi') }}<span class="muted">to</span>{{ s.num('tire_high_psi', s.n(st.tire_high_psi), unit='psi', step='0.5', min=10, max=90, w=4, placeholder='off', label='Over, psi') }}</div></div>
+<div class="set-row sub"><span class="set-l">Your own limits {% call info("Tire limits") %}Alerts when any tire leaves this range, in addition to the car's own warning. Blank is off.{% endcall %}</span><div class="set-c">{% if st.units == 'metric' %}{{ s.num('tire_low_bar', conv.tire_low_bar, step='0.05', min=0.7, max=6.2, w=4, placeholder='off', label='Under, bar') }}<span class="muted">to</span>{{ s.num('tire_high_bar', conv.tire_high_bar, step='0.05', min=0.7, max=6.2, w=4, placeholder='off', label='Over, bar') }}<span class="muted">bar</span>{% else %}{{ s.num('tire_low_psi', s.n(st.tire_low_psi), step='0.5', min=10, max=90, w=4, placeholder='off', label='Under, psi') }}<span class="muted">to</span>{{ s.num('tire_high_psi', s.n(st.tire_high_psi), step='0.5', min=10, max=90, w=4, placeholder='off', label='Over, psi') }}<span class="muted">psi</span>{% endif %}</div></div>
+{% endif %}
+{%- endmacro %}
+
+{# Adding a channel the install does not have yet: a form per kind, folded until asked for, outside the
+   routing form. A channel from .env says so and is removed there. #}
+{% set ch = chan or {} %}
+{% macro add_channels() -%}
+{% if ch.addable %}
+<section class="group" id="add-channel">
+  <h2 class="sec">Add a channel</h2>
+  <div class="group-b">
+    {% if not ch.vault_ready %}<div class="notice err">{{ ch.vault_problem }}: run <code>make secret-key</code> on the host, then restart the site</div>{% endif %}
+    {% for k in ch.addable %}
+    <details class="set-row chan-setup" id="chan-add-{{ k }}"{{ ' open' if chan_note and chan_note.kind == k }}><summary class="set-l">{{ names.get(k, k) }}</summary>
+      <form class="set-p" method="post" action="{{ root }}/settings/alerts/channel/{{ k }}/add" data-chan-add="{{ k }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+        {% for f, label, required, hint in ch.fields[k] %}
+        <div class="set-row under full"><label class="set-l" for="{{ k }}_{{ f }}">{{ label }}</label><div class="set-c"><input class="field chan-f wide" id="{{ k }}_{{ f }}" name="{{ k }}_{{ f }}" type="text" autocomplete="off" spellcheck="false" placeholder="{{ hint }}" value="{{ (chan_vals or {}).get(k ~ '_' ~ f, '') }}"{{ ' required' if required }}></div></div>
+        {% endfor %}
+        <div class="acts"><span class="chan-res small{% if chan_note and chan_note.kind == k %} {{ 'ok' if chan_note.ok else 'bad' }}{% endif %}" data-res role="status">{% if chan_note and chan_note.kind == k %}{{ chan_note.text }}{% endif %}</span><button type="submit" class="btn" formaction="{{ root }}/settings/alerts/channel/{{ k }}/test" data-test>Send test</button><button type="submit" class="btn primary"{{ ' disabled' if not ch.vault_ready }}>Add</button></div>
+      </form></details>
+    {% endfor %}
+  </div>
+</section>
 {% endif %}
 {%- endmacro %}
 
 {% block section %}
+{% if not chans %}
+<section class="group chan-none"><div class="group-b"><div class="empty">No channel set up</div></div></section>
+{{ add_channels() }}
+{% endif %}
 <form id="alerts" method="post" action="{{ root }}/settings/alerts{{ q }}" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
 {% if chans %}
-<input type="hidden" name="routes_shown" value="1">
+<input type="hidden" name="routes_shown" value="1"><input type="hidden" name="routes_kinds" value="{{ listed|join(',') }}">
 <section class="group">
-  <h2 class="sec">Channels {% call info("Adding a channel") %}Add a Discord webhook, Telegram bot, SMTP URL or Pushover keys in .env.{% endcall %}</h2>
+  <h2 class="sec">Channels {% call info("Channels") %}Added below, or set in .env; one in .env is removed there. The switches save as you flip them.{% endcall %}<span class="chan-saved small" data-saved role="status"></span></h2>
   <div class="group-b">
     {% for c in chans %}
-    {% set n = namespace(v=0) %}{% for k in kinds %}{% if r.get(k) is none or c in r.get(k) %}{% set n.v = n.v + 1 %}{% endif %}{% endfor %}
-    <div class="set-row"><label class="set-l" for="chan-{{ c }}">{{ names.get(c, c) }}<span class="set-s" data-count="{{ c }}">{{ n.v }} of {{ kinds|length }} alerts</span></label>
-      <div class="set-c">{{ s.switch(none, n.v > 0, 'Every alert on ' ~ names.get(c, c), id='chan-' ~ c, chan=c) }}</div></div>
+    {% set n = namespace(v=0) %}{% for k in listed %}{% if r.get(k) is none or c in r.get(k) %}{% set n.v = n.v + 1 %}{% endif %}{% endfor %}
+    <div class="set-row"><label class="set-l" for="chan-{{ c }}">{{ names.get(c, c) }}<span class="set-s" data-count="{{ c }}">{{ n.v }} of {{ listed|length }} alerts</span><span class="set-s">{% if ch.get('where', {}).get(c) == 'env' %}from .env{% else %}added here{% if ch.get('hints', {}).get(c) %} · {{ ch.hints[c] }}{% endif %}{% endif %}</span>{% if chan_note and chan_note.kind == c %}<span class="set-s chan-res {{ 'ok' if chan_note.ok else 'bad' }}" data-res="{{ c }}" role="status">{{ chan_note.text }}</span>{% else %}<span class="set-s chan-res" data-res="{{ c }}" role="status"></span>{% endif %}</label>
+      <div class="set-c"><button type="submit" form="chan-test-{{ c }}" class="btn sm" data-test-chan="{{ c }}">Send test</button>{% if ch.get('where', {}).get(c) == 'app' %}<button type="submit" form="chan-rm-{{ c }}" class="btn sm danger">Remove</button>{% endif %}{{ s.switch(none, n.v > 0, 'Every alert on ' ~ names.get(c, c), id='chan-' ~ c, chan=c, auto=true) }}</div></div>
     {% endfor %}
   </div>
 </section>
 {% for title, keys in groups %}
 <section class="group">
-  <h2 class="sec">{{ title }}{% if chans|length > 1 %}<span class="al-cols" aria-hidden="true">{% for c in chans %}<span>{{ names.get(c, c) }}</span>{% endfor %}</span>{% endif %}</h2>
+  <h2 class="sec">{{ title }}{% if chans|length > 1 %}<span class="al-cols">{% for c in chans %}{% set on = namespace(v=false) %}{% for k in keys %}{% if r.get(k) is none or c in r.get(k) %}{% set on.v = true %}{% endif %}{% endfor %}<span><b>{{ names.get(c, c) }}</b>{{ s.switch(none, on.v, 'Every ' ~ title|lower ~ ' alert on ' ~ names.get(c, c), secchan=c, auto=true) }}</span>{% endfor %}</span>{% endif %}</h2>
   <div class="group-b">
     {% for k in keys %}{% set label = kinds.get(k, k) %}
     <div class="set-row{{ ' al-multi' if chans|length > 1 }}"><label class="set-l" for="route_{{ k }}_{{ chans[0] }}">{{ label }}</label>
-      <div class="set-c al">{% for c in chans %}{{ s.switch('route_' ~ k ~ '_' ~ c, (r.get(k) is none or c in r.get(k)), label ~ ' on ' ~ names.get(c, c), id='route_' ~ k ~ '_' ~ c) }}{% endfor %}</div></div>
+      <div class="set-c al">{% for c in chans %}{{ s.switch('route_' ~ k ~ '_' ~ c, (r.get(k) is none or c in r.get(k)), label ~ ' on ' ~ names.get(c, c), id='route_' ~ k ~ '_' ~ c, auto=true) }}{% endfor %}</div></div>
     {{ extra(k) }}
     {% endfor %}
   </div>
 </section>
 {% endfor %}
 {% else %}
-<section class="group">
-  <div class="group-b"><div class="empty">No channel set up {% call info("Adding a channel") %}Add a Discord webhook, Telegram bot, SMTP URL or Pushover keys in .env.{% endcall %}</div></div>
-</section>
-<section class="group">
-  <h2 class="sec">Reminders</h2>
+<section class="group needs">
+  <h2 class="sec">Reminders <span class="needs-l">needs a channel</span></h2>
   <div class="group-b">
     <div class="set-row"><span class="set-l">Plug-in reminder</span></div>
     {{ extra('plug_reminder') }}
@@ -63,12 +89,80 @@
 {% endif %}
 {{ s.savebar() }}
 </form>
+{% if chans %}
+{{ add_channels() }}
+{% for c in chans %}<form id="chan-test-{{ c }}" method="post" action="{{ root }}/settings/alerts/channel/{{ c }}/test" data-wait="Sending…" hidden><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% if ch.get('where', {}).get(c) == 'app' %}<form id="chan-rm-{{ c }}" method="post" action="{{ root }}/settings/alerts/channel/{{ c }}/remove" hidden><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}{% endfor %}
+{% endif %}
+{# The garage door, from Home Assistant: linked with HA's own sign-in (or HA_URL and HA_TOKEN in .env), then which cover is the door. The section is not on the page until Home Assistant is linked (Settings › Data); the camera row waits for the driveway service. #}
+{% set ha = ha or {} %}
+{% if ha.linked or ha.env %}
+<section class="group" id="ha">
+  <h2 class="sec">Garage door {% call info("Garage door") %}Opens as the car pulls in: timed from how it comes home, the door fully open the chosen seconds before the driveway. Says so at once if the car then stops short. Watch only notes when it would have, and times your own opening against it.{% endcall %}</h2>
+  <div class="group-b">
+  {% if ha.linked %}
+    <div class="set-row"><span class="set-l">Home Assistant<span class="set-s">{{ ha.url }}</span></span><div class="set-c">
+      {% if ha.door %}<span class="pill">{{ ha.door.state }}</span>{% elif not ha.problem %}<span class="muted">no reading yet</span>{% endif %}
+      <a class="btn sm" href="{{ root }}/settings/data#ha">Manage</a></div></div>
+    {% if ha.doors %}
+    <form class="set-row garage" method="post" action="{{ root }}/settings/alerts/ha/door"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <label class="set-l" for="ha-door">Door</label><div class="set-c"><select class="field" id="ha-door" name="entity">{% for d in ha.doors %}<option value="{{ d.id }}"{{ ' selected' if d.id == ha.entity }}>{{ d.name }}</option>{% endfor %}</select><button class="btn sm">Save</button></div></form>
+    {% elif not ha.problem %}<div class="set-row"><span class="set-l">Door</span><div class="set-c muted">No covers in Home Assistant</div></div>{% endif %}
+  {% elif ha.env %}
+    <div class="set-row"><span class="set-l">Home Assistant<span class="set-s">linked in .env</span></span><div class="set-c">{% if ha.door %}<span class="pill">{{ ha.door.state }}</span>{% endif %}</div></div>
+  {% endif %}
+  {% if ha.linked or ha.env %}
+    {% set arr = ha.arrival or {} %}
+    <form class="set-row garage" method="post" action="{{ root }}/settings/alerts/ha/arrival"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <span class="set-l">Open on arrival{% if ha.camera %}<span class="set-s">with the driveway camera</span>{% endif %}</span><div class="set-c">
+      <select class="field" name="mode" aria-label="Open on arrival">{% for m, l in [('off', 'Off'), ('watch', 'Watch only'), ('open', 'Open')] %}<option value="{{ m }}"{{ ' selected' if arr.mode == m }}>{{ l }}</option>{% endfor %}</select>
+      <select class="field" name="vin" aria-label="Car">{% for c in ha.cars or [] %}<option value="{{ c.vin }}"{{ ' selected' if arr.vin == c.vin }}>{{ c.name }}</option>{% endfor %}</select>
+      {% if (ha.homes or [])|length > 1 %}<select class="field" name="place" aria-label="Home">{% for h in ha.homes %}<option value="{{ h.id }}"{{ ' selected' if arr.place|string == h.id|string }}>{{ h.name }}</option>{% endfor %}</select>{% endif %}
+      <select class="field" name="aim" aria-label="Fully open before the driveway">{% for a in ha.aims or [] %}<option value="{{ a }}"{{ ' selected' if arr.aim == a }}>open {{ a }} s before</option>{% endfor %}</select>
+      <button class="btn sm">Save</button></div></form>
+    {% if ha.camera %}
+    <form class="set-row garage" method="post" action="{{ root }}/settings/alerts/ha/close"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <span class="set-l">Close behind it<span class="set-s">once it is out of the garage</span></span><div class="set-c">
+      <select class="field" name="mode" aria-label="Close behind it">{% for m, l in [('off', 'Off'), ('watch', 'Watch only'), ('close', 'Close')] %}<option value="{{ m }}"{{ ' selected' if ha.close == m }}>{{ l }}</option>{% endfor %}</select>
+      <button class="btn sm">Save</button></div></form>
+    {% endif %}
+    {% set mdl = ha.model or {} %}
+    {% if mdl.directions %}<div class="set-row"><span class="set-l">Learned<span class="set-s">from {{ mdl.trips }} trips home</span></span><div class="set-c small">{% for d in mdl.directions %}<span class="pill">from {{ d.bearing }}° · {{ d.trips }}</span>{% endfor %}{% if mdl.stops %}<span class="muted">{{ mdl.stops|length }} stop{{ '' if mdl.stops|length == 1 else 's' }} near home</span>{% endif %}</div></div>
+    {% elif arr.mode and arr.mode != 'off' %}<div class="set-row"><span class="set-l">Learned</span><div class="set-c muted small">no trips home in the car's stream yet</div></div>{% endif %}
+    {% if ha.log %}<details class="set-x"><summary class="set-row"><span class="set-l">Comings and goings<span class="set-s">the last {{ ha.log|length }} steps, newest first</span></span></summary><ul class="small set-p ha-log">{% for e in ha.log %}<li><span class="num">{{ e.when }}</span> · {% if e.kind == 'schedule' %}{{ e.d }} m out · driveway in {{ e.eta }} s{% if e.stop_m %} · past a stop at {{ e.stop_m }} m{% endif %}{% elif e.kind == 'start' %}{{ e.did }}{% if e.how %} · {{ e.how }}{% endif %}{% elif e.kind == 'camera' %}camera{{ ' (leaving)' if e.out }} {{ 'saw it' if e.seen else ('saw nothing' if e.frames else 'could not look') }}{% if e.why and not e.seen %} ({{ e.why }}){% endif %}{% elif e.kind == 'cancel' %}called off: {{ e.why }}{% elif e.kind == 'short' %}{{ e.why }} {{ e.d }} m out after the door started{% elif e.kind == 'arrived' %}home{% elif e.kind == 'missed' %}home, no fix in time: not opened{% elif e.kind == 'you_opened' %}you opened it · model {{ '+' if e.off_s > 0 else '−' }}{{ e.off_s|abs }} s{% if e.cam_s is defined %} · camera {{ '+' if e.cam_s > 0 else '−' }}{{ e.cam_s|abs }} s{% endif %}{% elif e.kind == 'close' or e.kind == 'another' %}{{ e.did }}{% elif e.kind == 'departure' %}left · door open{% for k, l in [('unlock_s', 'unlocked'), ('doors_s', 'doors opened'), ('wake_s', 'woke'), ('ignition_s', 'ready'), ('driving_s', 'driving'), ('other_s', 'another car'), ('seen_s', 'camera'), ('closed_s', 'closed')] %}{% if e[k] is not none %} · {{ l }} {{ '+' if e[k] >= 0 }}{{ e[k] }} s{% endif %}{% endfor %}{% endif %}</li>{% endfor %}</ul></details>{% endif %}
+  {% endif %}
+  {% if ha.problem %}<div class="set-row"><span class="set-l"></span><div class="set-c bad small" role="alert">{{ ha.problem }}</div></div>{% endif %}
+  </div>
+</section>
+{% endif %}
+{% if recent %}
+{# What went out lately, newest first: the alert, when, which kind, and what became of it #}
+<section class="group">
+  <h2 class="sec">Recent {% call info("Recent alerts") %}The last 20, as they went out. Muted: switched off above. Hover an outcome for its channels.{% endcall %}</h2>
+  <div class="group-b">
+    {% for a in recent %}
+    <div class="set-row al-log"><span class="set-l">{{ a.text }}<span class="set-s">{{ a.at|local }} · {{ kinds.get(a.kind, a.kind) }}</span></span>
+      <span class="badge{{ ' due' if a.outcome in ('failed', 'partly sent') else ' kind' if a.outcome != 'sent' }}"{% if a.channels %} title="{{ a.channels }}"{% endif %}>{{ a.outcome }}</span></div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 <script>
-/* A channel's switch sets all of its rows; its rows set the switch and the count beside it. */
+/* A name or command in the setup steps copies with a tap. */
+document.querySelectorAll(".cc-code").forEach((b) => b.addEventListener("click", () => {
+  if (!navigator.clipboard) return;
+  navigator.clipboard.writeText(b.dataset.copy).then(() => { b.classList.add("done"); setTimeout(() => b.classList.remove("done"), 1500); }, () => {});
+}));
+/* A channel's switch sets all of its rows, and a section's column switch the rows of that section; the rows set both and the count beside them. */
 (() => {
   const f = document.getElementById("alerts");
   const rows = (c) => [...f.querySelectorAll('input[name^="route_"]')].filter((i) => i.name.endsWith("_" + c));
+  const syncSec = (sec, c) => {
+    const mine = [...sec.querySelectorAll('input[name^="route_"]')].filter((i) => i.name.endsWith("_" + c));
+    const t = sec.querySelector('[data-secchan="' + c + '"]');
+    if (t) t.checked = mine.some((i) => i.checked);
+  };
   const sync = (c) => {
+    f.querySelectorAll("section").forEach((sec) => syncSec(sec, c));
     const on = rows(c).filter((i) => i.checked).length;
     f.querySelector('[data-chan="' + c + '"]').checked = on > 0;
     const n = f.querySelector('[data-count="' + c + '"]');
@@ -78,11 +172,57 @@
     rows(m.dataset.chan).forEach((i) => { i.checked = m.checked; });
     sync(m.dataset.chan);
   }));
+  f.querySelectorAll("[data-secchan]").forEach((t) => t.addEventListener("change", () => {
+    const c = t.dataset.secchan;
+    t.closest("section").querySelectorAll('input[name^="route_"]').forEach((i) => { if (i.name.endsWith("_" + c)) i.checked = t.checked; });
+    sync(c);
+  }));
   f.addEventListener("change", (e) => {
     const m = /^route_.+_([a-z]+)$/.exec(e.target.name || "");
     if (m) sync(m[1]);
   });
   f.addEventListener("reset", () => setTimeout(() => f.querySelectorAll("[data-chan]").forEach((m) => sync(m.dataset.chan)), 0));
+  /* The routing switches save themselves a moment after the last flip, and say so beside Channels. Only the routing is sent, so a half-typed time or limit below is not saved with it. */
+  const say = f.querySelector("[data-saved]");
+  let wait = null;
+  const save = () => {
+    clearTimeout(wait);
+    wait = setTimeout(async () => {
+      const d = new FormData();
+      ["csrf_token", "routes_shown", "routes_kinds"].forEach((n) => { const i = f.elements[n]; if (i) d.append(n, i.value); });
+      f.querySelectorAll('input[name^="route_"]:checked').forEach((i) => d.append(i.name, "on"));
+      say.textContent = "Saving…"; say.className = "chan-saved small";
+      try {
+        const r = await fetch(f.action, { method: "POST", body: d, headers: { Accept: "application/json" } });
+        if (!r.ok) throw new Error(r.status);
+        f.querySelectorAll('input[name^="route_"]').forEach((i) => { i.defaultChecked = i.checked; });
+        say.textContent = "Saved"; say.className = "chan-saved small ok";
+      } catch (e) {
+        say.textContent = "Not saved: use Save"; say.className = "chan-saved small bad";
+        f.classList.add("sb-dirty");
+      }
+    }, 400);
+  };
+  f.querySelectorAll("[data-autosave]").forEach((i) => i.addEventListener("change", save));
+  /* Send test: the answer lands beside the button; the form and what was typed stay as they are. */
+  const test = async (btn, body, res) => {
+    btn.disabled = true; res.textContent = "Sending…"; res.className = res.className.replace(/\b(ok|bad)\b/g, "").trim();
+    try {
+      const r = await fetch(btn.getAttribute("formaction") || btn.form.action, { method: "POST", body, headers: { Accept: "application/json" } });
+      const j = await r.json();
+      res.textContent = j.text; res.classList.add(j.ok ? "ok" : "bad");
+    } catch (e) { res.textContent = "Could not reach the site."; res.classList.add("bad"); }
+    btn.disabled = false;
+  };
+  document.querySelectorAll("[data-test-chan]").forEach((b) => b.addEventListener("click", (e) => {
+    e.preventDefault();
+    const c = b.dataset.testChan;
+    test(b, new FormData(document.getElementById("chan-test-" + c)), document.querySelector('[data-res="' + c + '"]'));
+  }));
+  document.querySelectorAll("[data-chan-add] [data-test]").forEach((b) => b.addEventListener("click", (e) => {
+    e.preventDefault();
+    test(b, new FormData(b.form), b.form.querySelector("[data-res]"));
+  }));
 })();
 </script>
 {% endblock %}

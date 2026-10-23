@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from daypage import day_figs, gap_text, row_parts
+from daypage import day_figs, gap_text, row_parts, unlogged
 
 
 class U:
@@ -67,6 +67,21 @@ def test_charge_row_parts():
     assert p["big"] == "17.4 kWh" and p["pills"] == ["2 h", "fast", "$5.20"] and p["sub"] == "40→58%"
     running = dict(c, end=None, duration=None, kwh=None, cost=None, level_end=None)
     assert row_parts(running, U(), "$") == {"title": "Home", "pills": ["fast"], "big": "—", "sub": ""}
+    assert row_parts(dict(running, open=True, live=True), U(), "$")["big"] == "Charging now", "not a finished 0.0 kWh"
+    assert row_parts(dict(running, open=True, live=False), U(), "$")["big"] == "No end logged", "days on, its end was lost"
+
+
+def test_a_day_whose_only_charge_is_still_going_says_so():
+    from zoneinfo import ZoneInfo
+
+    from daypage import by_day
+
+    live = {"id": 1, "session_start_date": T0, "session_end_date": None, "kwh": None, "open": True, "live": True}
+    done = {"id": 2, "session_start_date": T0 - timedelta(hours=3), "session_end_date": T0 - timedelta(hours=2), "kwh": 12.0}
+    day = by_day([live], ZoneInfo("America/Los_Angeles"), "session_start_date")[0]
+    assert day["live"] and day["kwh"] == 0.0
+    day = by_day([live, done], ZoneInfo("America/Los_Angeles"), "session_start_date")[0]
+    assert day["live"] and day["kwh"] == 12.0
 
 
 def test_gap_text_names_the_guard_mode_of_the_car():
@@ -186,3 +201,37 @@ def test_list_records_become_rows_and_group_by_local_day():
     never = dict(c, id=10, session_start_date=None)
     days = by_day([c, never], tz, "session_start_date")
     assert [x["date"] is None for x in days] == [False, True], "a charge that never started (only the hidden list has one) groups under no date instead of failing"
+
+
+def test_a_long_list_is_cut_at_the_cap_keeping_its_last_day_whole():
+    from daypage import cap
+
+    t0 = datetime(2026, 10, 1, 23, tzinfo=timezone.utc)
+    # newest first: three rows a day, ten days
+    rows = [{"id": i, "start_date": t0 - timedelta(days=i // 3, minutes=i % 3)} for i in range(30)]
+    kept, left = cap(rows, 7, timezone.utc, "start_date")
+    assert [r["id"] for r in kept] == list(range(9)) and left == 21, "the seventh row's day runs to the ninth"
+    assert cap(rows, 7) == (rows[:7], 23), "a list by miles cuts at the cap exactly"
+    assert cap(rows, 30, timezone.utc, "start_date") == (rows, 0) and cap([], 5) == ([], 0)
+
+
+def test_miles_driven_out_of_reach_are_written_on_the_stretch_they_fell_in():
+    """Out of cell service the car drove 5 miles that no drive holds: the odometer at the next
+    drive's start is past the last one's end. A hidden drive between them is not a gap."""
+    h = lambda n: T0 + timedelta(minutes=n)
+    trips = [
+        {"start_date": h(0), "destination_date": h(27), "start_odometer": 100.0, "destination_odometer": 115.8},
+        {"start_date": h(108), "destination_date": h(111), "start_odometer": 120.8, "destination_odometer": 122.0},
+        {"start_date": h(200), "destination_date": h(205), "start_odometer": 122.0, "destination_odometer": 123.0},  # hidden from the list
+        {"start_date": h(300), "destination_date": h(310), "start_odometer": 123.2, "destination_odometer": 125.0},  # 0.2: rounding, not a drive
+    ]
+    rows = [
+        {"kind": "drive", "start": h(0), "end": h(27)},
+        {"kind": "parked", "start": h(27), "end": h(108), "duration": timedelta(minutes=81)},
+        {"kind": "drive", "start": h(108), "end": h(111)},
+        {"kind": "parked", "start": h(111), "end": h(300), "duration": timedelta(minutes=189)},
+    ]
+    assert unlogged(trips, rows) == 5.0
+    assert rows[1]["moved_mi"] == 5.0 and "moved_mi" not in rows[3]
+    assert gap_text(rows[1], "Work", U()) == "Out of reach 1 h 21 min · drove 5.0 mi not logged"
+    assert gap_text(rows[1], "Work", Metric()) == "Out of reach 1 h 21 min · drove 8.0 km not logged"

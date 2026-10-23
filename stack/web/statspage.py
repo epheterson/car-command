@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 
-SUMS = ("miles", "drives", "added_kwh", "cost", "used_kwh", "drive_h", "charges", "priced", "avg_cost")
+SUMS = ("miles", "drives", "added_kwh", "cost", "used_kwh", "drive_h", "charges", "topups", "priced", "avg_cost")
 METRICS = (("miles", "Driven"), ("drives", "Drives"), ("added_kwh", "Charged"), ("cost", "Charging cost"), ("cost_per_mi", "Per mile"))
 MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
 
@@ -72,8 +72,27 @@ def _value(month: dict | None, key: str):
     return add(month, None)[key]
 
 
+# A period with more than this many times its baseline's miles (or energy, or money) is
+# being set beside a thin baseline, not doing five times more: a car's first fortnight read
+# "▲ 1,659 % vs Sep 1–14" on 21 miles. The baseline's figure is shown instead of a percent.
+THIN = 5.0
+# A rate is as thin as the miles under it: cents a mile over 21 miles is not a baseline.
+RATE_VOLUME = {"cost_per_mi": "miles", "wh_per_mi": "miles"}
+
+
 def _change(a, b):
     return (a - b) / b if a is not None and b else None
+
+
+def change(key: str, a_row: dict | None, b_row: dict | None):
+    """`key`'s change from b_row to a_row as a fraction, or None when there is none or the
+    baseline is thin (THIN)."""
+    a, b = (r.get(key) if r else None for r in (a_row, b_row))
+    vol = RATE_VOLUME.get(key, key)
+    va, vb = (r.get(vol) if r else None for r in (a_row, b_row))
+    if va is not None and vb is not None and vb > 0 and va > THIN * vb:
+        return None
+    return _change(a, b)
 
 
 def _total(months: dict[tuple, dict], keys: list[tuple]) -> dict | None:
@@ -133,7 +152,11 @@ def compare(months: dict[tuple, dict], focus: tuple, fraction: float, first: tup
             avg = sum(_value(src.get(ym), key) for ym in history) / len(history) if history else None
             if partial and fraction >= PACE_MIN:
                 proj = this / fraction
-        vs_avg = _change(this, avg)
+        # the rows the figures came from, for the thin-baseline check
+        rows = [add(src.get(focus), None), add(src.get(prev), None) if prev >= first else None, _total(src, history)]
+        if rows[2] and history:
+            rows[2] = {k: (v / len(history) if k in SUMS else v) for k, v in rows[2].items()}
+        vs_last, vs_avg = (change(key, dict(rows[0], **{key: this}), dict(r, **{key: v}) if r else None) for r, v in ((rows[1], last), (rows[2], avg)))
         out.append(
             {
                 "key": key,
@@ -147,8 +170,11 @@ def compare(months: dict[tuple, dict], focus: tuple, fraction: float, first: tup
                 "avg": avg,
                 "proj": proj,
                 "n_avg": len(history),
-                "vs_last": _change(this, last),
+                "vs_last": vs_last,
                 "vs_avg": vs_avg,
+                # a baseline too thin for a percent: its own figure is shown instead
+                "thin_last": vs_last is None and _change(this, last) is not None,
+                "thin_avg": vs_avg is None and _change(this, avg) is not None,
                 "vbar": vbar(vs_avg),
             }
         )
@@ -227,7 +253,7 @@ def bars(
             bar["proj"] = {"y": p, "h": round(edge - p, 1), "value": pace}
         out.append(bar)
     grid = [{"y": round(T + ph - f * ph, 1), "value": top * f} for f in (0, 0.5, 1)]
-    legend = [{"vin": v, "total": sum(dist(_value(car_months[v].get(ym), "miles")) for ym in keys if ym != focus and ym >= first)} for v in order]
+    legend = [{"vin": v, "total": sum(dist(_value(car_months[v].get(ym), "miles")) for ym in keys)} for v in order]  # the months drawn, the focus month included: the legend adds up the bars
     return {
         "w": w,
         "h": h,
@@ -461,3 +487,16 @@ def controls(state: dict, r: dict) -> dict:
         "keep": [(k, v) for k, v in state.items() if k not in ("period", "from", "to", "month", "year") and v not in (None, "") and DEFAULTS.get(k) != str(v)],
         "href": href,
     }
+
+
+# A step in the odometer between one drive's end and the next one's start larger than this is
+# a misread or a reset, not miles the car went unlogged.
+UNLOGGED_JUMP_MI = 2000.0
+
+
+def unlogged_miles(drives: list[dict]) -> float:
+    """Miles the odometer moved between drives, outside any of them: the source's gaps (a
+    logger asleep through a short hop, a few percent of a lifetime). The sum of each step up
+    from one drive's end to the next drive's start."""
+    legs = sorted((d["start_date"], d["start_odometer"], d["destination_odometer"]) for d in drives if d.get("start_odometer") is not None and d.get("destination_odometer") is not None)
+    return sum(gap for (_, _, end), (_, start, _) in zip(legs, legs[1:]) if 0 < (gap := start - end) < UNLOGGED_JUMP_MI)

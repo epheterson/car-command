@@ -6,18 +6,21 @@
 #
 # What it does, in order, and nothing else:
 #   1. refuses unless VOLUME does not exist yet: the move fills a new volume, never an old one
-#   2. stops the compose site and connector, so nothing is written after the dump
+#   2. stops the compose site and connector, so nothing is written after the dump, and the
+#      Tesla stream's node and receiver if they run
 #   3. dumps the database with scripts/backup.sh, into backups/ like any backup
 #   4. restores the dump into VOLUME through the image, in one transaction, with CC_SECRET_KEY
 #      from stack/.env as that volume's key, so the sources sealed in the app still open
-#   5. copies stack/secrets/lucid-token.json into the volume, if there is one
+#   5. copies stack/secrets/lucid-token.json into the volume, if there is one, and the Tesla
+#      stream's node (its Tailscale state: the same name and certificate, so the cars' stream
+#      config stays right), if there is one
 #   6. writes stack/secrets/one-container.env with the settings from stack/.env that the one
 #      container reads (alert channels, Tesla app, TeslaFi tokens ...)
 #   7. takes compose down (no -v: its database volume stays), so `restart: always` cannot
 #      bring it back beside the one container after a reboot; then prints the docker run line
 #
 # If any step fails, it says exactly how to put compose back. Going back later is the same:
-#   docker compose -f stack/docker-compose.yml up -d
+#   docker compose -f stack/docker-compose.yml up -d   (with --profile tesla if the stream ran there)
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -40,7 +43,7 @@ on_exit() {
     [[ $code -eq 0 || -z $stage ]] && return
     echo >&2
     echo "move: stopped part way. Your compose database volume is untouched. To go back:" >&2
-    echo "    docker compose -f stack/docker-compose.yml up -d" >&2
+    echo "    docker compose -f stack/docker-compose.yml up -d   (with --profile tesla if the stream ran there)" >&2
     if [[ $stage == restoring || $stage == restored || $stage == down ]]; then
         echo "and remove the half-made volume before trying again:" >&2
         echo "    docker volume rm $volume" >&2
@@ -60,6 +63,8 @@ docker compose -f "$compose" ps --status running --services 2>/dev/null | grep -
 echo "move: stopping the compose site and connector (the database stays up for the dump)"
 stage=stopped
 docker compose -f "$compose" stop web cc >/dev/null 2>&1 || true
+# One node runs with that identity at a time.
+docker compose -f "$compose" --profile tesla stop tesla-net tesla-telemetry >/dev/null 2>&1 || true
 
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 dir="$here/backups/move-$stamp"
@@ -84,22 +89,33 @@ if [[ -s $token ]]; then
         -c 'umask 077 && cat >/data/connector/lucid-token.json && chown 10001:10001 /data/connector/lucid-token.json' <"$token"
 fi
 
+project=$(grep -E '^COMPOSE_PROJECT_NAME=.+' "$env_file" | tail -1 | cut -d= -f2- || true)
+node="${project:-carcommand}_tesla_net"
+moved_node=""
+if docker volume inspect "$node" >/dev/null 2>&1; then
+    echo "move: copying the Tesla stream's node (the volume $node)"
+    # Read-only from compose's volume; the one container gives the copy to the node's user on start.
+    docker run --rm -v "$node:/from:ro" -v "$volume:/data" --entrypoint /bin/sh "$image" \
+        -c 'mkdir -p /data/tesla/net && cp -a /from/. /data/tesla/net/'
+    moved_node=yes
+fi
+
 # The settings the one container reads from its environment, under the same names. The
 # passwords, the database settings and the compose-only names stay behind: the container
 # keeps its own.
 settings="$here/stack/secrets/one-container.env"
 mkdir -p "$here/stack/secrets"
 grep -E '^[A-Z_]+=.+' "$env_file" \
-    | grep -vE '^(DB_USER|DB_PASSWORD|DB_NAME|WEBUI_USER|WEBUI_PASSWORD|REST_USER|REST_PASSWORD|CC_SECRET_KEY|COMPOSE_PROJECT_NAME|CC_PORT|CC_SUBNET|CC_TESLA_SUBNET|CC_CONNECTORS|MAPS_URL|TESLA_STREAM_HOST|TESLA_STREAM_ZMQ)=' \
+    | grep -vE '^(DB_USER|DB_PASSWORD|DB_NAME|WEBUI_USER|WEBUI_PASSWORD|REST_USER|REST_PASSWORD|CC_SECRET_KEY|COMPOSE_PROJECT_NAME|CC_PORT|CC_SUBNET|CC_TESLA_SUBNET|CC_CONNECTORS|MAPS_URL|TESLA_STREAM_ZMQ)=' \
     >"$settings" || true
 names=$(cut -d= -f1 "$settings" | tr '\n' ' ')
 
 custom=$(grep -E '^CC_CONNECTORS=.+' "$env_file" || true)
-compose_only=$(grep -oE '^(MAPS_URL|TESLA_STREAM_HOST)=.+' "$env_file" | cut -d= -f1 | tr '\n' ' ' || true)
+compose_only=$(grep -oE '^MAPS_URL=.+' "$env_file" | cut -d= -f1 | tr '\n' ' ' || true)
 
 echo "move: taking compose down (its database volume stays)"
 stage=down
-docker compose -f "$compose" down
+docker compose -f "$compose" --profile tesla down
 stage=""
 
 cat <<EOF
@@ -123,5 +139,10 @@ if [[ -n $custom ]]; then
 fi
 if [[ -n $compose_only ]]; then
     echo
-    echo "Note: ${compose_only}not carried over. The local maps add-on and the Tesla stream run only under compose for now."
+    echo "Note: ${compose_only}not carried over. The local maps add-on runs only under compose for now."
+fi
+if [[ -n $moved_node ]]; then
+    echo
+    echo "The Tesla stream's node came along: the same name and certificate, nothing to change in the cars."
+    echo "Going back to compose, stop this container first: one node runs with that identity at a time."
 fi

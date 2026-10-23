@@ -23,10 +23,6 @@ Not planned: anything that moves the car, software updates, PIN or speed-limit c
 - **Powerwall:** backup reserve and mode.
 - Every command is logged and shown on the car's page; tier 2 and 3 also send an alert. Commands are rate limited, POST-only with a CSRF token, and one switch turns them all off. A new install starts with commands off.
 
-## An MCP server
-
-Ask an assistant about your own history ("what did charging cost last month") through a read-only Model Context Protocol server on your network, with its own token.
-
 ## Wall-side meters
 
 What the charger delivered, read from the charger or the panel: Tesla Wall Connector Gen 3, Emporia, Sense. With both sides, a charge shows its losses.

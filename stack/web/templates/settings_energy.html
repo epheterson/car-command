@@ -1,17 +1,20 @@
 {% extends "settings_base.html" %}
-{# Settings › Energy: the house's energy, read from the Tesla account (its live status every five
+{# Settings › Powerwall: the house's energy, read from the Tesla account (its live status every five
    minutes, and the history backfill). Status and management; setting it up is in Connect Tesla. #}
 {% from "_info.html" import info %}
 {% from "_energy.html" import backfill_rows with context %}
 {% block section %}
 {% if energy_error %}<p class="notice err" role="alert">{{ energy_error }}</p>{% endif %}
+<div class="groups">
 
 <section class="group" id="now">
   <h2 class="sec">Now</h2>
   <div class="group-b">
-    {% if reading %}
+    {% if not cloud.enabled and not reading %}
+    <div class="empty">Powerwall · solar, home, grid and battery flow, live and by day · needs a Tesla account with a Powerwall</div>
+    {% elif reading %}
     <div class="set-row"><span class="set-l">Last reading<span class="set-s">{{ reading_age }} from {{ reading.source_label }}</span></span>
-      <span class="set-v">{% if reading.soc is not none %}{{ reading.soc|num }}% · {% endif %}{% for p in reading.parts %}{{ p.label }} {{ p.arrow }}{{ p.kw }}{{ ' · ' if not loop.last }}{% endfor %}</span></div>
+      <span class="set-v wrapv">{% if reading.soc is not none %}{{ reading.soc|num }}% · {% endif %}{% for p in reading.parts %}{{ p.label }} {{ p.arrow }}{{ p.kw }}{{ ' · ' if not loop.last }}{% endfor %}</span></div>
     {% else %}
     <div class="set-row"><span class="set-l">Last reading</span><span class="set-v">None yet</span></div>
     {% endif %}
@@ -46,4 +49,5 @@
   </div>
 </section>
 {% endif %}
+</div>
 {% endblock %}

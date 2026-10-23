@@ -12,15 +12,9 @@
   var find = document.querySelector("[data-place-filter]"), none = document.querySelector(".plnone"), mapEl = document.getElementById("pl-map");
   var banner = document.querySelector(".plmerge");
   var all = [], byId = {}, icons = {}, sel = null, map = null, marks = {}, merging = null, q = "", showAll = false, halo = null, selPane = null, TOP = 10;
+  var NAME_ZOOM = 17; // the map's zoom on a place picked to be named: street level
   var fmt = function (n) { return Number(n || 0).toLocaleString(); };
 
-  // The one after `id` in `ids` once `id` is done with (named, so it leaves the queue, or
-  // skipped): the following one, or the first when it was the last; null when none is left.
-  function nextIn(ids, id) {
-    var i = ids.indexOf(id), rest = ids.filter(function (x) { return x !== id; });
-    if (!rest.length) return null;
-    return i < 0 || i >= rest.length ? rest[0] : rest[i];
-  }
   function metres(a, b, c, d) {
     var R = 6371000, r = Math.PI / 180, x = Math.sin(((c - a) * r) / 2), y = Math.sin(((d - b) * r) / 2);
     return 2 * R * Math.asin(Math.sqrt(x * x + Math.cos(a * r) * Math.cos(c * r) * y * y));
@@ -29,8 +23,11 @@
   // What a found place would be called: the cars' navigation name, else its looked-up name
   // (a place on the map, or "Road, City" cut to the road); a bare coordinate stays whole.
   function suggest(p) { return p.s || (/^-?\d+(\.\d+)?, -?\d/.test(p.n) ? p.n : road(p.n)); }
+  // A found place with no name from the cars or a lookup is just a coordinate: it reads as unnamed, and the coordinate is a detail beneath.
+  function unnamed(p) { return !!p.a && !p.s && /^-?\d+(\.\d+)?, -?\d/.test(p.n); }
+  function label(p) { return p.a ? (unnamed(p) ? "Unnamed place" : suggest(p)) : p.n; }
   function visitsText(v) { return fmt(v) + (v === 1 ? " visit" : " visits"); } // placespage.visits: one count, one word
-  function title(p) { return (p.a ? suggest(p) : p.n) + " · " + visitsText(p.v); }
+  function title(p) { return label(p) + (p.v ? " · " + visitsText(p.v) : ""); } // no visits, no count: "0 visits" says nothing
   function svg(key) {
     var d = icons[key];
     return d ? '<svg class="pl-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + d + "</svg>" : "";
@@ -51,12 +48,14 @@
     if (p.a) ic.appendChild(document.createElement("i"));
     else ic.innerHTML = svg(p.ic); // the site's own icon paths
     t.className = "ptext";
-    name.textContent = p.a ? suggest(p) : p.n;
+    name.textContent = label(p);
     sub.className = "muted small";
+    if (unnamed(p)) li.className += " plr-unnamed";
     var bits = [];
+    if (unnamed(p)) bits.push(p.n);
     if (far != null) bits.push(far < 1000 ? Math.round(far) + " m" : (far / 1000).toFixed(1) + " km");
     if (p.c) bits.push(p.c);
-    bits.push(visitsText(p.v));
+    if (p.v) bits.push(visitsText(p.v));
     sub.textContent = bits.join(" · ");
     t.appendChild(name);
     t.appendChild(sub);
@@ -103,6 +102,8 @@
     }
     document.querySelector(".plsec-need .n").textContent = fmt(need);
     document.querySelector(".plsec-named .n").textContent = fmt(named);
+    var head = document.querySelector("[data-pl-count]");  // the header counts what the lists below now hold
+    if (head && !q && !merging) head.textContent = fmt(named) + " place" + (named === 1 ? "" : "s") + (need ? " · " + fmt(need) + " to name" : "");
     document.querySelector(".plsec-need").hidden = merging || !lists.need.children.length;
     document.querySelector(".plsec-named").hidden = !!merging;
     var empty = document.querySelector(".plempty");
@@ -131,7 +132,7 @@
   }
   function draw() {
     if (map || !window.CCMap) return;
-    map = CCMap.base(mapEl, { scrollWheelZoom: true, preferCanvas: true });
+    map = CCMap.base(mapEl, { scrollWheelZoom: true, preferCanvas: true, hint: true, full: true });
     map.createPane("plsel").style.zIndex = 650; // the picked found place, above the markers
     map.getPane("plsel").style.pointerEvents = "none";
     selPane = L.svg({ pane: "plsel" });
@@ -194,7 +195,6 @@
       return { left: r.left + pt.x - 18, right: r.left + pt.x + 18, top: r.top + pt.y - 18, bottom: r.top + pt.y + 18, width: 36, height: 36 };
     };
   }
-  function inView(p) { var b = map.getBounds().pad(-0.15); return b.contains([p.la, p.lo]); }
 
   // ---- Picking and naming --------------------------------------------------------------------
   function select(p, from) {
@@ -211,7 +211,8 @@
     var anchor = b, wide = !(window.matchMedia && matchMedia("(max-width: 600px)").matches);
     if (map) {
       highlight(p, true);
-      if (!inView(p)) map.setView([p.la, p.lo], Math.max(map.getZoom(), 15), { animate: false });
+      // Zoom to street level on the place, so it is plain where it is (never further out than that).
+      map.setView([p.la, p.lo], Math.max(map.getZoom(), NAME_ZOOM), { animate: false });
       // On a wide screen the point moves to the map's left third and the card sits to its right,
       // so both stay in sight; a phone's sheet sits under the map anyway.
       var size = map.getSize(), at = map.latLngToContainerPoint([p.la, p.lo]);
@@ -230,31 +231,24 @@
       id: p.id,
       anchor: anchor,
       title: title(p),
-      queue: !!p.a,
       sticky: true,
       side: true,
       onSaved: saved,
-      onSkip: function () { go(nextIn(queue(), p.id)); },
       onClose: function () { if (sel === p) select(null); },
       onMerge: function (place) { startMerge(byId[place.id]); },
     }); });
   }
   // The card's script, loaded by shell.js on first use (and on idle once the list is here).
   function card(then) { if (window.ccPlaceCard) window.ccPlaceCard().then(then).catch(function () {}); }
-  function queue() { return all.filter(function (p) { return p.a && matches(p); }).map(function (p) { return p.id; }); }
-  function go(id) {
-    if (id == null) { select(null); return false; }
-    select(byId[id], "next");
-    return true;
-  }
   // After a save: the saved place as it is now (named, so it leaves "Needs a name"; or taken
-  // into another, so it leaves the page), then the next found place, when it was one.
+  // into another, so it leaves the page). A place that was found goes back to the list, the map
+  // back to the overview; the next one is never opened for you.
   function saved(place, was) {
-    var p = sel, wasFound = p && p.a, after = p && wasFound ? nextIn(queue(), p.id) : null;
+    var p = sel, wasFound = p && p.a;
     if (p && place.id !== p.id) gone(p.id);
     put(place, p && place.id === p.id ? p.v : null);
     render();
-    if (wasFound && after != null) { select(null); return go(after); }
+    if (wasFound) { select(null); if (map) fit(); return false; }
     select(byId[place.id]);
     if (map && byId[place.id]) highlight(byId[place.id], true);
     return false;

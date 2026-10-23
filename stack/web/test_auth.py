@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 import auth
@@ -100,9 +102,11 @@ def test_the_healthcheck_and_the_login_page_stay_reachable():
 
 
 def test_an_unconfigured_install_funnels_to_setup_and_never_serves_data():
-    for path in ("/", "/api/drives", "/health", "/static/style.css", "/login"):
+    for path in ("/", "/api/drives", "/login"):
         assert g(path, password_set=False, signed_in=False) == "setup", path
-    assert g("/setup", password_set=False, signed_in=False) == "pass"
+    for path in ("/setup", "/static/style.css", "/favicon.ico"):
+        assert g(path, password_set=False, signed_in=False) == "pass", f"{path}: the setup page is drawn with it"
+    assert g("/health", password_set=False, signed_in=False) == "pass", "an uptime monitor sees 200 before setup"
 
 
 def test_setting_the_first_password_still_needs_a_token():
@@ -195,12 +199,13 @@ def test_a_scoped_token_answers_for_its_car_only():
     assert not token_allows("V1", "V2") and not token_allows("V1", None) and not token_allows("V1", "all")
 
 
-def test_the_client_address_comes_from_the_edge_first():
-    from auth import client_ip
+def test_alerts_and_the_audit_log_name_an_address_a_client_cannot_choose():
+    from auth import seen_from
 
-    assert client_ip({"cf-connecting-ip": "203.0.113.9", "x-forwarded-for": "198.51.100.1, 10.1.2.1"}, "10.1.2.2") == "203.0.113.9"
-    assert client_ip({"x-forwarded-for": "198.51.100.1, 10.1.2.1"}, "10.1.2.2") == "198.51.100.1"
-    assert client_ip({}, "10.1.2.2") == "10.1.2.2" and client_ip(None, None) == "?"
+    assert seen_from({"cf-connecting-ip": "198.51.100.1"}, "203.0.113.7") == "203.0.113.7", "a header sent straight from the internet is ignored"
+    assert seen_from({"x-forwarded-for": "198.51.100.1, 203.0.113.9"}, "172.18.0.5") == "203.0.113.9 via 172.18.0.5"
+    assert seen_from({"x-forwarded-for": "10.0.0.2"}, "192.168.1.40") == "10.0.0.2 via 192.168.1.40", "a forged home address still shows the socket"
+    assert seen_from({}, "192.168.1.40") == "192.168.1.40" and seen_from({}, None) == "?"
 
 
 def test_the_install_manifest_opens_before_sign_in():
@@ -349,6 +354,14 @@ def test_the_tesla_network_is_refused_even_from_anywhere():
     assert auth.admin_refusal({}, "192.168.1.2", False, tesla) is None
 
 
+def test_a_request_through_funnel_is_refused_even_from_this_machine():
+    """In the one container, Funnel's proxy reaches the site from 127.0.0.1; Tailscale marks
+    what it forwards from the internet, and strips the mark from anything sent with one."""
+    for anywhere in (False, True):
+        assert "Tesla" in auth.admin_refusal({"Tailscale-Funnel-Request": "?1"}, "127.0.0.1", anywhere)
+    assert auth.admin_refusal({}, "127.0.0.1", False) is None
+
+
 def test_no_socket_address_is_no_admin_call():
     assert "address" in auth.admin_refusal({}, None, False)
     assert "address" in auth.admin_refusal({}, None, True)
@@ -378,3 +391,105 @@ def test_the_throttle_counts_against_the_address_a_client_cannot_forge():
     assert key({"x-forwarded-for": "198.51.100.1, 203.0.113.9"}, "172.18.0.5") == "203.0.113.9", "behind a proxy at home: the hop it saw, not the forged one in front"
     assert key({"x-forwarded-for": "192.168.1.40"}, "172.18.0.5") == "192.168.1.40", "all at home: the farthest"
     assert key({}, None) == "?"
+
+
+# ---- a stranger cannot lock the owner out ------------------------------------------
+
+
+def _tripped(f, now=100):
+    for i in range(60):
+        f.record(f"203.0.113.{i}", now=now)
+
+
+def test_a_known_device_is_not_held_by_the_global_brake():
+    f = auth.Failures()
+    _tripped(f)
+    assert f.wait("198.51.100.7", now=100) > 0, "a stranger on a fresh address waits"
+    assert f.wait("198.51.100.7", now=100, known=True) == 0.0, "the owner's own browser does not"
+
+
+def test_a_known_device_still_has_its_own_limit():
+    f = auth.Failures()
+    for _ in range(6):
+        f.record("198.51.100.7", now=100)
+    assert f.wait("198.51.100.7", now=100, known=True) == 10.0
+
+
+def test_the_owner_hears_once_when_the_global_brake_engages():
+    heard = []
+    f = auth.Failures(on_brake=lambda: heard.append(1))
+    _tripped(f)
+    assert heard == [1]
+    f.clear("someone")
+    _tripped(f, now=200)
+    assert heard == [1, 1], "a fresh attack after a good sign-in is told again"
+
+
+def test_a_device_cookie_is_its_own_kind_of_signed_value():
+    secret = auth.new_secret()
+    device = auth.new_device(secret)
+    assert auth.known_device(secret, device)
+    assert not auth.valid_session(secret, device), "it opens nothing"
+    assert not auth.known_device(secret, auth.new_session(secret)), "and a session is not one"
+    assert not auth.known_device(auth.new_secret(), device) and not auth.known_device(secret, None)
+
+
+def test_a_device_cookie_lasts_a_year():
+    secret = auth.new_secret()
+    old = auth.sign(auth.device_key(secret), "d", now=time.time() - 300 * 86400)
+    assert auth.known_device(secret, old)
+    older = auth.sign(auth.device_key(secret), "d", now=time.time() - 400 * 86400)
+    assert not auth.known_device(secret, older)
+
+
+def test_an_ipv6_client_counts_as_its_64_against_the_sign_in_brake():
+    assert auth.sign_in_key({}, "2001:db8:1:2::5") == auth.sign_in_key({}, "2001:db8:1:2:ffff::9") == "2001:db8:1:2::/64"
+    assert auth.sign_in_key({}, "203.0.113.7") == "203.0.113.7"
+
+
+# ---- revoking sessions --------------------------------------------------------------
+
+
+def test_a_session_from_before_the_generation_changed_is_no_session():
+    secret = auth.new_secret()
+    old = auth.new_session(secret, 0)
+    assert auth.valid_session(secret, old, 0)
+    assert not auth.valid_session(secret, old, 1), "signing out everywhere ends it"
+    assert auth.valid_session(secret, auth.new_session(secret, 1), 1)
+
+
+def test_a_session_made_before_generations_existed_counts_as_the_first():
+    secret = auth.new_secret()
+    legacy = auth.sign(secret, "uAAAAAAAAAAAA")
+    assert auth.valid_session(secret, legacy, 0) and not auth.valid_session(secret, legacy, 1)
+
+
+def test_a_forged_generation_breaks_the_signature():
+    secret = auth.new_secret()
+    token = auth.new_session(secret, 1)
+    assert not auth.valid_session(secret, "e2" + token[2:], 2)
+
+
+def test_one_signed_out_session_ends_and_the_others_carry_on():
+    secret = auth.new_secret()
+    mine, other = auth.new_session(secret), auth.new_session(secret)
+    revoked = auth.revoke({}, secret, mine, now=time.time())
+    assert not auth.valid_session(secret, mine, 0, revoked) and auth.valid_session(secret, other, 0, revoked)
+
+
+def test_the_revoked_list_forgets_what_has_expired_anyway():
+    secret = auth.new_secret()
+    stale = auth.sign(secret, "e0:uOLD", now=1000)
+    revoked = auth.revoke({}, secret, stale, now=1000)
+    later = auth.revoke(revoked, secret, auth.new_session(secret), now=1000 + auth.SESSION_MAX_AGE + 1)
+    assert "e0:uOLD" not in later and len(later) == 1
+    assert auth.revoke({}, secret, "not a session", now=1000) == {}
+
+
+# ---- placeholders ---------------------------------------------------------------
+
+
+def test_a_placeholder_from_the_example_env_is_named():
+    env = {"REST_PASSWORD": "CHANGE_ME", "CC_PASSWORD": "", "CC_SECRET": "CHANGE_ME", "DATABASE_URL": "postgresql://carcommand:CHANGE_ME@db:5432/carcommand"}
+    assert auth.placeholders(env) == ["DATABASE_URL (DB_PASSWORD)", "REST_PASSWORD", "CC_SECRET"]
+    assert auth.placeholders({"DATABASE_URL": "postgresql://u:a1b2@db/x", "REST_PASSWORD": "r", "CC_PASSWORD": "a good long password"}) == []

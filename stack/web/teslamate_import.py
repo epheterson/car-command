@@ -70,7 +70,6 @@ def blank(t: datetime, vin: str, **kw) -> dict:
         "inside_f": None,
         "sentry_raw": "",
         "climate_raw": "",
-        "fan_on": False,
         "volts": None,
         "amps": None,
         "drive_no": 0,

@@ -9,16 +9,31 @@
 
 {# What a step needs from you, or what it set up #}
 {% macro body(s) -%}
-{% if s.id == 'app' and s.state != 'done' %}
-<div class="set-s">Make a Fleet API app at <a href="https://developer.tesla.com" target="_blank" rel="noopener">developer.tesla.com</a> with these values {% call i.info("The app") %}Grant types: Authorization Code and Machine-to-Machine. Tesla bills API use; prices are on developer.tesla.com. Put its Client ID and Secret in stack/.env, or as -e on the one container, then recreate the site's container.{% endcall %}</div>
-<table class="pairs"><tbody>
-  <tr><th>Allowed origin</th><td><code>{{ 'https://' ~ tesla_domain if tesla_domain else 'https://your.domain' }}</code> <button type="button" class="btn sm copy" data-copy="{{ 'https://' ~ tesla_domain if tesla_domain else '' }}">Copy</button></td></tr>
-  <tr><th>Redirect URI</th><td><code>{{ tesla_redirect or 'https://your.domain/settings/sources/tesla/callback' }}</code> <button type="button" class="btn sm copy" data-copy="{{ tesla_redirect }}">Copy</button></td></tr>
-  <tr><th>Scopes</th><td>{{ tesla_scopes|join(', ') }}</td></tr>
-  <tr><th>In <code>.env</code> or <code>-e</code></th><td><code>TESLA_CLIENT_ID=…</code><br><code>TESLA_CLIENT_SECRET=…</code><br><code>TESLA_DOMAIN={{ tesla_domain or 'your.domain' }}</code></td></tr>
-</tbody></table>
-{% elif s.id == 'app' %}
-<div class="set-s">Client ID and Secret in the environment · {{ tesla_domain }}</div>
+{% if s.id == 'app' %}
+{% set cfg = app_cfg or {'from': {}} %}{% set all_env = cfg['from'].get('client_id') == 'env' and cfg['from'].get('client_secret') == 'env' and cfg['from'].get('domain') == 'env' %}
+{% if s.state != 'done' %}
+<ol class="howto">
+  <li><b>Open</b> <a href="https://developer.tesla.com" target="_blank" rel="noopener">developer.tesla.com</a> › Dashboard › Create app {% call i.info("The app") %}Tesla bills API use; prices are on developer.tesla.com. Name and description can be anything.{% endcall %}</li>
+  <li><b>Grant types</b> Authorization Code and Machine-to-Machine</li>
+  <li><b>Allowed origin</b> <code data-host-origin>{{ 'https://' ~ (site or {}).domain if (site or {}).domain else 'https://your.domain' }}</code> <button type="button" class="btn sm copy" data-copy="{{ 'https://' ~ (site or {}).domain if (site or {}).domain else '' }}" data-host-copy="origin"{% if not (site or {}).domain %} disabled{% endif %}>Copy</button></li>
+  <li><b>Redirect URI</b> <code data-host-redirect>{{ (site or {}).redirect or 'https://your.domain' ~ root ~ '/settings/sources/tesla/callback' }}</code> <button type="button" class="btn sm copy" data-copy="{{ (site or {}).redirect }}" data-host-copy="redirect"{% if not (site or {}).domain %} disabled{% endif %}>Copy</button></li>
+  <li><b>Scopes</b> {{ tesla_scopes|join(', ') }}</li>
+  <li><b>Paste</b> the Client ID and Client secret below</li>
+</ol>
+{% endif %}
+{% if not all_env %}
+<details class="set-x tesla-app"{% if s.state != 'done' %} open{% endif %}><summary class="set-row"><span class="set-l">{{ 'Change the app\'s values' if s.state == 'done' else 'The app\'s values' }}</span></summary>
+<form class="set-p" method="post" action="{{ root }}/settings/sources/tesla/app" data-wait="Saving…"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+  {% for f, lab, kind in (('client_id', 'Client ID', 'text'), ('client_secret', 'Client secret', 'password'), ('domain', 'Domain', 'text')) %}
+  <div class="set-row stack"><label class="set-l" for="tesla-{{ f }}">{{ lab }}{% if cfg['from'].get(f) == 'env' %} <span class="muted">from .env</span>{% elif cfg['from'].get(f) == 'app' and f == 'client_secret' %} <span class="muted">kept, blank keeps it</span>{% endif %}</label>
+    {% if cfg['from'].get(f) == 'env' %}<input class="field wide" id="tesla-{{ f }}" type="{{ 'password' if f == 'client_secret' else 'text' }}" value="{{ '' if f == 'client_secret' else cfg[f] }}" placeholder="{{ 'set in .env' if f == 'client_secret' else '' }}" readonly>
+    {% elif f == 'domain' %}<input class="field wide" id="tesla-host" name="domain" type="text" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="cars.example.com" value="{{ cfg.domain or (site or {}).domain }}" required>
+    {% else %}<input class="field wide" id="tesla-{{ f }}" name="{{ f }}" type="{{ kind }}" autocomplete="off" spellcheck="false" value="{{ cfg[f] if f == 'client_id' else '' }}"{% if not (f == 'client_secret' and cfg['from'].get(f)) %} required{% endif %}>{% endif %}
+  </div>{% endfor %}
+  {% if not (site or {}).domain and not cfg.domain %}<div class="group-f">No public address is set, so type the hostname Tesla will reach this site at {% call i.info("Why a hostname") %}Tesla only accepts an https address that reaches this site from the internet, such as one through a tunnel or a reverse proxy. A home address, or http, is refused. Set CC_PUBLIC_URL in .env and it is filled in here.{% endcall %}</div>{% endif %}
+  <div class="acts"><button type="submit" class="btn primary"{% if not vault_ready %} disabled{% endif %}>Save</button></div>
+</form></details>
+{% else %}<div class="set-s">Client ID, secret and domain from .env · {{ tesla_domain }}</div>{% endif %}
 {% endif %}
 {% if s.id == 'domain' %}
 <div class="set-s">The key at <code>https://{{ key_domain or tesla_domain }}/.well-known/appspecific/com.tesla.3p.public-key.pem</code> {% call i.info("The key") %}Public, with no sign-in in front of it.{% if key_domain and key_domain != tesla_domain %} Tesla allows one domain per app, so the key is served at the stream address and {{ tesla_domain }} stays the sign-in page.{% endif %} The private half is sealed here.{% endcall %}</div>
@@ -54,7 +69,6 @@
 {% set f = pw.flow %}{% set cur = f.current %}
 <section class="group pwflow" id="pw">
   <h2 class="sec">Powerwall {% call i.info("What this adds") %}The house beside the cars: a Powerwall row on Now, and for each home charge how much came from the sun, the Powerwall and the grid. Read with the Tesla account.{% endcall %}</h2>
-  <ol class="pwline" aria-label="Powerwall setup">{% for s in f.steps %}<li class="{{ s.state }}{{ ' now' if s.id == cur }}"><span class="n">{{ s.n }}</span> {{ {'signin': 'Signed in', 'powerwall': 'Powerwall', 'history': 'History'}[s.id] }}</li>{% endfor %}</ol>
   {% if pw.error %}<p class="notice err" role="alert">{{ pw.error }}</p>{% endif %}
   <div class="group-b">
   {% for s in f.steps %}
@@ -114,7 +128,7 @@
 {% set done = steps|selectattr('state', 'equalto', 'done')|list|length %}
 <section class="group" id="setup">
   <h2 class="sec">Setup · {{ done }} of {{ steps|length }} done</h2>
-  <ol class="steps group-b">
+  <ol class="setup-list group-b">
   {% for s in steps %}<li class="step {{ s.state }}" id="step-{{ s.id }}">
     {% if s.state == 'done' %}
     <details class="set-x"><summary class="set-row"><span class="step-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span><span class="set-l">{{ s.title }}</span><span class="set-v">Show</span></summary>
@@ -150,14 +164,22 @@
 <section class="group" id="billing">
   <h2 class="sec">Supercharger bills</h2>
   <div class="group-b">
-    <div class="set-row"><span class="set-l">Read with <code>vehicle_charging_cmds</code> {% call i.info("What the scope allows") %}Every few hours the account's charging history is read, and each Supercharger session is priced at what Tesla billed, with its invoice. The same scope allows charge commands. Your developer app must allow Vehicle Charging Management.{% endcall %}<span class="set-s">Charge commands: Car Command sends none</span></span>
+    <div class="set-row"><span class="set-l">Read with <code>vehicle_charging_cmds</code> {% call i.info("What the scope allows") %}Every few hours the account's charging history is read, and each Supercharger session is priced at what Tesla billed, with its invoice. The same scope allows charge commands, sent only from Settings › Commands. Your developer app must allow Vehicle Charging Management.{% endcall %}<span class="set-s">Charge commands: <a class="quietlink" href="{{ root }}/settings/commands">Settings › Commands</a></span></span>
       <span class="set-v">{% if not billing %}Asked for at sign-in{% elif billing.granted %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>Granted</span>{% else %}Not granted{% endif %}</span></div>
     {% if billing and billing.granted %}<div class="set-row sub"><span class="set-l">{% if billing.read_at %}History last read {{ billing.read_at|local }}, {{ billing.count|num }} bill{{ 's' if billing.count != 1 }} kept{% else %}The first read happens in the background shortly{% endif %}</span></div>
     {% elif billing %}<div class="set-row sub"><span class="set-l">Sign in again to grant it {% call i.info("Why") %}This account signed in without it, so Superchargers are priced at the Settings › Money rate.{% endcall %}</span><div class="set-c"><a class="btn sm" href="{{ root }}/settings/sources/tesla/start">Sign in again</a></div></div>{% endif %}
   </div>
 </section>
+<section class="group" id="commands">
+  <h2 class="sec">Commands</h2>
+  <div class="group-b">
+    <div class="set-row"><span class="set-l">Sent with <code>vehicle_cmds</code> {% call i.info("How commands go") %}Tesla's own signing proxy signs each one with the app's key, which the car already holds. Nothing is sent until Settings › Commands turns them on.{% endcall %}<span class="set-s">{% if cmd_proxy %}Signing proxy set{% else %}No signing proxy: see docs/commands.md{% endif %} · <a class="quietlink" href="{{ root }}/settings/commands">Settings › Commands</a></span></span>
+      <span class="set-v">{% if not cmd_scope %}Asked for at sign-in{% elif cmd_scope.all %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>Granted</span>{% else %}Not granted{% endif %}</span></div>
+    {% if cmd_scope and not cmd_scope.all %}<div class="set-row sub"><span class="set-l">Sign in again to allow commands</span><div class="set-c"><a class="btn sm" href="{{ root }}/settings/sources/tesla/start">Sign in again</a></div></div>{% endif %}
+  </div>
+</section>
 <section class="group" id="powerwall">
-  <h2 class="sec">Powerwall</h2>
+  <h2 class="sec">Powerwall access</h2>
   <div class="group-b">
     <div class="set-row"><span class="set-l">Read with <code>energy_device_data</code> {% call i.info("What the scope allows") %}A Powerwall's live status, every 5 minutes, and its history. Car Command sends it no commands. Your developer app must allow Energy Product Data.{% endcall %}<span class="set-s"><a class="quietlink" href="{{ root }}/settings/energy">Settings › Energy</a></span></span>
       <span class="set-v">{% if not energy_scope %}Asked for at sign-in{% elif energy_scope.granted %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>Granted</span>{% else %}Not granted{% endif %}</span></div>
@@ -169,6 +191,16 @@
 {% if pw %}{{ pw_flow(pw) }}{% endif %}
 <script>
 (() => {
+  // No public address set: the hostname typed here fills in the three values below it (nothing is saved or sent).
+  const host = document.getElementById("tesla-host");
+  if (host) host.addEventListener("input", () => {
+    const h = host.value.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+    const origin = h ? "https://" + h : "", redirect = h ? "https://" + h + "{{ root }}/settings/sources/tesla/callback" : "";
+    document.querySelectorAll("[data-host-origin]").forEach(e => { e.textContent = origin || "https://your.domain"; });
+    document.querySelectorAll("[data-host-redirect]").forEach(e => { e.textContent = redirect || "https://your.domain{{ root }}/settings/sources/tesla/callback"; });
+    document.querySelectorAll("[data-host-domain]").forEach(e => { e.textContent = h || "your.domain"; });
+    document.querySelectorAll("[data-host-copy]").forEach(b => { b.dataset.copy = b.dataset.hostCopy === "origin" ? origin : redirect; b.disabled = !h; b.textContent = "Copy"; });
+  });
   document.querySelectorAll("button.copy").forEach(b => b.addEventListener("click", () => {
     const text = b.dataset.copy; if (!text) return;
     (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => { b.textContent = "Copied"; }, () => { b.textContent = "Select and copy"; });

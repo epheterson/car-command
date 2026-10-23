@@ -43,8 +43,26 @@ PERSONAL = {
     "a home directory": r"/Users/[a-z][a-z0-9_-]+",
 }
 
-# Files the public snapshot leaves out (scripts/publish-snapshot.sh), so they may say where things live.
-PRIVATE_ONLY = {"CLAUDE.md"}
+# Files the public snapshot leaves out (scripts/publish-snapshot.sh), so they may say where
+# things live. They are still checked for credentials and real cars; only where-things-live is let be.
+PRIVATE_ONLY = (
+    "CLAUDE.md",
+    "PLAN.md",
+    "docs/status.md",
+    "docs/teslafi-",
+    "docs/ideas-from-elsewhere.md",
+    "docs/plans/",
+    "docs/release-readiness.md",
+    "docs/tesla-plan.md",
+    "docs/history/",
+    "docs/design/",
+)
+WHERE_THINGS_LIVE = {"a path into the owner's notes", "a home directory"}
+
+
+def private_only(rel: str) -> bool:
+    return rel.startswith(PRIVATE_ONLY)
+
 
 # The fictional cars this repo tests against all end in a sequential id — 000001, 000002.
 # A real VIN's last six are a serial number and effectively never look like that.
@@ -86,7 +104,7 @@ def test_no_credential_is_committed(label, pattern):
 def test_nothing_identifies_a_real_car_or_place(label, pattern):
     offenders = []
     for path in tracked_files():
-        if path.relative_to(REPO).as_posix() in PRIVATE_ONLY:
+        if label in WHERE_THINGS_LIVE and private_only(path.relative_to(REPO).as_posix()):
             continue
         try:
             text = path.read_text(errors="ignore")
@@ -127,3 +145,11 @@ def test_the_scan_would_catch_something():
     }
     for label, pattern in {**CREDENTIALS, **PERSONAL}.items():
         assert re.search(pattern, samples[label]), f"the {label} pattern matches nothing"
+
+
+def test_the_private_files_are_the_ones_the_snapshot_leaves_out():
+    """The exemption above holds only while the public snapshot really drops those files."""
+    script = (REPO / "scripts" / "publish-snapshot.sh").read_text()
+    dropped = script[script.index("rm -rf PLAN.md") :].split("\n")[0].split()[2:] + ["CLAUDE.md"]
+    for prefix in PRIVATE_ONLY:
+        assert any(prefix.rstrip("/").startswith(d.split("*")[0].rstrip("/")) for d in dropped), prefix

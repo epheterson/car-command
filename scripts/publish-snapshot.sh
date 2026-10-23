@@ -8,7 +8,7 @@
 # and so does the rate-averages download URL, which names the repository too.
 #
 # What stays behind: the private planning docs (PLAN.md, docs/status.md, docs/teslafi-*.md, docs/ideas-from-elsewhere.md,
-# docs/plans/, docs/release-readiness.md, docs/tesla-plan.md), which are kept elsewhere,
+# docs/plans/, docs/release-readiness.md, docs/tesla-plan.md, docs/history/, docs/design/),
 # and every untracked file. What is checked: the secrets test runs on the result, so no
 # real VIN, coordinate, host or password rides along. Nothing is pushed; the maintainer does that.
 set -eu
@@ -20,7 +20,7 @@ VERSION=$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' "$HERE/stack/web/version.py")
 mkdir -p "$DEST"
 git -C "$HERE" archive --format=tar HEAD | tar -x -C "$DEST"
 cd "$DEST"
-rm -rf PLAN.md docs/status.md docs/teslafi-*.md docs/ideas-from-elsewhere.md docs/plans docs/release-readiness.md docs/tesla-plan.md
+rm -rf PLAN.md docs/status.md docs/teslafi-*.md docs/ideas-from-elsewhere.md docs/plans docs/release-readiness.md docs/tesla-plan.md docs/history docs/design
 # The project's own instructions file refers to those docs; the public one is the README.
 rm -f CLAUDE.md
 # The .gitignore lines for those docs and the maintainer's tools stay behind too.
@@ -30,6 +30,13 @@ grep -rlI --exclude-dir=.git -e 'OWNER/REPO' -e 'epheterson/car-command' . | gre
   sed -i.snapshot "s#OWNER/REPO#$REPO#g; s#epheterson/car-command#$REPO#g" "$f" && rm -f "$f.snapshot"
 done
 if grep -rlI --exclude-dir=.git 'OWNER/REPO' . | grep -v '^./scripts/publish-snapshot.sh$'; then echo "OWNER/REPO left in the files above" >&2; exit 1; fi
+# The maintainer's own words (car names, people, streets), one per line in an untracked
+# .private-words beside this repo's Makefile: none may reach the public tree. The licence and
+# this script name the maintainer on purpose; the rate tables are public utility data.
+if [ -f "$HERE/.private-words" ]; then
+  hits=$(grep -rIilwF --exclude-dir=.git -f "$HERE/.private-words" . | grep -v -e '^./LICENSE$' -e '^./scripts/publish-snapshot.sh$' -e '^./stack/web/rates/' || true)
+  if [ -n "$hits" ]; then echo "private words in:" >&2; echo "$hits" >&2; exit 1; fi
+fi
 git init -q -b main
 git add -A
 # The secrets test, on the tree that will be public; it reads git's file list, so after the add.

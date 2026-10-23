@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% block title %}{{ ends|map(attribute='name')|join(' ⇄ ') }} · Routes · Car Command{% endblock %}
+{% block head %}{% include "_maphead.html" %}{% endblock %}
+{% block body %}
+{% set dq = ('&vin=' ~ car.vin) if q else '' %}
+{# One route of the Routes list: its two ends as places, a map of its drives drawn together,
+   the figures the list row has, and its drives newest first. #}
+<p class="crumb"><a href="{{ root }}/places/routes?span={{ span }}{{ dq }}">&larr; Routes</a></p>
+<div class="pbar"><h1 class="rte-h">{% for e in ends %}{% if not loop.first %} <span class="rt-ar" aria-label="and back">⇄</span> {% endif %}<span>{{ place_refs(e.name, [e.ref]) }}</span>{% endfor %}{% if r.loop %} <span class="muted">loop</span>{% endif %}{% if r.tag %}<span class="rt-tag">{{ r.tag }}</span>{% endif %}</h1></div>
+<div class="rte-ends">{% for e in ends %}<div class="rte-end"><span class="rte-l">{{ 'Place' if r.loop else ('A' if loop.first else 'B') }}</span>
+  <span class="rte-n">{% if e.unnamed %}Unnamed place{% else %}<a href="{{ root }}/places/{{ e.id }}{{ q }}">{{ e.name|places }}</a>{% endif %}</span>
+  <span class="muted small">{{ e.street if e.unnamed else (e.city or e.street) }}</span>
+  {% if e.lat is not none and e.lon is not none %}<div class="map rte-end-map" data-lat="{{ e.lat }}" data-lon="{{ e.lon }}" data-c="{{ 1 if loop.first else 2 }}" role="img" aria-label="Close-up of {{ 'this place' if e.unnamed else e.name }}"></div>{% endif %}
+  {% if e.unnamed %}<button type="button" class="btn sm pn pn-new" aria-haspopup="dialog" data-lat="{{ e.lat }}" data-lon="{{ e.lon }}">Name it</button>{% else %}<a class="btn sm" href="{{ root }}/places/{{ e.id }}{{ q }}">Open place</a>{% endif %}
+</div>{% endfor %}</div>
+<div id="rte-map" class="map rte-map" role="img" aria-label="Map of this route's drives, with both ends marked"></div>
+<dl class="dgrid rte-fig">
+  <div><dt>Drives</dt><dd>{{ r.n|num }}{% if not r.loop %}<small>{% for f, t, n in r.ways %}{{ n|num }} → {{ t }}{% if not loop.last %}, {% endif %}{% endfor %}</small>{% endif %}</dd></div>
+  <div><dt>Usual time</dt><dd>{{ r.time|duration }}</dd></div>
+  {% if r.kwh %}<div><dt>Energy</dt><dd>{{ r.kwh|num(1) }} kWh</dd></div>{% endif %}
+  {% if r.wh_per_mi %}<div><dt>Efficiency</dt><dd>{{ r.wh_per_mi|econ }} {{ u.econ }}</dd></div>{% endif %}
+  <div><dt>Last driven</dt><dd>{{ r.last|local('%b %-d, %Y') }}</dd></div>
+</dl>
+<section class="group"><h2 class="sec">Drives</h2>
+  <div class="rows">{% for d in drives %}{% set rp = day_row(as_drive(d), cur) %}{{ parts.row(root ~ '/drives/' ~ d.id ~ q, d.start_date|when, rp.title, rp.pills, rp.big, rp.sub, '', none, none, none, 'drive') }}{% endfor %}</div>
+  <p class="rte-all"><a class="btn sm" href="{{ root }}/drives?at=%23{{ r.a.id }}&dest=%23{{ r.b.id }}&both=on&from={{ r.first|local('%Y-%m-%d') }}{{ dq }}">See all in Drives</a></p>
+</section>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  // each end close up, at street level, to tell where it is before naming it
+  document.querySelectorAll(".rte-end-map").forEach(function (el) {
+    var at = [+el.dataset.lat, +el.dataset.lon], m = CCMap.base(el, { zoomControl: false });
+    m.invalidateSize(); m.setView(at, 17);
+    L.circleMarker(at, { radius: 8, color: "#fff", fillColor: CCMap.palette[+el.dataset.c], fillOpacity: 1, weight: 3 }).addTo(m);
+  });
+  var map = CCMap.base("rte-map", { zoomSnap: 0.25 });
+  fetch("{{ root }}/places/routes/{{ r.key }}/lines?span={{ span }}{% if q %}&vin={{ car.vin|urlencode }}{% endif %}").then(function (x) { return x.json(); }).then(function (d) {
+    var all = [];
+    d.lines.forEach(function (pts) { CCMap.route(map, pts, CCMap.palette[0], 3); all = all.concat(pts); });
+    var dot = function (p, c) { return L.circleMarker(p, { radius: 8, color: "#fff", fillColor: CCMap.palette[c], fillOpacity: 1, weight: 3 }).addTo(map); };
+    // the same ends, order and colours as the cards above, so A here is A there
+    var ends = {{ ends|map(attribute='lat')|list|tojson }}.map(function (la, i) { return [la, {{ ends|map(attribute='lon')|list|tojson }}[i]]; }).filter(function (p) { return p[0] != null && p[1] != null; });
+    ends.forEach(function (p, i) { dot(p, i + 1).bindTooltip(CCMap.lines([ends.length > 1 ? (i ? "B" : "A") : "Place"])); });
+    all = all.concat(ends);
+    map.invalidateSize(); map.fitBounds(all, { padding: [24, 24], maxZoom: 16 });
+  });
+});
+</script>
+{% endblock %}

@@ -3,6 +3,7 @@
    Save bar. Nothing stored changes with the units; they are how a figure is shown. #}
 {% from "_info.html" import info %}
 {% import "_settings.html" as s %}
+{% from "_tz.html" import tzpick, tzscript %}
 {% block section %}
 <form id="look" method="post" action="{{ root }}/settings/look{{ q }}" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
 <section class="group">
@@ -18,8 +19,9 @@
     <div class="set-row"><span class="set-l">Weeks begin on</span><div class="set-c">{{ s.segmented('week_start', (('monday', 'Monday'), ('sunday', 'Sunday')), 'sunday' if st.week_start == 'sunday' else 'monday', 'Weeks begin on', full=false) }}</div></div>
     <div class="set-row"><span class="set-l">Clock</span><div class="set-c">{{ s.segmented('clock', (('12', '12-hour'), ('24', '24-hour')), '24' if st.clock|string == '24' else '12', 'Clock', full=false) }}</div></div>
     <div class="set-row"><span class="set-l">Dates</span><div class="set-c">{{ s.segmented('date_order', (('mdy', 'Sep 17'), ('dmy', '17 Sep')), 'dmy' if st.date_order == 'dmy' else 'mdy', 'Dates', full=false) }}</div></div>
-    <div class="set-row"><span class="set-l"><label for="tz">Time zone</label> {% call info("Time zones") %}Any IANA name works; an unknown one is ignored. Blank uses the container's, {{ tz_default or tz }}.{% endcall %}<span class="set-s">Showing {{ tz_key or tz }}</span></span>
-      <div class="set-c"><input class="field" id="tz" name="timezone" list="zones" value="{{ st.timezone or '' }}" placeholder="{{ tz_default or '' }}" maxlength="64" autocomplete="off" spellcheck="false"><datalist id="zones">{% for z in (zones or []) %}<option value="{{ z }}">{% endfor %}</datalist></div></div>
+    {% set tzv = st.timezone or tz_key or tz %}
+    <div class="set-row under"><span class="set-l"><label for="tz">Time zone</label> {% call info("Time zones") %}Pick a city. Until you choose one it follows the container's, {{ tz_default or tz }}.{% endcall %}{% if (tz_key or tz) != tzv %}<span class="set-s">Showing {{ tz_key or tz }}</span>{% endif %}</span>
+      <div class="set-c">{% if not st.timezone %}<input type="hidden" name="timezone_was" value="{{ tzv }}">{% endif %}{{ tzpick(tzv, zone_groups or []) }}</div></div>
   </div>
 </section>
 <section class="group">
@@ -30,4 +32,5 @@
 </section>
 {{ s.savebar() }}
 </form>
+{{ tzscript() }}
 {% endblock %}

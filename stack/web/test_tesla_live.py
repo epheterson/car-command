@@ -45,6 +45,8 @@ class Conn:
             return Result([(self.db.resume,)] if self.db.resume else [])
         if s.startswith("SELECT value FROM cc_state"):
             return Result([(self.db.choice,)] if self.db.choice else [])
+        if s.startswith("SELECT at, record FROM cc_tesla_raw"):
+            return Result([r for r in getattr(self.db, "stored", []) if r[0] >= params[1]])
         if s.startswith("SELECT record FROM cc_tesla_raw"):
             return Result([(r,) for r in self.db.raw])
         if s.startswith("DELETE FROM cc_tesla_raw"):
@@ -450,3 +452,17 @@ def test_the_thread_starts_only_with_an_address_and_a_car():
     assert s.thread is None, "no car chosen: nothing to keep"
     s.use([ALPHA, ""])
     assert s.thread is not None and started.wait(2) and s.vins == {ALPHA}
+
+
+def test_a_restart_restores_each_cars_last_word_and_writes_nothing():
+    db = DB()
+    db.stored = [
+        (T0 + timedelta(minutes=1), payload(1, Locked=False, Location={"latitude": 1.0, "longitude": 2.0})),
+        (T0 + timedelta(minutes=2), payload(2, Locked=True, ChargeLimitSoc=80.0)),
+        (NOW - tesla_live.RESTORE - timedelta(hours=1), payload(0, ChargeLimitSoc=50.0)),  # too old to read
+    ]
+    s = stream(db)
+    assert s.restore() == 2
+    c = s.carried[ALPHA]
+    assert c["Locked"] is True and c["ChargeLimitSoc"] == 80.0 and c["_at"] == T0 + timedelta(minutes=2)
+    assert not s.moved and not db.batches  # no position written, nothing stored again

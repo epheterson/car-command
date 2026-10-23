@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from html import escape
 
+import clockfmt
+
 
 def line_chart(
     series: list[tuple[datetime, float]],
@@ -82,13 +84,13 @@ def time_ticks(t0: datetime, t1: datetime, tz=None) -> list[tuple[datetime, str]
     if days <= 15:
         d = local0.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         while d < t1:
-            ticks.append((d, d.strftime("%b %-d")))
+            ticks.append((d, d.strftime(clockfmt.adapt("%b %-d"))))
             d += timedelta(days=1)
     elif days <= 100:
         d = local0.replace(hour=0, minute=0, second=0, microsecond=0)
         d += timedelta(days=(7 - d.weekday()) % 7 or 7)  # next Monday
         while d < t1:
-            ticks.append((d, d.strftime("%b %-d")))
+            ticks.append((d, d.strftime(clockfmt.adapt("%b %-d"))))
             d += timedelta(days=7)
     elif days <= 800:
         y, m = local0.year, local0.month + 1

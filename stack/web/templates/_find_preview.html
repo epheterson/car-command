@@ -1,0 +1,49 @@
+{# One plan beside yours. With a bill read for it: what you'll be charged at the bill's prices,
+   then the utility's published prices and yours before, and the bill's prices as chips and
+   grid (≈ where scaled from the other season). Without: the published prices against yours.
+   Then its price changes, and Use, saying what it keeps. #}
+{% from "_info.html" import info %}
+{% from "_plan_grid.html" import tou_grid %}
+{% set c = preview.compare or {} %}
+{% set rp = preview.replaces or {} %}
+{% set pb = preview.bill %}
+{% set g = preview.billed_grid if pb and preview.billed_grid else preview.grid %}
+{% set cur = st.currency if st and st.currency else '$' %}
+{% set us = utility_short or preview.plan.utility or 'The utility' %}
+{% set months = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December') %}
+<div class="plan-sum find-pv" id="preview">
+  <h3 class="plan-nm">{{ row.shown if row and row.shown else preview.plan.name }}{% if row and row.mine %}<span class="badge like">Your plan</span>{% elif pb %}<span class="badge like">On your bill</span>{% elif row and row.like %}<span class="badge like">Matches {{ row.match or 'your plan' }}</span>{% endif %}</h3>
+  <p class="plan-meta">{{ preview.plan.utility }} · {{ preview.kind }}{% if row and row.status %} · <span class="find-st">{{ row.status }}</span>{% endif %}</p>
+  {% if pb %}<p class="notice find-bill">Read from your bill · <b>{{ pb.schedule or preview.plan.name }}</b>{% if pb.provider %} · {{ pb.provider }}{% endif %}</p>{% endif %}
+  {% if kin and kin|length > 1 %}
+  <form class="find-kin" method="get" action="{{ root }}/settings/money/plan">{% for k, v in (('q', find.q), ('eia', find.eia), ('vin', request.query_params.get('vin'))) if v %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}{% include "_find_hidden.html" %}
+    <label class="set-s" for="find-variant">Variant</label>
+    <select class="sel" id="find-variant" name="label">{% for k in kin %}<option value="{{ k.label }}"{% if preview.label in k.labels %} selected{% endif %}>{{ k.shown or k.name }}</option>{% endfor %}</select>
+    <button type="submit" class="btn sm find-kin-go">Show</button></form>
+  {% endif %}
+  {% if c.kwh %}
+  {% set before = 'Before (typed in)' if rp.typed else 'Before · ' ~ (c.mine or 'your plan') %}
+  <div class="find-cmp">
+    {% if pb and c.billed is defined and c.billed is not none %}
+    <div class="find-fig big"><span class="set-s">What you'll be charged</span><b>{{ cur }}{{ c.billed|num }}</b><span class="set-s">{{ c.per }}</span></div>
+    <div class="find-strip"><div class="find-fig"><span class="set-s">{{ us }}'s published prices</span><b>{{ cur }}{{ c.theirs|num }}</b></div>{% if c.yours is not none %}<div class="find-fig"><span class="set-s">{{ before }}</span><b>{{ cur }}{{ c.yours|num }}</b></div>{% endif %}</div>
+    {% else %}
+    <div class="find-fig big"><span class="set-s">At {{ us }}'s published prices</span><b>{{ cur }}{{ c.theirs|num }}</b><span class="set-s">{{ c.per }}</span></div>
+    {% if c.yours is not none %}<div class="find-strip"><div class="find-fig"><span class="set-s">{{ before }}</span><b>{{ cur }}{{ c.yours|num }}</b></div></div>{% endif %}
+    {% endif %}
+    <span class="set-s find-cap">On your home charging, {{ c.span }} · {{ c.kwh|num }} kWh · today's prices {% call info("How this is worked out") %}Your home charges' energy, hour by hour, priced on each plan's hours at the prices it has today. Fixed and demand charges are left out of all of them.{% endcall %}</span>
+  </div>
+  {% elif c %}<span class="set-s">No home charging in the last 12 months to compare on</span>{% endif %}
+  {% if g %}
+  {% set est = (g.now or {'prices': []}).prices|selectattr('est')|list %}
+  <div class="chips">{% for p in (g.now or {'prices': []}).prices or [] %}<span class="chip-v{% if p.est %} est{% endif %}"><i style="--heat:{{ p.heat }}"></i>{{ p.label }} <b>{% if p.est %}≈{% endif %}{{ cur }}{{ p.price }}</b></span>{% endfor %}</div>
+  {% if est and pb %}<div class="find-est"><span class="set-s">≈ scaled from your {{ months[(pb.month or 1) - 1] }} bill {% call info("Prices marked ≈") %}Your bill covers one season. The other season's prices are your bill's, scaled the way {{ us }}'s published prices differ between seasons. A bill from that season sets them.{% endcall %}</span><a class="btn sm" href="{{ root }}/settings/money/plan{{ q }}#bill">Read another bill</a></div>{% endif %}
+  <div>{{ tou_grid(g, legend=not g.now) }}</div>{% endif %}
+  <span class="set-s">{{ preview.dates|length }} price change{{ '' if preview.dates|length == 1 else 's' }} since {{ preview.dates[-1][:4] }} {% call info("Price changes") %}{{ preview.dates|join(', ') }}{% endcall %}{% if preview.note %} · fixed charges not counted {% call info("Not counted") %}{{ preview.note }}{% endcall %}{% endif %}{% if preview.plan.link %} · <a href="{{ preview.plan.link }}" target="_blank" rel="noopener">on OpenEI</a>{% endif %}</span>
+  {% if not pb %}{% if providers %}{% include "_find_gen.html" %}{% elif c.lower %}<div class="find-est"><span class="set-s">Yours is lower than {{ us }}'s published prices</span><a class="btn sm" href="{{ root }}/settings/money/plan{{ q }}#bill">Read your bill</a></div>{% endif %}{% endif %}
+  <form class="find-use" method="post" action="{{ root }}/settings/money/plan-search/use{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="label" value="{{ preview.label }}"><input type="hidden" name="q" value="{{ find.q or '' }}"><input type="hidden" name="eia" value="{{ find.eia or '' }}">
+    <div class="acts">{% if pb %}{% include "_find_hidden.html" %}<button type="submit" class="btn">Use {{ us }}'s published prices</button><button type="submit" class="btn primary" name="as" value="bill">Use your bill's prices</button>
+    {% else %}<button type="submit" class="btn primary">Use this plan</button>{% endif %}</div>
+    <span class="set-s find-keep">{% if rp.typed %}{{ rp.name }} kept as Go back{% elif rp.name %}Replaces {{ rp.name }}{% if rp.back %} · {{ rp.back }} kept as Go back{% endif %}{% endif %} {% call info("What Use does") %}{% if pb %}Your bill's prices from {{ pb.start or 'its month' }}; charges before keep the plan they had.{% else %}Replaces the home plan and re-prices home charges at the version in force each day. Charges before {{ preview.dates[-1] }} use the regional average.{% endif %}{% endcall %}</span>
+  </form>
+</div>

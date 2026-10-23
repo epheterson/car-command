@@ -1,10 +1,10 @@
 :root { --bg:#F6F5F0; --panel:#FFFFFF; --ink:#1B1A21; --muted:#6B6875; --rule:#E4E1D8; --gold:#D9A82A; --mark:#1B1A21; --link:#2F6FE0;
-        --sleeping:#C9C5D4; --idle:#8E8AA0; --driving:#2F6FE0; --charging:#2E9E5B; color-scheme: light;
+        --sleeping:#C9C5D4; --idle:#8E8AA0; --caron:#8A63C8; --driving:#2F6FE0; --charging:#2E9E5B; color-scheme: light;
         --danger:#C2453F; --warn:#B7791F; --faint:#A3A0AC; --ok:var(--charging); }
 /* Dark: the device's choice unless Settings says otherwise. The same palette is written twice
    because a custom property set cannot be named and reused; keep the two lines identical. */
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#141319; --panel:#1D1C24; --ink:#F0EDE4; --muted:#A09CAB; --rule:#2C2A35; --gold:#F0C24A; --mark:#F0C24A; --sleeping:#3A3846; --idle:#6B6880; --driving:#5E8FF0; --charging:#3FBF73; --link:#8FB3FF; color-scheme: dark; --danger:#E5675F; --warn:#E0A33A; --faint:#6E6A7A; } }
-:root[data-theme="dark"] { --bg:#141319; --panel:#1D1C24; --ink:#F0EDE4; --muted:#A09CAB; --rule:#2C2A35; --gold:#F0C24A; --mark:#F0C24A; --sleeping:#3A3846; --idle:#6B6880; --driving:#5E8FF0; --charging:#3FBF73; --link:#8FB3FF; color-scheme: dark; --danger:#E5675F; --warn:#E0A33A; --faint:#6E6A7A; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#141319; --panel:#1D1C24; --ink:#F0EDE4; --muted:#A09CAB; --rule:#2C2A35; --gold:#F0C24A; --mark:#F0C24A; --sleeping:#3A3846; --idle:#6B6880; --caron:#A98BE0; --driving:#5E8FF0; --charging:#3FBF73; --link:#8FB3FF; color-scheme: dark; --danger:#E5675F; --warn:#E0A33A; --faint:#6E6A7A; } }
+:root[data-theme="dark"] { --bg:#141319; --panel:#1D1C24; --ink:#F0EDE4; --muted:#A09CAB; --rule:#2C2A35; --gold:#F0C24A; --mark:#F0C24A; --sleeping:#3A3846; --idle:#6B6880; --caron:#A98BE0; --driving:#5E8FF0; --charging:#3FBF73; --link:#8FB3FF; color-scheme: dark; --danger:#E5675F; --warn:#E0A33A; --faint:#6E6A7A; }
 /* Design tokens: spacing on a 4px grid, one type scale, three radii,
    two control heights. New work takes its sizes from these. */
 :root { --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
@@ -27,6 +27,7 @@ body { margin:0; background:var(--bg); color:var(--ink); font: 16px/1.45 "Avenir
 main { max-width:1040px; margin:0 auto; padding:24px; display:grid; gap:28px; }
 h1 { font-size:22px; margin:0 0 12px; } h2 { font-size:13px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; font-weight:600; }
 h2 .more { float:right; font-weight:400; letter-spacing:0; text-transform:none; color:var(--muted); }
+h2 .win { display:inline-flex; gap:12px; } h2 .win a { color:var(--muted); text-decoration:none; } h2 .win a[aria-current] { color:var(--ink); border-bottom:2px solid var(--ink); }
 .hero { background:var(--panel); border:1px solid var(--rule); border-radius:8px; padding:22px 24px; display:grid; gap:14px; }
 .status { display:inline-flex; align-items:center; gap:8px; font-size:14px; letter-spacing:.1em; text-transform:uppercase; }
 .status .dot { width:10px; height:10px; border-radius:50%; background:var(--idle); }
@@ -36,9 +37,9 @@ h2 .more { float:right; font-weight:400; letter-spacing:0; text-transform:none; 
 .fig .l { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin-top:6px; }
 .where { margin:0; }
 .ribbon { display:flex; height:22px; border-radius:6px; overflow:hidden; background:var(--rule); }
-.seg { display:block; height:100%; } .seg.sleeping { background:var(--sleeping); } .seg.idle { background:var(--idle); } .seg.driving { background:var(--driving); } .seg.charging { background:var(--charging); } .seg.unknown { background:transparent; }
+.seg { display:block; height:100%; } .seg.sleeping { background:var(--sleeping); } .seg.idle { background:var(--idle); } .seg.caron { background:var(--caron); } .seg.driving { background:var(--driving); } .seg.charging { background:var(--charging); } .seg.unknown { background:transparent; }
 .legend { font-size:13px; margin:8px 0 0; } .key { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 6px 0 14px; vertical-align:middle; }
-.key.sleeping { background:var(--sleeping); } .key.idle { background:var(--idle); } .key.driving { background:var(--driving); } .key.charging { background:var(--charging); }
+.key.sleeping { background:var(--sleeping); } .key.idle { background:var(--idle); } .key.caron { background:var(--caron); } .key.driving { background:var(--driving); } .key.charging { background:var(--charging); }
 .spark { width:100%; height:80px; display:block; background:var(--panel); border:1px solid var(--rule); border-radius:6px; }
 .spark polyline { fill:none; stroke:var(--gold); stroke-width:2; vector-effect:non-scaling-stroke; }
 .two { display:grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap:28px; } .two > * { min-width:0; overflow-x:auto; }
@@ -62,7 +63,7 @@ form.row { display:flex; gap:16px; align-items:end; flex-wrap:wrap; }
    Every input, select and textarea is 16px whatever its label says, or iOS zooms on focus. */
 label { display:grid; gap:var(--s1); font-size:var(--t-meta); color:var(--muted); }
 label:where(:not([class]):has(> input[type=checkbox], > input[type=radio])) { display:flex; align-items:center; gap:var(--s2); font-size:var(--t-body); color:var(--ink); cursor:pointer; }
-input { font: inherit; font-size:var(--t-body); padding:8px 10px; border:1px solid var(--rule); border-radius:6px; background:var(--bg); color:var(--ink); min-width:160px; }
+input { font: inherit; font-size:var(--t-body); padding:8px 10px; border:1px solid var(--rule); border-radius:6px; background:var(--field); color:var(--ink); min-width:160px; }
 input[type=number] { min-width:90px; }
 textarea { font: inherit; font-size:var(--t-body); }
 input[type=checkbox], input[type=radio] { min-width:0; padding:0; accent-color:var(--ink); }  /* one colour for every box, never the browser's blue */
@@ -85,11 +86,12 @@ table { display:table; width:100%; }
    sticky Save bar are the same everywhere. Sizes come from the tokens in :root only. */
 h2.sec { display:flex; align-items:center; gap:var(--s1); font-size:var(--t-cap); letter-spacing:.08em; margin:0; padding:0 var(--s4); }
 h2.sec details.info { text-transform:none; letter-spacing:0; }
+h2.sec > span.nb { display:inline-flex; align-items:center; gap:var(--s1); } h2.sec > span.nb > details.info { margin-left:0; vertical-align:baseline; }  /* the last word tied to its (i) lines up with the words before it */
 .groups { display:grid; gap:var(--s5); min-width:0; }
-.groups, .groups ~ .group { width:100%; max-width:720px; }  /* a settings list reads as a column, however wide the screen */
+.groups, .groups ~ .group, .chan-none, #add-channel { width:100%; max-width:720px; }  /* a settings list reads as a column, however wide the screen */
 .group { display:grid; gap:var(--s2); min-width:0; }
 .group-b { background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); min-width:0; }
-.group-b > * + * { border-top:1px solid var(--rule); }
+.group-b > :not(input[type=hidden]) ~ :not(input[type=hidden]) { border-top:1px solid var(--rule); }  /* a rule between rows; a hidden field ahead of the first row is not a row */
 .group-f { margin:0; padding:0 var(--s4); font-size:var(--t-meta); color:var(--muted); }
 .set-row { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2) var(--s3); min-height:48px; padding:var(--s2) var(--s4); color:var(--ink); text-decoration:none; min-width:0; }
 .set-row.stack { flex-direction:column; align-items:stretch; }
@@ -98,6 +100,10 @@ h2.sec details.info { text-transform:none; letter-spacing:0; }
 .set-s { display:block; font-size:var(--t-meta); color:var(--muted); }
 .set-c { flex:0 1 auto; display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:var(--s2); margin-left:auto; min-width:0; }
 .set-v { margin-left:auto; color:var(--muted); font-size:var(--t-meta); text-align:right; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media (max-width: 600px) { .set-v.wrapv { flex:1 0 100%; margin-left:0; text-align:left; } }  /* a long value sits under its label on a phone */
+@media (max-width: 600px) { .set-row.under > .set-c { flex:1 1 100%; margin-left:0; flex-wrap:nowrap; } .set-row.under .set-c .field { flex:1 1 auto; width:auto; } }  /* a text field takes the full row under its label on a phone */
+@media (max-width: 600px) { .garage > .set-c { flex:1 1 100%; margin-left:0; display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:start; } .garage .set-c .field { width:100%; grid-column:1; } .garage .set-c .btn { grid-column:2; grid-row:1; } }  /* the garage door's selects share one width, its Save sits top right */
+.set-v.wrapv { white-space:normal; overflow:visible; }  /* a value that is a sentence wraps instead of cutting off */
 a.set-row:hover, details.set-x > summary:hover { background:var(--soft); }
 .group-b > :first-child, .group-b > :first-child > summary { border-top-left-radius:var(--r-card); border-top-right-radius:var(--r-card); }
 .group-b > :last-child, .group-b > details:last-child:not([open]) > summary { border-bottom-left-radius:var(--r-card); border-bottom-right-radius:var(--r-card); }
@@ -110,6 +116,9 @@ details.set-x > summary:focus-visible, a.set-row:focus-visible { outline:2px sol
 .group-b > details:last-child > .set-p { border-radius:0 0 var(--r-card) var(--r-card); }
 .set-p .set-row { padding:0; min-height:var(--h-ctl); }
 .set-p .acts { justify-content:flex-end; }
+.set-p .set-x > summary.set-row { padding:var(--s2) var(--s4); }  /* a row nested in a panel (a brand) keeps the inner padding of every other settings row */
+.vwform { display:grid; gap:var(--s3); }
+.vwform[hidden] { display:none; }
 .set-x:has(.rm input:checked) > summary { opacity:.5; text-decoration:line-through; }
 .badge { display:inline-block; margin-left:var(--s2); padding:1px var(--s2); border-radius:var(--r-pill); background:var(--soft); color:var(--ink); font-size:var(--t-cap); font-weight:600; vertical-align:2px; }
 /* Buttons: one height, explicit kinds. One primary a screen. */
@@ -126,30 +135,35 @@ label.btn.rm .on, label.btn.rm:has(input:checked) .off { display:none; } label.b
 label.btn.rm:has(input:checked) { background:var(--danger); border-color:var(--danger); color:#fff; }
 label.btn.rm:has(input:focus-visible) { outline:2px solid var(--link); outline-offset:2px; }
 /* Fields */
-.field { height:var(--h-ctl); min-width:0; padding:0 var(--s3); border:1px solid var(--rule); border-radius:var(--r-ctl); background:var(--bg); color:var(--ink); font-size:var(--t-body); }
+.field { height:var(--h-ctl); min-width:0; padding:0 var(--s3); border:1px solid var(--rule); border-radius:var(--r-ctl); background:var(--field); color:var(--ink); font-size:var(--t-body); }
 .set-c .field { width:min(13em, 52vw); }
+.set-row.under.full > .set-l { flex:1 0 100%; }  /* a long address or token: its label above, the field the card's whole width, on every screen */
+.set-row.under.full > .set-c { flex:1 1 100%; margin-left:0; }
+.set-row.under.full .set-c .field { flex:1 1 auto; width:100%; }
 .field.wide { width:100%; }
 .field:focus-visible, .num:focus-within, .sel:focus-visible { outline:2px solid var(--link); outline-offset:-1px; border-color:transparent; }
-.num { --w:5ch; display:inline-flex; align-items:center; gap:2px; height:var(--h-ctl); padding:0 var(--s3); border:1px solid var(--rule); border-radius:var(--r-ctl); background:var(--bg); color:var(--muted); font-size:var(--t-body); cursor:text; }
+.num { --w:5ch; display:inline-flex; align-items:center; gap:2px; height:var(--h-ctl); padding:0 var(--s3); border:1px solid var(--rule); border-radius:var(--r-ctl); background:var(--field); color:var(--muted); font-size:var(--t-body); cursor:text; }
 .num.w4 { --w:4ch; } .num.w6 { --w:6ch; }
 .num input { width:calc(var(--w) + 1ch); min-width:0; padding:0; border:0; border-radius:0; background:transparent; color:var(--ink); font-size:var(--t-body); text-align:right; -moz-appearance:textfield; appearance:textfield; outline:none; }
 .num input::-webkit-inner-spin-button, .num input::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
-.num input::placeholder, .field::placeholder { color:var(--faint); }
+.field::placeholder { color:var(--faint); }
+.num input::placeholder { color:var(--muted); opacity:.85; }  /* “off” reads as a word, not as a disabled box */
 .num .u { font-size:var(--t-meta); white-space:nowrap; }
-.sel { height:var(--h-ctl); min-width:0; padding:0 30px 0 var(--s3); border:1px solid var(--rule); border-radius:var(--r-ctl); background:var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%238E8AA0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 10px center / 12px 8px; color:var(--ink); font-size:var(--t-body); -webkit-appearance:none; appearance:none; }
+.sel { height:var(--h-ctl); min-width:0; padding:0 30px 0 var(--s3); border:1px solid var(--rule); border-radius:var(--r-ctl); background:var(--field) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%238E8AA0' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 10px center / 12px 8px; color:var(--ink); font-size:var(--t-body); -webkit-appearance:none; appearance:none; }
 /* On/off */
+[hidden] { display:none !important; }  /* hidden means hidden, whatever display a class gives the element */
 label.switch { position:relative; display:inline-block; flex:none; width:44px; height:26px; cursor:pointer; }
 label.switch input { position:absolute; inset:0; z-index:1; width:100%; height:100%; margin:0; opacity:0; cursor:pointer; }
 label.switch span { position:absolute; inset:0; border-radius:var(--r-pill); background:var(--rule); transition:background-color .15s var(--ease); }
 label.switch span::after { content:""; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); transition:transform .15s var(--ease); }
-label.switch input:checked + span { background:var(--ink); } label.switch input:checked + span::after { transform:translateX(18px); }
+label.switch input:checked + span { background:var(--ink); } label.switch input:checked + span::after { background:var(--bg); }  /* on is the ink colour, the knob the page's own, so it reads in both themes */ label.switch input:checked + span::after { transform:translateX(18px); }
 label.switch input:focus-visible + span { outline:2px solid var(--link); outline-offset:2px; }
 /* One of a few */
 .segmented { display:inline-flex; gap:2px; max-width:100%; padding:2px; overflow-x:auto; scrollbar-width:none; background:var(--soft); border-radius:var(--r-ctl); }
 .segmented::-webkit-scrollbar { display:none; }
 .segmented.full { display:flex; width:100%; }
 .segmented > label, .segmented > a { position:relative; flex:1 0 auto; display:flex; align-items:center; justify-content:center; min-height:calc(var(--h-sm) - 4px); padding:0 var(--s3); border:1px solid transparent; border-radius:calc(var(--r-ctl) - 2px); color:var(--muted); font-size:var(--t-meta); font-weight:500; text-decoration:none; white-space:nowrap; cursor:pointer; }
-.segmented input { position:absolute; width:1px; height:1px; margin:0; opacity:0; }
+.segmented input { position:absolute; width:1px; height:1px; margin:0; opacity:0; pointer-events:none; }
 .segmented > label:has(input:checked), .segmented > a[aria-current] { background:var(--panel); border-color:var(--rule); color:var(--ink); font-weight:600; }
 .set-p .segmented { background:var(--bg); }
 .segmented > label:has(input:focus-visible), .segmented > a:focus-visible { outline:2px solid var(--link); outline-offset:-2px; }
@@ -163,7 +177,7 @@ label.switch input:focus-visible + span { outline:2px solid var(--link); outline
 .chips { display:flex; flex-wrap:wrap; gap:var(--s2); }
 .chip-v { display:inline-flex; align-items:center; gap:6px; padding:var(--s1) var(--s3) var(--s1) var(--s2); border-radius:var(--r-pill); background:var(--soft); font-size:var(--t-meta); color:var(--muted); white-space:nowrap; }
 .chip-v b { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums; }
-.chip-v i { width:10px; height:10px; border-radius:3px; background:color-mix(in srgb, var(--gold) calc(10% + var(--heat) * 80%), var(--panel)); box-shadow:inset 0 0 0 1px var(--rule); }
+.chip-v i { width:10px; height:10px; border-radius:3px; background:color-mix(in srgb, var(--price) calc(8% + var(--heat) * 82%), var(--panel)); box-shadow:inset 0 0 0 1px var(--rule); }
 /* Notices and empty states: one line, no paragraph */
 .notice { margin:0; padding:var(--s2) var(--s3); border-left:3px solid var(--muted); border-radius:var(--r-ctl); background:var(--soft); color:var(--ink); font-size:var(--t-meta); }
 .notice.ok { border-left-color:var(--ok); } .notice.warn { border-left-color:var(--warn); color:var(--ink); } .notice.err { border-left-color:var(--danger); color:var(--ink); }
@@ -197,19 +211,22 @@ button.set-act { width:100%; border:0; border-radius:0; background:none; color:v
 button.set-act:hover { background:var(--soft); }
 .field.short { width:5em; text-align:center; }
 .find-pick { margin:0; padding:0; list-style:none; } .find-pick:empty { display:none; }
-.find-list { display:grid; margin:0; padding:0; list-style:none; }
-.find-list .set-row { padding:var(--s2) 0; }
-.find-list .set-row + .set-row { border-top:1px solid var(--rule); }
+
 /* Alerts: a kind's own setting as a quieter row beneath it; with several channels, a column of switches each, named once above the group */
 .set-row.sub .set-l { padding-left:var(--s3); color:var(--muted); font-size:var(--t-meta); }
 .set-c .field.time { width:auto; min-width:7.5em; }
 .set-c.al { flex-wrap:nowrap; gap:var(--s2); }
-.al-multi .set-c.al label.switch { margin:0 6px; }
+.al-multi .set-c.al label.switch { margin:0 12px; }  /* a 68px column: room for the longest channel name above it */
+.chan-res.ok, .chan-saved.ok { color:var(--ok); } .chan-res.bad, .chan-saved.bad { color:var(--danger); } .chan-saved { margin-left:auto; text-transform:none; letter-spacing:0; } .acts .chan-res { margin-right:auto; align-self:center; }
 .al-cols { display:flex; gap:var(--s2); margin-left:auto; }
-.al-cols span { width:56px; overflow:hidden; text-align:center; text-overflow:ellipsis; white-space:nowrap; letter-spacing:.02em; }
+.al-cols > span { width:68px; display:flex; flex-direction:column; align-items:center; gap:4px; letter-spacing:.02em; }
+.al-cols b { max-width:100%; overflow:hidden; font-weight:inherit; text-overflow:ellipsis; white-space:nowrap; }
 /* A row's findings, beneath it: one notice each */
 .set-notes { display:grid; gap:var(--s2); padding:0 var(--s4) var(--s3); }
 .group-b > .set-notes { border-top:0; }
+.set-row.cols { min-height:0; padding-top:var(--s2); padding-bottom:0; padding-right:calc(var(--s4) + 25px); } .set-row.cols .set-v { font-size:var(--t-cap); text-transform:uppercase; letter-spacing:.06em; }  /* names above a column of prices */
+.group-b > .set-notes:first-child { padding-top:var(--s3); }  /* a warning at the top of a card sits inside it */
+.car .group-b > .set-row:not(.car-h), .car summary.set-row, .addsrc summary.set-row { min-height:60px; }  /* a car's rows and the add-a-source rows share one height */
 .set-v .sstate { align-items:center; }
 /* Sign-in and API: a token's kind, the switch that widens what an admin token can reach */
 .badge.kind { background:var(--soft); color:var(--muted); }
@@ -232,10 +249,11 @@ code.call { font-size:var(--t-meta); overflow-wrap:anywhere; }
 .set-x .set-x > summary { background:var(--bg); }
 .set-x .set-x { border:1px solid var(--rule); border-radius:var(--r-ctl); overflow:hidden; }
 .set-p .group-f { padding:0; }
+@media (max-width: 600px) { .acct > .set-l { flex:1 1 100%; } .acct > .set-c { flex:1 1 100%; margin-left:0; justify-content:flex-start; } }  /* a failed account's long reason gets the row, its buttons sit under it */
 .acct .set-l a { color:inherit; text-underline-offset:3px; text-decoration-color:var(--rule); }
 /* Connect Tesla: the checklist as rows, a finished step one line; each car's stream a row */
-.steps { margin:0; padding:0; list-style:none; }
-.steps > li + li { border-top:1px solid var(--rule); }
+.setup-list { margin:0; padding:0; list-style:none; }
+.setup-list > li + li { border-top:1px solid var(--rule); }
 .step-mark { flex:none; display:grid; place-items:center; width:24px; height:24px; border-radius:50%; border:1.5px solid var(--rule); color:var(--muted); font-size:var(--t-meta); font-weight:600; box-sizing:border-box; }
 .step.done .step-mark { background:var(--ok); border-color:var(--ok); color:#fff; }
 .step.next .step-mark { border-color:var(--ink); color:var(--ink); }
@@ -245,7 +263,7 @@ code.call { font-size:var(--t-meta); overflow-wrap:anywhere; }
 .set-p .keyok { font-size:var(--t-meta); font-weight:500; }
 .set-s code { font-size:inherit; overflow-wrap:anywhere; } .set-l code { font-size:var(--t-meta); }
 .step-said { color:var(--danger); }
-.steps > li:first-child > .set-row, .steps > li:first-child > details > summary { border-top-left-radius:var(--r-card); border-top-right-radius:var(--r-card); }
+.setup-list > li:first-child > .set-row, .setup-list > li:first-child > details > summary { border-top-left-radius:var(--r-card); border-top-right-radius:var(--r-card); }
 .keycars { display:grid; gap:var(--s3); margin:0; padding:0; list-style:none; }
 .keycar { display:grid; gap:var(--s2); }
 .keycars .keycar + .keycar { padding-top:var(--s3); border-top:1px solid var(--rule); }
@@ -273,6 +291,11 @@ td .small { max-width:34em; overflow:hidden; text-overflow:ellipsis; white-space
 .bins td.bar-cell { min-width:140px; white-space:nowrap; }  /* a table cell, so the row's rule runs on under it */
 .bins .bar { display:inline-block; height:10px; margin-right:8px; vertical-align:middle; background:var(--data); border-radius:3px; opacity:.85; } .bins .bar-n { font-size:13px; }
 
+/* Now: where the car is, close up, beside the day's route */
+.maps2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; } .maps2.one { grid-template-columns:1fr; }
+.maps2 figure { margin:0; display:grid; gap:6px; min-width:0; } .maps2 figcaption { font-size:var(--t-meta); color:var(--muted); }
+.maps2 .map { height:260px; }
+@media (max-width:560px) { .maps2 { grid-template-columns:1fr; } .maps2 .map { height:200px; } }  /* a phone stacks the two maps, each full width */
 .map.tall { height:70vh; min-height:420px; }
 
 /* Car chart colours: identity.PALETTE, which a test holds these to. Never the blue of driving or the green of charging. */
@@ -407,14 +430,15 @@ h2.carhead { margin-top:10px; }
 .rates input { min-width:6em; width:7em; } .rates input[type=date] { width:11em; }
 
 /* The door: sign-in and first-run, the only pages that render without a garage behind them. */
-body.gate { display:grid; place-items:center; min-height:100vh; }
-.gate-card { max-width:26rem; width:100%; padding:32px 28px; border:1px solid var(--rule); border-radius:10px; background:var(--panel); gap:14px; }
+body.gate { display:grid; place-items:center; min-height:100vh; padding-inline:16px; box-sizing:border-box; }  /* a phone keeps a gutter either side of the card */
+.gate-card { max-width:26rem; width:100%; box-sizing:border-box; padding:32px 28px; border:1px solid var(--rule); border-radius:10px; background:var(--panel); gap:14px; }
 .gate-card h1 { margin:0; font-size:22px; font-weight:500; }
 .gate-card .brand { display:flex; align-items:center; gap:9px; margin:0 0 4px; }
 .gate-card .lede { font-size:14px; color:var(--muted); }
 .gate-form { display:grid; gap:6px; }
 .gate-form label { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 .gate-form input { width:100%; box-sizing:border-box; }
+.gate-form [aria-invalid="true"] { border-color:var(--warn); outline:1px solid var(--warn); }
 .gate-form button { margin-top:12px; }
 .vh { position:absolute; width:1px; height:1px; opacity:0; overflow:hidden; }  /* a username for the password manager, not for the eye */
 .connect-actions { gap:10px; }
@@ -481,8 +505,8 @@ table.tou { display:table; table-layout:fixed; width:100%; border:0; border-radi
 table.tou th, table.tou td { padding:0; border:0; }
 table.tou thead th { font-size:10px; letter-spacing:0; text-align:left; padding:0 0 2px; }
 table.tou tbody th { width:2.6em; font-size:10px; letter-spacing:0; text-transform:none; font-weight:400; padding-right:4px; }
-table.tou td { height:13px; border:1px solid var(--panel); background:color-mix(in srgb, var(--gold) calc(10% + var(--heat) * 80%), var(--panel)); }
-.tou-key { background:color-mix(in srgb, var(--gold) calc(10% + var(--heat) * 80%), var(--panel)); margin-left:0; }
+table.tou td { height:13px; border:1px solid var(--panel); background:color-mix(in srgb, var(--price) calc(8% + var(--heat) * 82%), var(--panel)); }
+.tou-key { background:color-mix(in srgb, var(--price) calc(8% + var(--heat) * 82%), var(--panel)); margin-left:0; }
 .tou-item { white-space:nowrap; margin-right:14px; display:inline-block; }
 
 /* The year: twelve small months, each day shaded by its miles, a dot for a charge. */
@@ -492,7 +516,7 @@ table.tou td { height:13px; border:1px solid var(--panel); background:color-mix(
 .ym-head, .ym-week { display:grid; grid-template-columns:repeat(7, 1fr); gap:3px; } .ym-head span { font-size:10px; color:var(--muted); text-align:center; }
 .ym-day { display:block; aspect-ratio:1; line-height:1; padding-top:calc(50% - 6px); text-align:center; font-size:10px; border-radius:4px; background:var(--panel); border:1px solid var(--rule); color:var(--muted); text-decoration:none; position:relative; }
 .ym-day.busy { background: color-mix(in srgb, var(--driving) calc(12% + var(--heat) * 45%), var(--panel)); color:var(--ink); }
-.ym-day.charged::after { content:""; position:absolute; right:2px; bottom:2px; width:4px; height:4px; border-radius:50%; background:var(--c2); }
+.ym-day.charged::after { content:""; position:absolute; right:2px; bottom:2px; width:4px; height:4px; border-radius:50%; background:var(--charging); }
 .ym-day.other { visibility:hidden; }
 .month-nav a.alt { margin-left:auto; }
 
@@ -504,9 +528,9 @@ table.compare td.r .up { color:var(--c2); } table.compare td.r .down { color:var
 
 /* The shell: a sidebar on a laptop; on a phone a car chip at the top and a tab bar at the bottom.
    Quiet by default: hairlines, one soft fill for where you are, the colour kept for the cars. */
-:root { --soft:#F1EFE8; --bar:rgba(255,255,255,.78); --ease:cubic-bezier(.2,.7,.2,1); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --soft:#26242E; --bar:rgba(29,28,36,.78); } }
-:root[data-theme="dark"] { --soft:#26242E; --bar:rgba(29,28,36,.78); }
+:root { --field:var(--bg); --soft:#F1EFE8; --bar:rgba(255,255,255,.78); --ease:cubic-bezier(.2,.7,.2,1); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --soft:#26242E; --field:#2B2934; --bar:rgba(29,28,36,.78); } }
+:root[data-theme="dark"] { --soft:#26242E; --field:#2B2934; --bar:rgba(29,28,36,.78); }
 .shell { display:grid; grid-template-columns:232px minmax(0, 1fr); align-content:start; min-height:100vh; }  /* a short page leaves its space below, never in a stretched header row */
 .side { position:sticky; top:0; height:100vh; overflow-y:auto; display:flex; flex-direction:column; gap:1px; padding:20px 12px 16px; background:var(--panel); border-right:1px solid var(--rule); view-transition-name:side; }
 .side .brand, .phonebar .brand { display:flex; align-items:center; gap:9px; font-weight:650; letter-spacing:.01em; font-size:15px; color:var(--ink); text-decoration:none; padding:2px 10px 16px; }
@@ -519,9 +543,9 @@ table.compare td.r .up { color:var(--c2); } table.compare td.r .down { color:var
 @media (prefers-reduced-motion: reduce) { .mark.arrive { display:none; } .mark.arrive-still { display:block; } }
 /* The sidebar: the name rides the road behind the car (the road runs on under it from the mark's
    driveway), and on a fresh load the car tows it in. One keyframe for both; the car's distance is in
-   the mark's units, the name's in pixels: 239 units at 48 px wide is 165 px, just past the row's clipped edge,
+   the mark's units, the name's in pixels: 235 units at 48 px wide is 165 px, just past the row's clipped edge,
    and it starts while the drive is still drawing so there's no dead beat. */
-.side .brand { position:relative; width:max-content; max-width:100%; box-sizing:border-box; align-items:flex-end; overflow:hidden; }
+.side .brand { position:relative; flex:none; width:max-content; max-width:100%; box-sizing:border-box; align-items:flex-end; overflow:hidden; }
 .side .brand .nm { padding-bottom:3px; line-height:1; white-space:nowrap; }
 .side .brand .mark { position:relative; z-index:1; }  /* the car's fill covers the road it stands on */
 .side .brand::after { content:""; position:absolute; left:56px; right:10px; bottom:16px; height:2px; border-radius:1px; background:var(--mark); transform-origin:left; }
@@ -532,8 +556,8 @@ html.arrive.arrived .mark.towing { display:none; }
 html.arrive.arrived .mark.towed { display:block; }  /* parked: the still mark, which has no fill to show against the bar */
 @keyframes cc-tow { 0% { transform:translateX(var(--d)); } 84% { transform:translateX(var(--o)); } 100% { transform:none; } }
 @keyframes cc-road { from { transform:scaleX(0); } }
-html.arrive .side .tow { --d:239px; --o:-.55px; animation:cc-tow 1.5s cubic-bezier(.15,.6,.3,1) var(--t-car) both; }
-html.arrive .side .brand .nm { --d:165px; --o:-.38px; animation:cc-tow 1.5s cubic-bezier(.15,.6,.3,1) var(--t-car) both; }
+html.arrive .side .tow { --d:235px; --o:-.55px; animation:cc-tow 1.5s cubic-bezier(.15,.6,.3,1) var(--t-car) both; }
+html.arrive .side .brand .nm { --d:165px; --o:-.39px; animation:cc-tow 1.5s cubic-bezier(.15,.6,.3,1) var(--t-car) both; }
 html.arrive .side .brand::after { animation:cc-road .45s cubic-bezier(.45,0,.25,1) calc(var(--t-car) + .05s) both; }
 /* While it plays, and only then: the moving mark and name get layers of their own, and the
    brand's box keeps its repaints to itself. The fold turns parts inside the SVG and runs the
@@ -552,12 +576,12 @@ html.arrive:not(.arrived) :is(.side .brand, .phonemark) { contain:layout paint; 
 :root { --t-base:.6s; --t-leg:1.1s; --t-arm:1.1s; --t-flap:1.15s; --t-roof:1.75s; --t-road:1.75s; --t-car:1.9s; }
 /* one after the other instead: --t-base:.6s; --t-leg:1.1s; --t-arm:1.6s; --t-flap:1.85s; --t-roof:2.45s; --t-road:2.2s; --t-car:2.4s; — the car then parks at 3.9 s, so raise base.html's 4000 ms handover to 4400 with it */
 .tw-roof, .tw-drive { stroke-dasharray:1 1.04; stroke-dashoffset:0; }
-.tw-vl { transform-origin:10.76px 44.72px; transform:rotate(32.6deg); } .tw-vr { transform-origin:37.5px 44.72px; transform:rotate(-32.6deg); }
-.tw-leg { transform-origin:37.5px 44.72px; transform:rotate(99.41deg); }
-.tw-arm { transform-origin:31.1px 16.21px; transform:rotate(-7.968deg); }
-.tw-flap { transform-origin:45.96px 18.29px; transform:rotate(-128.623deg); }  /* inside .tw-arm: level once both have turned */
+.tw-vl { transform-origin:9.55px 38.63px; transform:rotate(32.881deg); } .tw-vr { transform-origin:32.32px 38.63px; transform:rotate(-32.881deg); }
+.tw-leg { transform-origin:32.32px 38.63px; transform:rotate(98.96deg); }
+.tw-arm { transform-origin:27.04px 14.11px; transform:rotate(-8.041deg); }
+.tw-flap { transform-origin:39.71px 15.9px; transform:rotate(-128.562deg); }  /* inside .tw-arm: level once both have turned */
 @keyframes cc-fold { from { transform:none; } }
-@keyframes cc-leg { from { transform:none; animation-timing-function:cubic-bezier(.33,1,.68,1); } 85% { transform:rotate(102.39deg); animation-timing-function:cubic-bezier(.45,0,.55,1); } }
+@keyframes cc-leg { from { transform:none; animation-timing-function:cubic-bezier(.33,1,.68,1); } 85% { transform:rotate(101.94deg); animation-timing-function:cubic-bezier(.45,0,.55,1); } }
 @keyframes cc-run { from { stroke-dashoffset:1.02; } }  /* 1.02 against a 1.04 gap: no cap dot shows before it starts */
 :is(html.arrive, .mark.arrive) :is(.tw-vl, .tw-vr) { animation:cc-fold .5s cubic-bezier(.45,0,.25,1) var(--t-base) both; }
 :is(html.arrive, .mark.arrive) .tw-leg { animation:cc-leg .6s var(--t-leg) both; }
@@ -603,20 +627,20 @@ details[open] > .sheet.up { transform-origin:bottom right; }
 @media (max-width: 860px) {
   .shell { grid-template-columns:minmax(0, 1fr); }  /* not 1fr: a long name in the bar must not widen the page */
   .side { display:none; }
-  .phonebar { display:flex; align-items:flex-end; gap:var(--s3); position:sticky; top:0; z-index:20; padding:calc(10px + env(safe-area-inset-top, 0px)) var(--s4) 10px; background:var(--bar); -webkit-backdrop-filter:saturate(180%) blur(20px); backdrop-filter:saturate(180%) blur(20px); border-bottom:1px solid var(--rule); }
+  .phonebar { display:flex; align-items:flex-end; gap:var(--s3); position:sticky; top:0; z-index:20; padding:calc(10px + env(safe-area-inset-top, 0px)) calc(var(--s4) + env(safe-area-inset-right, 0px)) 10px calc(var(--s4) + env(safe-area-inset-left, 0px)); }
   .phonebar .brand { padding:0; align-items:flex-end; font-size:var(--t-body); font-weight:600; }  /* the name stands on the car's road, as in the sidebar */
   .phonebar .brand .nm { line-height:1; padding-bottom:var(--nm-pb, 1px); }
   .phonemark { display:flex; flex:none; color:var(--mark); } .phonemark .mark { width:40px; }  /* the mark leads the bar; 40 px is as small as the car still reads */
   /* the phone's mark arrives on a fresh load like the sidebar's: the car comes in from just past
      the mark's edge (80 units, the mark clipped); its fill matches the bar so it hides the road it stands on */
-  .phonemark, .phonebar .brand .mark { overflow:hidden; --tow-fill:var(--bar); }
+  .phonemark, .phonebar .brand .mark { overflow:hidden; --tow-fill:var(--bg); }
   html.arrive .phonebar .tow { --d:80px; --o:-.55px; animation:cc-tow 1.5s cubic-bezier(.15,.6,.3,1) var(--t-car) both; }
   .phonebar:has(.carsheet) { align-items:baseline; } .phonebar:has(.carsheet) .phonemark { align-self:center; }  /* the picker's name and the page's title stand on one baseline; the mark centres on the bar */
-  .carsheet { position:relative; flex:0 1 auto; min-width:0; }
+  .carsheet { position:relative; flex:0 0 auto; min-width:0; max-width:44%; }  /* a long page title wraps; it never squeezes the picker to nothing */
   .carsheet summary { display:flex; max-width:100%; box-sizing:border-box; } .carsheet .cn { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .phonebar .brand { flex:0 1 auto; min-width:0; } .phonebar .brand .nm { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* the page's title: the bar's right side, bold, and it stays as the bar sticks; the h1 it came from gives its row up */
-  .ptitle { display:block; margin-left:auto; flex:none; max-width:70%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--t-h1); font-weight:700; line-height:1; letter-spacing:-.01em; padding-bottom:var(--pt-pb, 0px); color:var(--ink); }
+  .ptitle { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; margin-left:auto; flex:0 1 auto; min-width:0; max-width:70%; overflow:hidden; overflow-wrap:anywhere; text-align:right; font-size:var(--t-h1); font-weight:700; line-height:1.1; letter-spacing:-.01em; padding-bottom:var(--pt-pb, 0px); color:var(--ink); }
   html.pt main h1 { display:none; }
   html.pt .pbar:not(:has(> :not(h1, .pbar-ctx, .sp))) { display:none; }
   .carsheet summary { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:99px; background:var(--panel); border:1px solid var(--rule); color:var(--ink); font-weight:500; font-size:var(--t-body); }
@@ -624,9 +648,12 @@ details[open] > .sheet.up { transform-origin:bottom right; }
   .carsheet .sheet { position:absolute; top:calc(100% + 8px); left:0; z-index:30; }
   .subpages { display:flex; gap:var(--s2); overflow-x:auto; padding:var(--s3) var(--s4) 0; scrollbar-width:none; }
   .subpages::-webkit-scrollbar { display:none; }
+  .subpages.more-r { -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent); mask-image:linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+  .subpages.more-l { -webkit-mask-image:linear-gradient(to left, #000 calc(100% - 40px), transparent); mask-image:linear-gradient(to left, #000 calc(100% - 40px), transparent); }
+  .subpages.more-l.more-r { -webkit-mask-image:linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); mask-image:linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent); }
   .subpages a { flex:none; padding:var(--s2) var(--s4); border-radius:99px; font-size:var(--t-meta); font-weight:500; color:var(--ink); text-decoration:none; background:var(--soft); }
   .subpages a[aria-current] { background:var(--ink); color:var(--bg); font-weight:600; }
-  .tabbar { display:flex; justify-content:space-around; position:fixed; left:0; right:0; bottom:0; z-index:20; padding:6px 6px calc(6px + env(safe-area-inset-bottom, 0px)); background:var(--bar); -webkit-backdrop-filter:saturate(180%) blur(20px); backdrop-filter:saturate(180%) blur(20px); border-top:1px solid var(--rule); view-transition-name:tabbar; }
+  .tabbar { display:flex; justify-content:space-around; position:fixed; left:0; right:0; bottom:0; z-index:20; padding:6px calc(6px + env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) calc(6px + env(safe-area-inset-left, 0px)); view-transition-name:tabbar; }
   .tabbar > a, .tabbar summary { flex:1; display:flex; flex-direction:column; align-items:center; gap:3px; padding:5px 2px 3px; font-size:var(--t-cap); letter-spacing:.01em; color:var(--muted); text-decoration:none; }
   .tabbar .ic { width:24px; height:24px; }
   .tabbar > a[aria-current], .tabbar summary[aria-current] { color:var(--ink); font-weight:600; }
@@ -636,6 +663,26 @@ details[open] > .sheet.up { transform-origin:bottom right; }
   .tabbar .sheet.up { position:absolute; bottom:calc(100% + 10px); right:0; }
   .stage { padding-bottom:calc(70px + env(safe-area-inset-bottom, 0px)); }
 }
+/* Glass: the phone's top and tab bars and the desktop's title row let the page scroll on under
+   them, blurred and tinted from the page's own ground. At the top of a page the header is the
+   page itself; once something scrolls under it the ground and its hairline come in (--edge,
+   driven by the scroll where the browser can, and 0 on a page too short to scroll; elsewhere it stays 1, always on). The tab bar
+   always has content under it. Reduced transparency, or no backdrop filter, gets the same bars
+   solid. Only the bars blur: nothing large repaints through a filter. */
+@property --edge { syntax:"<number>"; inherits:true; initial-value:1; }
+@keyframes cc-edge { from { --edge:0; } to { --edge:1; } }
+.phonebar, .tabbar, .stage main > .pbar:first-child::before { --fx:saturate(calc(100% + var(--edge) * 80%)) blur(calc(var(--edge) * 20px)); background:color-mix(in srgb, var(--bg) calc(var(--edge) * 60%), transparent); -webkit-backdrop-filter:var(--fx); backdrop-filter:var(--fx); }
+.phonebar, .stage main > .pbar:first-child::before { border-bottom:1px solid color-mix(in srgb, var(--rule) calc(var(--edge) * 100%), transparent); }
+.tabbar { border-top:1px solid var(--rule); }
+@supports (animation-timeline: scroll()) { .phonebar, .stage main > .pbar:first-child { --edge:0; animation:cc-edge linear both; animation-timeline:scroll(root block); animation-range:0 16px; } }
+@media (min-width: 861px) {
+  .shell { overflow-x:clip; } .side { z-index:11; }  /* the title row's ground runs from under the sidebar to the window's edge, never past it; a tip may still cross the sidebar */
+  .stage main > .pbar:first-child { position:sticky; top:12px; z-index:10; }
+  .stage main > .pbar:first-child::before { content:""; position:absolute; z-index:-1; inset:-12px -50vw -12px; }
+}
+@media (prefers-reduced-transparency: reduce) { .phonebar, .tabbar, .stage main > .pbar:first-child::before { background:color-mix(in srgb, var(--bg) calc(var(--edge) * 100%), transparent); -webkit-backdrop-filter:none; backdrop-filter:none; } .savebar { background:var(--panel); -webkit-backdrop-filter:none; backdrop-filter:none; } }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .phonebar, .tabbar, .stage main > .pbar:first-child::before { background:color-mix(in srgb, var(--bg) calc(var(--edge) * 100%), transparent); } .savebar { background:var(--panel); } }
+
 @media (prefers-reduced-motion: reduce) { details[open] > .sheet { animation:none; } .side-car, .side-sec, .side-page, .side-sec .ic { transition:none; } }
 
 /* Pages change the way an app's screens do; the navigation stays put while the page cross-fades. */
@@ -657,11 +704,15 @@ details[open] > .sheet.up { transform-origin:bottom right; }
 .strip { display:grid; gap:4px; }
 .strip-bar { display:flex; height:10px; border-radius:3px; overflow:hidden; background:var(--sleeping); }
 .strip-bar .seg { display:block; height:100%; }
-.strip-ax { position:relative; height:12px; font-size:10px; color:var(--muted); }
+.strip-wrap { position:relative; }
+.strip-mid, .strip-hr { position:absolute; top:-3px; bottom:-3px; width:1px; margin-left:-.5px; background:var(--ink); pointer-events:none; z-index:1; }
+.strip-mid { opacity:.7; } .strip-hr { opacity:.25; }  /* midnight is the strong line; 6 AM, noon and 6 PM are faint */
+.strip-ax { position:relative; height:16px; font-size:11px; line-height:16px; color:var(--muted); font-variant-numeric:tabular-nums; }
 .strip-ax span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
-.strip-ax span:first-child { transform:none; } .strip-ax span:last-child { transform:translateX(-100%); }
+.strip-ax .ax-day { transform:none; padding-left:3px; color:var(--ink); font-weight:600; } .strip-ax .ax-now { transform:translateX(-100%); }
 .state { margin-left:auto; font-size:12px; font-weight:600; padding:3px 10px; border-radius:99px; background:var(--soft); display:inline-flex; gap:6px; align-items:center; white-space:nowrap; }
 .state i { width:7px; height:7px; border-radius:50%; background:var(--idle); }
+.state.offline { color:var(--muted); } .state.offline i { background:var(--muted); opacity:.5; }
 .state.driving i { background:var(--driving); } .state.charging i { background:var(--charging); } .state.idling i { background:none; box-shadow:inset 0 0 0 2px var(--driving); } .state.asleep i { background:none; box-shadow:inset 0 0 0 1.5px var(--idle); }
 .cc { display:grid; gap:12px; padding:18px; background:var(--panel); border:1px solid var(--rule); border-radius:14px; color:var(--ink); text-decoration:none; min-width:0; transition:border-color .12s var(--ease), box-shadow .12s var(--ease); }
 .cc:hover { border-color:color-mix(in srgb, var(--muted) 60%, var(--rule)); box-shadow:0 6px 20px rgba(0,0,0,.06); }
@@ -696,17 +747,23 @@ details[open] > .sheet.up { transform-origin:bottom right; }
 .row-m { flex:1; min-width:0; display:grid; gap:5px; }
 .row-s { font-size:var(--t-meta); color:var(--muted); font-variant-numeric:tabular-nums; } .row-s > span { white-space:nowrap; }  /* a row's figures are text, not buttons */
 .row-x { font-size:12px; line-height:1.45; color:var(--muted); font-variant-numeric:tabular-nums; } .row-x > span { white-space:nowrap; }  /* the second tier of a row's detail, quiet, wrapping on a phone */
+.row-g { display:flex; align-items:center; gap:5px; font-size:12px; line-height:1.45; color:var(--muted); } .row-g .ic { width:14px; height:14px; flex:none; }  /* what the garage door did for this drive */
 .row-title { font-weight:600; line-height:1.3; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; overflow-wrap:break-word; }  /* a long "From → To" wraps to a second line before it is cut */
 .row-n { flex:none; text-align:right; display:grid; font-variant-numeric:tabular-nums; } .row-n b { font-size:var(--t-row); font-weight:600; } .row-n span { font-size:12px; color:var(--muted); }
 .row-gap { padding:6px 16px 6px 94px; color:var(--muted); font-size:12px; border-bottom:1px solid var(--rule); background:var(--bg); }
 @media (max-width: 600px) { .segs2 { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; } .segs2 a { flex:none; white-space:nowrap; } .row-thumb { width:40px; height:32px; border-radius:10px; } .row-thumb svg.route { width:32px; height:18px; } .row-thumb .ic, .k-charge .row-thumb .ic { width:18px; height:18px; } .row-gap { padding-left:16px; } .row-t { width:46px; } .row-b { gap:10px; } .cc-pct { font-size:32px; } .row-b { padding:11px 12px; } }
 
-/* The chart: one filled line, a lane of what the car was doing, a card that follows the pointer.
-   Every rule starts at .chartbox or .chart-, so the server-drawn charts' .grid, .tk and .day stay theirs. */
-:root { --range:#2F8FA3; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --range:#5FC3D6; } }
-:root[data-theme="dark"] { --range:#5FC3D6; }
-.chartbox { display:grid; gap:8px; background:var(--panel); border:1px solid var(--rule); border-radius:12px; padding:14px 16px; } .chartbox > * { min-width:0; }
+/* The chart: one filled line, any extra lines switched on, a lane of what the car was doing, a card that follows the pointer.
+   Every rule starts at .chartbox or .chart-, so the server-drawn charts' .grid, .tk and .day stay theirs.
+   Each extra line has its own tone, named by what it is (chartdata.TONES), so Range is the same teal on every
+   page; x0–x3 are the spares. Never gold (the battery's alone), the driving blue or the charging green. */
+:root { --range:#2F8FA3; --ov-temp:#C2410C; --ov-speed:#7A52C7; --ov-elevation:#6B8526; --ov-power:#D6605C; --ov-volts:#56708F; --ov-amps:#D9467A; --ov-x0:#8A5FD6; --ov-x1:#D9467A; --ov-x2:#6B8526; --ov-x3:#56708F; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --range:#5FC3D6; --ov-temp:#F08A4B; --ov-speed:#A98BF0; --ov-elevation:#A4BF5A; --ov-power:#F08A86; --ov-volts:#8FA6C4; --ov-amps:#F07AA6; --ov-x0:#A98BF0; --ov-x1:#F07AA6; --ov-x2:#A4BF5A; --ov-x3:#8FA6C4; } }
+:root[data-theme="dark"] { --range:#5FC3D6; --ov-temp:#F08A4B; --ov-speed:#A98BF0; --ov-elevation:#A4BF5A; --ov-power:#F08A86; --ov-volts:#8FA6C4; --ov-amps:#F07AA6; --ov-x0:#A98BF0; --ov-x1:#F07AA6; --ov-x2:#A4BF5A; --ov-x3:#8FA6C4; }
+.chartbox { --ov:var(--range); display:grid; gap:8px; background:var(--panel); border:1px solid var(--rule); border-radius:12px; padding:14px 16px; } .chartbox > * { min-width:0; }
+.chartbox .s-range { --ov:var(--range); } .chartbox .s-temp { --ov:var(--ov-temp); } .chartbox .s-speed { --ov:var(--ov-speed); } .chartbox .s-elevation { --ov:var(--ov-elevation); }
+.chartbox .s-power { --ov:var(--ov-power); } .chartbox .s-volts { --ov:var(--ov-volts); } .chartbox .s-amps { --ov:var(--ov-amps); } .chartbox .s-level { --ov:var(--gold); }
+.chartbox .s-x0 { --ov:var(--ov-x0); } .chartbox .s-x1 { --ov:var(--ov-x1); } .chartbox .s-x2 { --ov:var(--ov-x2); } .chartbox .s-x3 { --ov:var(--ov-x3); } .chartbox .hv-p { --ov:var(--chart-p); }
 .chart-top { display:flex; gap:10px 16px; flex-wrap:wrap; align-items:center; justify-content:space-between; }
 .chart-now { display:inline-flex; align-items:baseline; gap:8px; font-variant-numeric:tabular-nums; }
 .chart-big { font-size:28px; font-weight:600; color:var(--ink); letter-spacing:-.01em; }
@@ -715,22 +772,29 @@ details[open] > .sheet.up { transform-origin:bottom right; }
 .chart-segs button { font:inherit; font-size:12px; border:0; background:none; color:var(--muted); padding:4px 10px; border-radius:6px; cursor:pointer; }
 .chart-segs button.on { background:var(--panel); color:var(--ink); font-weight:600; box-shadow:0 1px 2px rgba(0,0,0,.08); }
 .chart-segs button:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
+.chart-segs .sw { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; box-shadow:inset 0 0 0 1.5px var(--ov); vertical-align:0; }
+.chart-segs button.on .sw { background:var(--ov); }
 .chart-area { position:relative; }
 .chart-area.narrow { display:grid; gap:10px; }
 .chart-svg { display:block; width:100%; height:auto; touch-action:pan-y; cursor:crosshair; }
 .chart-svg .grid { stroke:var(--rule); stroke-width:1; }
 .chart-svg .day { stroke:var(--rule); stroke-dasharray:2 3; }
 .chart-svg .tk { fill:var(--muted); font-size:11px; font-family:inherit; }
-.chart-svg .t-extra { fill:var(--range); }
+.chart-svg .t-extra { fill:var(--ov); }
 .chart-svg .g0 { stop-color:var(--chart-p); stop-opacity:.28; } .chart-svg .g1 { stop-color:var(--chart-p); stop-opacity:.02; }
 .chart-svg .l-primary { fill:none; stroke:var(--chart-p); stroke-width:2.4; stroke-linejoin:round; }
-.chart-svg .l-extra { fill:none; stroke:var(--range); stroke-width:1.6; stroke-dasharray:5 3; }
+.chart-svg .l-extra { fill:none; stroke:var(--ov); stroke-width:1.6; stroke-linejoin:round; opacity:.9; }
+.chart-svg .bd { opacity:.12; } .chart-svg .bd-driving { fill:var(--driving); } .chart-svg .bd-charging { fill:var(--charging); }
+.chart-svg .bd-asleep { fill:var(--sleeping); opacity:.5; } .chart-svg .bd-parked { fill:var(--idle); } .chart-svg .bd-note { fill:var(--ink); opacity:.06; }
+.chart-svg .mk { stroke:var(--muted); stroke-width:1; stroke-dasharray:2 3; opacity:.7; } .chart-svg .mk-t { font-size:10px; }
+.chart-svg .avg { stroke:var(--chart-p); stroke-width:1; stroke-dasharray:5 4; opacity:.8; } .chart-svg .avg-t { font-size:10px; }
+.chart-svg .avg-t, .chart-svg .mk-t { paint-order:stroke; stroke:var(--panel); stroke-width:3px; stroke-linejoin:round; }
 .chart-svg .lane-bg { fill:var(--soft); }
-.chart-svg .ln-asleep { fill:var(--sleeping); } .chart-svg .ln-parked { fill:var(--idle); opacity:.55; }
+.chart-svg .ln-asleep { fill:var(--sleeping); } .chart-svg .ln-parked { fill:var(--idle); opacity:.55; } .chart-svg .ln-caron { fill:var(--caron); opacity:.7; }
 .chart-svg .ln-driving { fill:var(--driving); } .chart-svg .ln-charging { fill:var(--charging); } .chart-svg .ln-unknown { fill:none; }
 .chart-svg .cross { stroke:var(--ink); stroke-width:1; opacity:.35; }
 .chart-svg .dotl { fill:var(--chart-p); stroke:var(--panel); stroke-width:2.5; }
-.chart-svg .dot2 { fill:var(--panel); stroke:var(--range); stroke-width:2; }
+.chart-svg .dot2 { fill:var(--panel); stroke:var(--ov); stroke-width:2; }
 .chart-hov { position:absolute; top:0; left:0; width:min(280px, 78%); background:var(--panel); border:1px solid var(--rule); border-radius:10px; padding:10px 12px; box-shadow:0 8px 24px rgba(0,0,0,.14); pointer-events:none; display:grid; gap:6px; font-size:13px; transition:left .08s linear, top .08s linear; }
 .chart-area.narrow .chart-hov { position:static; width:auto; box-shadow:none; transition:none; }
 .chartbox.resting .chart-svg .cross, .chartbox.resting .chart-svg .dotl, .chartbox.resting .chart-svg .dot2 { visibility:hidden; }
@@ -738,10 +802,16 @@ details[open] > .sheet.up { transform-origin:bottom right; }
 .chartbox .hv-when { font-size:12px; color:var(--muted); }
 .chartbox .hv-state { display:flex; gap:7px; align-items:baseline; font-weight:600; line-height:1.3; }
 .chartbox .hv-state i { width:8px; height:8px; border-radius:50%; flex:none; transform:translateY(-1px); }
-.chartbox .k-driving { background:var(--driving); } .chartbox .k-charging { background:var(--charging); } .chartbox .k-asleep { background:var(--sleeping); box-shadow:inset 0 0 0 1px var(--idle); } .chartbox .k-parked { background:var(--idle); } .chartbox .k-unknown { background:none; box-shadow:inset 0 0 0 1px var(--rule); }
-.chartbox .hv-figs { display:grid; grid-template-columns:repeat(auto-fit, minmax(70px, 1fr)); gap:6px; }
-.chartbox .hv-f { display:grid; } .chartbox .hv-f b { font-size:17px; font-variant-numeric:tabular-nums; } .chartbox .hv-f span { font-size:11px; color:var(--muted); }
-.chartbox .c-primary { color:var(--chart-p); } .chartbox .c-extra { color:var(--range); }
+.chartbox .k-driving { background:var(--driving); } .chartbox .k-charging { background:var(--charging); } .chartbox .k-asleep { background:var(--sleeping); box-shadow:inset 0 0 0 1px var(--idle); } .chartbox .k-parked { background:var(--idle); } .chartbox .k-caron { background:var(--caron); } .chartbox .k-unknown { background:none; box-shadow:inset 0 0 0 1px var(--rule); }
+/* every line's figure as a small table: swatch, name, value, change since the drive or charge began */
+.chartbox .hv-figs { display:grid; grid-template-columns:8px minmax(0, 1fr) auto auto; gap:3px 8px; align-items:baseline; font-variant-numeric:tabular-nums; }
+.chartbox .hv-f { display:contents; }
+.chartbox .hv-f i { width:8px; height:8px; border-radius:2px; background:var(--ov); align-self:center; }
+.chartbox .hv-f span { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.chartbox .hv-f b { text-align:right; color:var(--ov); font-weight:600; } .chartbox .hv-p b { font-size:17px; }
+.chartbox .hv-f em { font-style:normal; text-align:right; font-size:12px; color:var(--muted); }
+.chartbox .hv-f.off > * { opacity:.6; } .chartbox .hv-f.off i { background:none; box-shadow:inset 0 0 0 1.5px var(--ov); }
+.chartbox .hv-h i { background:none; } .chartbox .hv-h em { font-size:11px; }
 .chartbox .hv-ctx { color:var(--muted); border-top:1px solid var(--rule); padding-top:6px; }
 .chart-key { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); }
 .chart-key span { display:inline-flex; gap:6px; align-items:center; } .chart-key i { width:10px; height:10px; border-radius:2px; display:inline-block; }
@@ -768,7 +838,7 @@ table.cmp td { white-space:nowrap; }
 .chip-t { font:inherit; font-size:13px; display:inline-flex; align-items:center; gap:7px; padding:5px 12px; border-radius:999px; border:1px solid var(--rule); background:var(--panel); color:var(--ink); cursor:pointer; }
 .chip-t i { width:10px; height:10px; border-radius:50%; display:inline-block; } .chip-t:not(.on) { color:var(--muted); background:transparent; } .chip-t:not(.on) i { background:transparent !important; box-shadow:inset 0 0 0 1.5px var(--muted); }
 .chip-t i.c0 { background:var(--c0); } .chip-t i.c1 { background:var(--c1); } .chip-t i.c2 { background:var(--c2); } .chip-t i.c3 { background:var(--c3); } .chip-t i.c4 { background:var(--c4); } .chip-t i.c5 { background:var(--c5); } .chip-t i.c6 { background:var(--c6); } .chip-t i.c7 { background:var(--c7); } .chip-t i.c8 { background:var(--c8); } .chip-t i.c9 { background:var(--c9); }
-.chip-t i.k-charge { background:var(--c3); box-shadow:inset 0 0 0 2px var(--c2); } .chip-t i.k-cells { background:repeating-linear-gradient(45deg, var(--muted) 0 2px, transparent 2px 4px); }
+.chip-t .k-charge { width:14px; height:14px; flex:none; color:var(--charging); } .chip-t:not(.on) .k-charge { color:var(--muted); } .chip-t i.k-cells { background:repeating-linear-gradient(45deg, var(--muted) 0 2px, transparent 2px 4px); }
 .chip-t:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
 .pbar .stepper.wide a, .pbar .stepper.wide .off { width:auto; padding:0 10px; font-size:14px; }  /* a year stepper names the years it moves to */
 /* The icon choice (_icons.html's icon_row): the likely icons in a row, then More…, which opens
@@ -820,7 +890,9 @@ html .leaflet-container { background:var(--panel); }  /* over Leaflet's own grey
 .leaflet-container .leaflet-control-container .leaflet-control-attribution { background:color-mix(in srgb, var(--panel) 82%, transparent); color:var(--muted); }
 .leaflet-container .leaflet-control-container .leaflet-control-attribution a { color:var(--muted); }
 @media (max-width: 600px) { .leaflet-container .leaflet-control-container .leaflet-control-attribution { font-size:10px; } }
-.leaflet-container.cc-no-tiles { background:var(--panel); }  /* no base layer: the page's own card colour, not Leaflet's default white */
+.leaflet-container.cc-no-tiles { background-color:var(--panel); background-image:linear-gradient(var(--rule) 1px, transparent 1px), linear-gradient(90deg, var(--rule) 1px, transparent 1px); background-size:48px 48px; }  /* no base layer: the card's own colour under a faint survey grid, so an empty box reads as a plain map, not a failed one */
+.cc-off { position:absolute; left:10px; bottom:10px; z-index:800; white-space:nowrap; display:flex; align-items:center; gap:10px; padding:4px 10px; background:var(--panel); border:1px solid var(--rule); border-radius:8px; font-size:12px; color:var(--muted); }  /* a quiet note in the corner: the background is plain, and here is how to add one */
+.cc-off a { color:var(--ink); text-decoration:underline; text-underline-offset:2px; }
 
 /* ---- Connect Tesla: a checklist, one card per step; a step waits until the one above is done ---- */
 a.button { display:inline-block; padding:9px 16px; border-radius:6px; border:1px solid var(--ink); background:var(--ink); color:var(--bg); text-decoration:none; }
@@ -841,6 +913,7 @@ label.check + p.muted.small, .row:has(> label.check) + p.muted.small { margin-to
 .ovx td { white-space:nowrap; }  /* a scrolling table keeps each value on one line; "Sep 28, 2026" never stacks into three */
 .tiles .tile .d > span { white-space:nowrap; }  /* "▼ 12% vs Sep pace" wraps as a whole, never leaving its arrow behind */
 form.range > .muted.small { padding-bottom:9px; }
+@media (max-width: 600px) { .fsheet form.range { grid-template-columns:minmax(0, 1fr); } .fsheet form.range > * { min-width:0; } .fsheet form.range select, .fsheet form.range input:not([type=checkbox]) { width:100%; min-width:0 !important; box-sizing:border-box; } }
 @media (max-width: 600px) { form.range { display:grid; grid-template-columns:1fr 1fr; gap:10px 12px; align-items:end; } form.range > .muted.small { grid-column:1 / -1; margin-top:4px; padding-bottom:0; } form.range input[type=date] { min-width:0; width:100%; box-sizing:border-box; } form.range button { justify-self:start; } }
 /* A heading's aside sits at the right when it fits and drops under the heading when it does not, instead of a float that tangles with the text. */
 h2:has(> .more) { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:2px 12px; } h2 > .more { float:none; }
@@ -877,6 +950,7 @@ button.plr-b:focus-visible { outline:2px solid var(--link); outline-offset:-2px;
 button.plr-b[aria-pressed="true"] { background:var(--soft); box-shadow:inset 3px 0 0 var(--ink); }
 .plr-go { flex:none; align-self:stretch; display:grid; place-items:center; width:34px; color:var(--muted); text-decoration:none; font-size:20px; }
 .plr-go:hover { color:var(--ink); background:var(--soft); }
+.plr-unnamed b { font-weight:500; color:var(--muted); }
 .plr-none { padding:10px 12px; }
 .plr-name { flex:none; margin:0 var(--s2) 0 auto; padding:var(--s1) var(--s3); border:1px solid var(--rule); border-radius:var(--r-pill); font-size:var(--t-meta); color:var(--ink); white-space:nowrap; }
 button.plr-b[aria-pressed="true"] .plr-name { border-color:var(--ink); }
@@ -884,7 +958,7 @@ button.plr-all { flex:1; min-height:44px; padding:0 var(--s3); border:0; border-
 button.plr-all:hover { background:var(--soft); }
 .pico { flex:none; display:grid; place-items:center; width:32px; height:32px; border-radius:8px; background:var(--soft); color:var(--ink); }
 .pico .pl-ic { display:block; width:18px; height:18px; margin:0; }
-.pico-empty { background:none; border:1px dashed var(--rule); }
+.pico-empty { background:none; border:none; display:grid; place-items:center; } .pico-empty::after { content:""; width:8px; height:8px; border-radius:50%; background:var(--muted); }  /* a place with no icon: a plain dot, as on the map */
 .pico-found { background:none; border:1px solid var(--rule); }
 .pico-found i { width:10px; height:10px; border-radius:50%; background:var(--c3); opacity:.75; }
 .ptext { flex:1; display:grid; gap:0; min-width:0; }
@@ -967,6 +1041,7 @@ button.danger { background:#C2453F; border-color:#C2453F; color:#fff; } button.q
 
 /* Stats: a (i) beside a figure opens how it was worked out, in place of a paragraph. A native
    details element; on a phone the note rises as a sheet above the tab bar so it never runs off. */
+span.nb { white-space:nowrap; }
 details.info { display:inline-block; position:relative; vertical-align:2px; margin-left:4px; }
 details.info > summary { list-style:none; display:grid; place-items:center; width:16px; height:16px; box-sizing:border-box; border-radius:50%; border:1px solid var(--rule); color:var(--muted); font:italic 600 10px/1 Georgia, serif; cursor:pointer; user-select:none; text-transform:none; letter-spacing:0; }
 details.info > summary::-webkit-details-marker { display:none; }
@@ -1017,7 +1092,6 @@ table.cmp.pair th:last-child { width:auto; } table.cmp.pair th { white-space:nor
 
 .c0 { --car:var(--c0); } .c1 { --car:var(--c1); } .c2 { --car:var(--c2); } .c3 { --car:var(--c3); } .c4 { --car:var(--c4); } .c5 { --car:var(--c5); } .c6 { --car:var(--c6); } .c7 { --car:var(--c7); } .c8 { --car:var(--c8); } .c9 { --car:var(--c9); }
 .idline { display:block; font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.cc-id { display:flex; align-items:center; gap:10px; margin:2px 0 6px; } .cc-id .idline { flex:1 1 auto; min-width:0; white-space:normal; line-height:1.3; }
 .hero-id { display:flex; align-items:center; gap:14px; margin:0 0 10px; } .hero-id .idline { font-size:14px; white-space:normal; }
 .look { display:grid; gap:12px; margin-top:8px; } .look fieldset { border:0; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:8px; align-items:center; } .look legend { font-size:12px; color:var(--muted); padding:0; margin-bottom:6px; }
 .sw { position:relative; display:inline-flex; } .look .sw input { position:absolute; left:0; top:0; opacity:0; width:26px; height:26px; min-width:0; margin:0; padding:0; cursor:pointer; }
@@ -1029,7 +1103,7 @@ table.cmp.pair th:last-child { width:auto; } table.cmp.pair th { white-space:nor
 
 /* Paint swatch beside a car's year, make and model. */
 .paintsw { display:inline-block; flex:0 0 auto; width:12px; height:12px; border-radius:50%; background:var(--paint); box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--ink) 35%, transparent); vertical-align:middle; }
-.cc-id, .hero-id { gap:8px; }
+.hero-id { gap:8px; }
 
 /* ---- Polish: the four matched chart colours, Cars and sources rhythm, the history choice ---- */
 .chip.c10 { background:var(--c10); } .chip.c11 { background:var(--c11); } .chip.c12 { background:var(--c12); } .chip.c13 { background:var(--c13); }
@@ -1083,7 +1157,6 @@ main details.more[open] { display:grid; gap:12px; }
 .sstop-m { grid-column:1 / -1; font-size:var(--t-meta); color:var(--muted); }
 .sday-p .empty { padding:var(--s3) 0; justify-content:flex-start; border-top:1px solid var(--rule); }
 .daycar > .fsheet { margin:0; }
-.drv-readings { padding:var(--s2) 0; min-height:var(--h-ctl); }
 .filterform { display:grid; gap:var(--s3); max-width:720px; }
 .filterform .acts { justify-content:flex-end; }
 @media (max-width: 600px) {
@@ -1108,17 +1181,16 @@ table.bycar th a { color:var(--ink); text-decoration:none; white-space:nowrap; }
    here (its own page names it), never a column of underlines */
 .row-title .pn-new, .row-gap .pn-new { text-decoration-color:transparent; }
 /* A drive: map first and tall, one line of what it was, tiles without footnotes */
-.drv-map { height:min(52vh, 420px); }
 .drv-sum { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s1) var(--s2); margin:0; font-variant-numeric:tabular-nums; }
 .drv-sum b { font-size:var(--t-row); font-weight:600; } .drv-sum span { color:var(--muted); font-size:var(--t-meta); }
 .drv-sum .sp { flex:1; }
-.drv-more { max-width:720px; }
 @media (max-width: 600px) { .tiles.pair > .tile:last-child:nth-child(odd) { grid-column:1 / -1; } }
 /* Service: due, history and the tires as rows that open in place; adding is the group's last row */
 details.set-x.add > summary .set-l { color:var(--link); }
 .badge.due { background:color-mix(in srgb, var(--danger) 16%, transparent); color:var(--danger); }
 .sec-n { text-transform:none; letter-spacing:0; font-weight:500; }
 .svc .set-l > .dot { margin-right:var(--s2); }
+.svc .set-v { flex:none; }  /* a tire set's miles and a job's cost stay whole; the dates beside them wrap */
 .set-p:has(input[name="kind"][value="due"]:checked) .svc-done, .set-p:has(input[name="kind"][value="done"]:checked) .svc-due { display:none; }
 .svc-done, .svc-due { display:grid; gap:var(--s3); }
 .set-v.tread4 { display:grid; grid-template-columns:auto auto; gap:0 var(--s2); font-size:var(--t-meta); line-height:1.3; font-variant-numeric:tabular-nums; }
@@ -1160,7 +1232,7 @@ details.morefacts[open] > summary::after { content:" ⌄"; }
    transforms alone; stopped for reduced motion and while the tab is hidden (shell.js). */
 .acts { display:grid; gap:var(--s3); } .acts:empty { display:none; }
 .act-defs { position:absolute; width:0; height:0; overflow:hidden; }
-#act-near g { stroke:var(--muted); } #act-lane path { stroke:color-mix(in srgb, var(--faint) 60%, var(--panel)); } #act-far path { stroke:color-mix(in srgb, var(--faint) 70%, var(--panel)); }
+#act-near g { stroke:var(--muted); } #act-near circle, #act-near rect { fill:var(--panel); } #act-lane path { stroke:color-mix(in srgb, var(--faint) 60%, var(--panel)); } #act-far path { stroke:color-mix(in srgb, var(--faint) 70%, var(--panel)); }
 .act { display:grid; background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); overflow:hidden; color:var(--ink); text-decoration:none; transition:border-color .12s var(--ease); }
 a.act:hover { border-color:var(--faint); } a.act:focus-visible { outline:2px solid var(--link); outline-offset:2px; }
 .act-scene { position:relative; display:block; height:64px; overflow:hidden; color:var(--mark); contain:paint;
@@ -1182,7 +1254,7 @@ a.act:hover { border-color:var(--faint); } a.act:focus-visible { outline:2px sol
 .driving .act-wheel { animation:act-spin .9s linear infinite; }
 @keyframes act-spin { to { transform:rotate(-360deg); } }  /* the car drives left: its wheels turn anticlockwise */
 @keyframes act-bob { 0%, 100% { transform:none; } 22% { transform:translateY(-1.6px) rotate(-.5deg); } 48% { transform:translateY(-.2px); } 72% { transform:translateY(-.9px) rotate(.35deg); } }
-.act-plug { display:block; width:40px; height:30px; margin:0 0 -1px -2px; overflow:visible; }
+.act-plug { display:block; width:40px; height:30px; margin:0 0 6px -2px; overflow:visible; }
 .act-post { fill:none; stroke:var(--faint); stroke-width:1.6; stroke-linejoin:round; }
 .act-cord { fill:none; stroke:var(--charging); stroke-width:1.8; stroke-linecap:round; stroke-dasharray:2 4; animation:act-flow 1.2s linear infinite; }
 @keyframes act-flow { from { stroke-dashoffset:6; } to { stroke-dashoffset:0; } }
@@ -1192,14 +1264,15 @@ a.act:hover { border-color:var(--faint); } a.act:focus-visible { outline:2px sol
 @media (prefers-reduced-motion: reduce) { .act-scene * { animation:none !important; } }
 html.cc-hidden .act-scene * { animation-play-state:paused; }
 /* Sentry or Halo Secure on: a red dot on the car's card, nowhere else */
-.guard { width:8px; height:8px; border-radius:50%; flex:none; background:var(--danger); box-shadow:0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent); }
+/* The guard (Sentry, Halo Secure) on: a red dot in place of the state's own. */
+.state.guarding i, .state.asleep.guarding i, .state.idling.guarding i { background:var(--danger); box-shadow:0 0 0 2px color-mix(in srgb, var(--danger) 18%, transparent); }
 
 .ver a { color:inherit; text-decoration:none; } .ver a:hover { text-decoration:underline; }  /* Settings' version line: muted text, not a blue link */
 
 /* The house's energy, in neutral inks: gold is the car battery's and the mark's alone. */
 .mixbar { display:flex; height:6px; border-radius:3px; overflow:hidden; background:var(--rule); margin-top:6px; }
 .mixbar[style*="--s"] { background:linear-gradient(to right, var(--ink) 0 var(--s), var(--data) 0 var(--b), var(--faint) 0); }  /* a charge's bar: one element, the stops inline */
-.mixbar i { display:block; height:100%; } .mixbar .sun, .mk.sun i { background:var(--ink); } .mixbar .battery, .mk.battery i { background:var(--data); } .mixbar .grid, .mk.grid i { background:var(--faint); }
+.mixbar i { display:block; height:100%; } .mixbar .sun, .mk.sun i { background:var(--ink); } .mixbar .battery, .mk.battery i { background:var(--data); } .mixbar .grid, .mk.grid i { background:var(--faint); } .mk.off i { background:var(--ink); } .mk.part i { background:var(--data); } .mk.peak i { background:var(--faint); }
 .mixnote { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
 .mix { display:grid; gap:8px; margin:12px 0; } .mix .mixbar { height:10px; border-radius:5px; margin:0; }
 .mixkey { display:flex; flex-wrap:wrap; gap:4px 16px; font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums; } .mixkey b { color:var(--ink); font-weight:500; }
@@ -1209,5 +1282,608 @@ html.cc-hidden .act-scene * { animation-play-state:paused; }
 .pw-soc { display:inline-flex; align-items:center; gap:8px; } .pw-soc b { font-size:20px; font-weight:500; } .pw-soc small { font-size:12px; color:var(--muted); margin-left:1px; }
 .pwbar { display:block; width:72px; height:8px; border-radius:4px; background:var(--rule); overflow:hidden; } .pwbar i { display:block; height:100%; background:var(--ink); }
 .pw-parts { display:flex; flex-wrap:wrap; gap:4px 18px; } .pw-p b { font-weight:500; font-variant-numeric:tabular-nums; } .pw-l { color:var(--muted); } .pw-p.idle b { color:var(--muted); }
-.sunmonths { display:grid; gap:10px; } .sm { display:grid; grid-template-columns:72px 1fr 44px 84px; align-items:center; gap:12px; font-size:var(--t-meta); } .sm .mixbar { margin:0; height:8px; border-radius:4px; }
+.sunmonths { display:grid; gap:10px; } .sunmonths .sm { display:grid; grid-template-columns:72px 1fr 44px 84px; align-items:center; gap:12px; font-size:var(--t-meta); } .sunmonths .sm .mixbar { margin:0; height:8px; border-radius:4px; }
 .sm-l { color:var(--muted); } .sm-v { font-weight:500; text-align:right; } .sm-k { color:var(--muted); text-align:right; }
+/* The car's commands (templates/_commands.html): a row in the Now card, the result line and More under it. */
+.cmds { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); }
+.cmd-pair { display:inline-flex; } .cmd-pair .btn:first-child { border-radius:var(--r-ctl) 0 0 var(--r-ctl); } .cmd-pair .btn:last-child { border-radius:0 var(--r-ctl) var(--r-ctl) 0; margin-left:-1px; }
+.cmds .btn[aria-pressed="true"], .cmd-more .btn[aria-pressed="true"] { background:var(--soft); border-color:var(--ink); font-weight:600; }
+.btn.confirm { border-color:var(--warn); color:var(--warn); } .btn.busy { opacity:.6; }
+.cmd-arg { display:inline-flex; align-items:center; gap:var(--s2); margin:0; }
+.cmd-said { margin:0; min-height:1.3em; font-size:var(--t-meta); color:var(--muted); } .cmd-said.err { color:var(--danger); }
+.strip-bar a.seg { display:block; transition:filter .12s var(--ease); } .strip-bar a.seg:hover, .strip-bar a.seg:focus-visible { filter:brightness(.8) saturate(1.3); outline:none; }
+.legend.tip { color:var(--ink); }
+.strip-bar:has(a.seg) { height:18px; border-radius:5px; }
+/* The car card's tiles: a fact each, the control inside when the car takes it. Two across on a
+   phone, as many as fit on a wider screen. */
+.hero-top { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--s2) var(--s3); }
+.hero-st { display:inline-flex; align-items:center; gap:var(--s2); }
+.fts { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px; margin-top:4px; }
+.ft { display:flex; flex-direction:column; align-items:flex-start; gap:2px; min-width:0; padding:12px 14px; border:1px solid var(--rule); border-radius:10px; background:var(--bg); }
+.ft-h { display:flex; align-items:center; gap:6px; font-size:var(--t-meta); color:var(--muted); white-space:nowrap; } .ft-h .ic { width:16px; height:16px; }
+.ft-b { margin-top:4px; font-size:19px; font-weight:600; line-height:1.2; font-variant-numeric:tabular-nums; letter-spacing:-.01em; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ft-b.ft-tires { font-size:15px; white-space:normal; } .ft-b.ft-ver { font-size:16px; }
+.ft-s { min-height:1.3em; font-size:var(--t-meta); color:var(--muted); line-height:1.3; }
+.ft-s > span { white-space:nowrap; } /* a line of parts breaks between them, never inside "full at 2:12 AM" */
+.ft-c { margin-top:auto; padding-top:8px; display:flex; gap:var(--s2); }
+.ft.go { color:inherit; text-decoration:none; } .ft.go:hover { border-color:var(--muted); } .ft.go:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
+.ft.on { border-color:var(--ink); } .ft.on .ft-h { color:var(--ink); }
+.ft.warn .ft-h, .ft.warn .ft-b { color:var(--warn); }
+/* a switch tile: the tile is the button, a small switch in its corner says which way it is */
+button.ft.tap { position:relative; font:inherit; color:inherit; text-align:left; cursor:pointer; width:100%; }
+button.ft.tap:hover { border-color:var(--muted); } button.ft.tap:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
+button.ft.tap::after { content:""; position:absolute; top:12px; right:12px; width:24px; height:14px; border-radius:7px; border:1px solid var(--muted); background:radial-gradient(circle at 7px 50%, var(--muted) 4px, transparent 4.5px); }
+button.ft.tap[aria-pressed="true"]::after { border-color:var(--ink); background:radial-gradient(circle at 17px 50%, var(--bg) 4px, transparent 4.5px) var(--ink); }
+button.ft.tap.confirm { border-color:var(--warn); } button.ft.tap.confirm .ft-b { color:var(--warn); } button.ft.tap.busy { opacity:.6; }
+.btn.guarded.confirm { border-color:var(--danger); color:var(--danger); }
+.cmd-why { margin:var(--s2) 0 0; }
+@media (max-width:480px) { .fts { grid-template-columns:1fr 1fr; gap:8px; } .ft { padding:10px 12px; } .ft-b { font-size:17px; } .fts > .ft:last-child:nth-child(odd) { grid-column:1 / -1; } }
+/* The dock under the card: the one-tap commands as icons, then Adjust and the log. */
+.dock { display:grid; gap:var(--s2); margin:12px 0 16px; }
+.dock-acts { display:flex; flex-wrap:wrap; gap:8px; }
+.dock-b { position:relative; display:grid; justify-items:center; gap:4px; min-width:76px; padding:10px 12px 8px; border:1px solid var(--rule); border-radius:10px; background:var(--panel); color:var(--ink); font:inherit; font-size:var(--t-meta); cursor:pointer; }
+.dock-b .ic { width:22px; height:22px; } .dock-b:hover { border-color:var(--muted); } .dock-b span { white-space:nowrap; } .dock-b:disabled { opacity:.5; cursor:default; border-color:var(--rule); }
+.dock-b.guarded::after { content:""; position:absolute; top:6px; right:6px; width:8px; height:9px; background:var(--muted); -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9'%3E%3Crect y='4' width='8' height='5' rx='1'/%3E%3Cpath d='M2 4V2.6a2 2 0 0 1 4 0V4' fill='none' stroke='black' stroke-width='1.2'/%3E%3C/svg%3E") center/contain no-repeat; mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 9'%3E%3Crect y='4' width='8' height='5' rx='1'/%3E%3Cpath d='M2 4V2.6a2 2 0 0 1 4 0V4' fill='none' stroke='black' stroke-width='1.2'/%3E%3C/svg%3E") center/contain no-repeat; }
+.dock-b.confirm { border-color:var(--warn); color:var(--warn); } .dock-b.guarded.confirm { border-color:var(--danger); color:var(--danger); } .dock-b.busy { opacity:.6; }
+.dock-more { display:grid; gap:var(--s2); }
+ .dock-fold > summary { display:inline-flex; align-items:center; gap:4px; cursor:pointer; color:var(--muted); font-size:var(--t-meta); list-style:none; } .dock-fold > summary::-webkit-details-marker { display:none; } .dock-fold > summary::after { content:"›"; transition:transform .15s var(--ease); } .dock-fold[open] > summary::after { transform:rotate(90deg); }
+.dock-rows { max-width:560px; margin-top:var(--s2); }
+.dock .cmd-said:empty { display:none; }
+/* The charge limit on the battery bar: gold to the charge, hatched below the 50 % floor, a tint
+   over the trip band, the limit a marker like the car card's. The range input covers 50-100 only. */
+.lim { display:grid; gap:6px; margin:0; }
+.lim-r { display:inline-flex; align-items:center; gap:var(--s2); } .lim-v { font-size:var(--t-body); font-weight:600; font-variant-numeric:tabular-nums; }
+.lim-bar.gauge { height:14px; border-radius:7px; }
+.lim-bar.gauge .lim-fill { border-radius:7px; }
+.lim-floor { position:absolute; left:0; top:0; bottom:0; width:50%; border-radius:7px 0 0 7px; background:repeating-linear-gradient(-45deg, transparent 0 4px, color-mix(in srgb, var(--ink) 14%, transparent) 4px 5px); }
+.lim-trip { position:absolute; top:0; bottom:0; left:calc(var(--day) * 1%); right:0; border-radius:0 7px 7px 0; background:color-mix(in srgb, var(--warn) 16%, transparent); }
+.lim input[type=range] { position:absolute; left:calc(50% - 4px); width:calc(50% + 8px); top:-8px; height:30px; margin:0; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; -webkit-appearance:none; appearance:none; cursor:pointer; }
+.lim button[hidden] { display:none; }
+.lim input[type=range]::-webkit-slider-runnable-track { height:30px; background:transparent; }
+.lim input[type=range]::-moz-range-track { height:30px; background:transparent; }
+.lim input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:8px; height:30px; border-radius:4px; background:var(--ink); border:2px solid var(--panel); box-shadow:0 1px 3px rgb(0 0 0 / .25); }
+.lim input[type=range]::-moz-range-thumb { width:8px; height:30px; border-radius:4px; background:var(--ink); border:2px solid var(--panel); box-shadow:0 1px 3px rgb(0 0 0 / .25); }
+.lim input[type=range]:focus-visible { outline:none; } .lim input[type=range]:focus-visible::-webkit-slider-thumb { outline:2px solid var(--link); outline-offset:2px; }
+.lim-scale { position:relative; height:18px; font-size:10px; color:var(--faint); font-variant-numeric:tabular-nums; }  /* quiet: the bar and its marks are the point */
+.lim-z { position:absolute; top:0; white-space:nowrap; }
+/* a bracket under each band: a hairline with ends, the band's name and range centred under it */
+.lim-band { padding-top:5px; text-align:center; overflow:hidden; text-overflow:ellipsis; border-top:1px solid var(--rule); }
+.lim-band::before, .lim-band::after { content:""; position:absolute; top:-1px; height:5px; border-left:1px solid var(--rule); } .lim-band::before { left:0; } .lim-band::after { right:0; }
+.lim-band.trip { color:var(--warn); }
+.lim-foot { display:flex; justify-content:flex-end; margin-top:-2px; }
+.cmd-h { margin:0 0 var(--s1); font-size:var(--t-meta); font-weight:500; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; } .cmd-h .muted { text-transform:none; letter-spacing:0; }
+.cmd-row, .cmd-step { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); min-height:calc(var(--h-sm) + var(--s3)); padding:var(--s1) 0; border-top:1px solid var(--rule); }
+.cmd-step[hidden] { display:none; }
+.cmd-l { font-size:var(--t-body); }
+.cmd-c { display:inline-flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:var(--s2); }
+/* A value and its Set read as one control; so do the password and its OK. */
+.cmd-join { display:inline-flex; align-items:stretch; gap:0; margin:0; }
+.cmd-join > .num, .cmd-join > .field { height:var(--h-sm); border-radius:var(--r-ctl) 0 0 var(--r-ctl); font-size:var(--t-meta); }
+.cmd-join > .num { --w:3ch; padding:0 var(--s2); } .cmd-join > .num input { font-size:var(--t-meta); }
+.cmd-join > .field.time { width:8.6em; padding:0 var(--s2); }
+.cmd-pair .btn { min-width:3.6em; }
+.cmd-join > .btn { border-radius:0 var(--r-ctl) var(--r-ctl) 0; margin-left:-1px; }
+.cmd-step .field { width:min(11em, 40vw); }
+.cmd-guarded .btn.confirm { border-color:var(--danger); color:var(--danger); }
+.cmd-rows { display:grid; grid-template-columns:auto 1fr; gap:var(--s1) var(--s3); margin:var(--s2) 0 0; font-size:var(--t-meta); } .cmd-rows dt { color:var(--muted); white-space:nowrap; } .cmd-rows dd { margin:0; }
+.hold-c { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); }
+@media (max-width:480px) { .cmd-rows { grid-template-columns:1fr; } .cmd-rows dt { margin-top:var(--s2); } }
+
+/* Bar strips (_strips.html): a small row of bars beside a total. Neutral bars, the current one in
+   the ink, a day with nothing a sliver on the baseline, the future empty; the tooltip is each bar's title. */
+.strip { margin:0; display:grid; gap:2px; min-width:0; }
+.strip svg { display:block; width:100%; height:40px; overflow:visible; }
+.strip.sm svg { height:24px; }
+.strip .hit { fill:transparent; }
+.strip .bar { fill:var(--data); }
+.strip .nil .bar { fill:var(--rule); }
+.strip .cur .bar { fill:var(--ink); }
+.strip .fut .bar { display:none; }
+.strip .sb:hover .bar { fill:var(--link); }
+.strip a:focus-visible .hit { stroke:var(--link); stroke-width:2; vector-effect:non-scaling-stroke; }
+.strip-t { position:relative; height:14px; font-size:var(--t-cap); line-height:14px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.strip-t span { position:absolute; top:0; transform:translateX(-50%); white-space:nowrap; }
+
+/* Previous / next (_prevnext.html): two quiet links, the date over a short label, the arrows outside */
+.prevnext { display:grid; grid-template-columns:1fr 1fr; gap:var(--s2); }
+.prevnext a { display:flex; align-items:center; gap:var(--s2); min-width:0; padding:var(--s2) var(--s3); border:1px solid var(--rule); border-radius:var(--r-ctl); background:var(--panel); color:var(--ink); text-decoration:none; }
+.prevnext a:hover { border-color:var(--muted); }
+.prevnext a:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
+.prevnext .pn-next { flex-direction:row-reverse; text-align:right; }
+.prevnext .pn-ar { font-size:22px; line-height:1; color:var(--muted); flex:none; }
+.prevnext .pn-tx { display:grid; min-width:0; }
+.prevnext .pn-d { font-size:var(--t-cap); color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.prevnext .pn-l { font-size:var(--t-meta); font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* Map row (CCMap.trio): start close-up, route, end close-up; on a phone the route on top and the two close-ups under it */
+.trio { display:grid; grid-template-columns:1fr 2fr 1fr; grid-template-areas:"a r b"; gap:var(--s2); }
+.trio figure { margin:0; display:grid; gap:4px; min-width:0; position:relative; }
+.trio .trio-a { grid-area:a; } .trio .trio-r { grid-area:r; } .trio .trio-b { grid-area:b; }
+.trio .map { height:260px; }
+.trio figcaption { position:absolute; top:var(--s2); left:var(--s2); z-index:500; padding:1px var(--s2); border-radius:var(--r-pill); background:var(--panel); color:var(--muted); font-size:var(--t-cap); letter-spacing:.06em; text-transform:uppercase; pointer-events:none; }
+.trio .trio-none .map { visibility:hidden; }
+@media (max-width:600px) { .trio { grid-template-columns:1fr 1fr; grid-template-areas:"r r" "a b"; } .trio .trio-r .map { height:220px; } .trio .trio-a .map, .trio .trio-b .map { height:140px; } }
+
+/* Records (Stats): the three that lead as cards (name and figure over the row that set them),
+   every other one a line; a drive that holds several records appears once with all of them */
+.recs { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(440px, 100%), 1fr)); gap:var(--s2) var(--s3); }
+.rec { background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); overflow:hidden; min-width:0; display:grid; align-content:space-between; }
+.rec-h { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s3); padding:var(--s3) var(--s4) 0; }
+.rec-l { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px var(--s2); font-size:var(--t-cap); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; min-width:0; }
+.rec-li { white-space:nowrap; } .rec-li b { color:var(--ink); letter-spacing:0; text-transform:none; } .rec-li b small { font-size:inherit; color:var(--muted); font-weight:400; margin-left:2px; }
+.rec-n { margin-left:var(--s1); letter-spacing:0; text-transform:none; font-weight:400; }
+.rec-v { font-size:var(--t-fig); font-weight:500; line-height:1.1; white-space:nowrap; font-variant-numeric:tabular-nums; } .rec-v small { font-size:13px; font-weight:400; color:var(--muted); margin-left:3px; }
+.rec .row-b { border-bottom:0; padding-top:var(--s2); } .rec .row-t { width:auto; white-space:nowrap; }
+.rec .k-charge .row-thumb.fast { background:var(--soft); color:var(--charging); } .rec .k-charge .row-n b { color:var(--ink); }
+.rec .rt-tag, .recl .rt-tag { letter-spacing:0; text-transform:none; }
+.recl { display:grid; grid-template-columns:minmax(0, 1.4fr) minmax(0, 1fr) 6.5em; gap:var(--s1) var(--s3); align-items:baseline; padding:10px var(--s4); border-bottom:1px solid var(--rule); color:var(--ink); text-decoration:none; }
+.recl:hover { background:var(--soft); } .reclist > :last-child { border-bottom:0; }
+.recl-k { display:flex; flex-wrap:wrap; gap:2px var(--s4); min-width:0; } .recl-t { display:inline-flex; align-items:baseline; gap:var(--s2); white-space:nowrap; }
+.recl-l { font-size:var(--t-meta); color:var(--muted); } .recl-t b { font-weight:600; font-variant-numeric:tabular-nums; } .recl-t b small { font-weight:400; color:var(--muted); margin-left:2px; }
+.recl-w { font-size:var(--t-meta); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .recl-w .dot { margin-right:6px; }
+.recl-d { font-size:12px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; text-align:right; }  /* a fixed column, so every row's route starts at the same x */
+/* three leads sit in one row where there is room for them: the date drops under the row */
+@media (min-width:1180px) {
+  .recs.n3 { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+  .recs.n3 .row-b { flex-wrap:wrap; row-gap:var(--s1); padding-bottom:var(--s3); }
+  .recs.n3 .row-t { order:1; flex-basis:100%; }
+}
+@media (max-width:600px) { .rec-h { padding:var(--s3) var(--s3) 0; } .rec-v { font-size:24px; } .recl { grid-template-columns:minmax(0, 1fr) auto; padding:10px var(--s3); } .recl-k { grid-column:1 / -1; } }
+
+/* Efficiency compare-with (Stats): the second set in the violet of a second line, beside the
+   first on one scale, the overall change leading */
+.cmpwith { display:flex; align-items:center; gap:var(--s2); margin-left:auto; min-width:0; }
+.cmpwith .sel { height:var(--h-sm); max-width:min(240px, 60vw); font-size:var(--t-meta); }
+.effsum { display:flex; align-items:center; gap:var(--s4); padding:var(--s3) var(--s4); background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); }
+.effsum-v { font-size:var(--t-fig); font-weight:500; line-height:1; white-space:nowrap; } .effsum-v small { font-size:15px; color:var(--muted); margin-left:2px; }
+.effsum-t { display:grid; gap:2px; min-width:0; font-size:var(--t-meta); } .effsum-l { font-weight:600; font-size:var(--t-body); }
+.effsum i, .bins.pair i { display:inline-block; width:10px; height:10px; border-radius:3px; margin:0 6px 0 2px; vertical-align:0; }
+.effsum i.k-a { background:var(--data); } .effsum i.k-b { background:var(--ov-x0); }
+.bins.pair .pa, .bins.pair .pb { display:block; } .bins.pair .pb { color:color-mix(in srgb, var(--ov-x0) 80%, var(--ink)); }
+.bins.pair .pside { display:block; white-space:nowrap; line-height:18px; } .bins.pair .pb .bar { background:var(--ov-x0); }
+.bins.pair td { vertical-align:middle; } .bins.pair td.r span { color:var(--muted); } .bins.pair td.r span.strong { color:var(--ink); font-weight:600; }
+.bins.pair tr.few td { opacity:.55; }
+.effsum-v { color:var(--muted); } .effsum-v.strong { color:var(--ink); }
+.effsum .lg { white-space:nowrap; } h2 .h2-n { letter-spacing:0; text-transform:none; font-weight:400; }
+@media (max-width:600px) { .cmpwith { margin-left:0; width:100%; } .cmpwith .sel { flex:1; max-width:none; } .effsum { gap:var(--s3); padding:var(--s3); } }
+
+/* Battery: the lifetime report. Loss leads; the three ways beside it; the chart's two controls under */
+.life { display:grid; gap:var(--s3); min-width:0; }
+.life-head { display:grid; grid-template-columns:minmax(180px, 1fr) 2.4fr; gap:var(--s3); align-items:stretch; }
+.life-big { display:grid; align-content:center; gap:2px; padding:var(--s3) var(--s4); background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); }
+.life-big .l { font-size:var(--t-cap); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+.life-big .v { font-size:var(--t-hero); font-weight:500; line-height:1.05; font-variant-numeric:tabular-nums; } .life-big .v small { font-size:18px; color:var(--muted); margin-left:2px; font-weight:400; }
+.life-big .d { font-size:var(--t-meta); color:var(--muted); }
+.life-ways { display:grid; background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); overflow:hidden; }
+.lw { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); padding:10px var(--s4); border-bottom:1px solid var(--rule); color:var(--ink); text-decoration:none; margin:0; }
+.life-ways > :last-child { border-bottom:0; } a.lw:hover { background:var(--soft); }
+.lw.on { box-shadow:inset 3px 0 0 var(--ink); }
+.lw-n { display:grid; gap:1px; font-weight:600; font-size:var(--t-body); color:var(--ink); } .lw-n small { font-size:12px; font-weight:400; color:var(--muted); }
+.lw-v { display:flex; align-items:baseline; gap:var(--s3); white-space:nowrap; font-variant-numeric:tabular-nums; color:var(--muted); font-size:var(--t-meta); }
+.lw-v b { color:var(--ink); font-weight:500; font-size:var(--t-body); min-width:9.5em; text-align:right; }
+.lw-start input { width:96px; min-width:0; padding:4px 8px; text-align:right; }
+.life-ctl { display:flex; flex-wrap:wrap; gap:var(--s2); justify-content:flex-end; }
+@media (max-width:600px) { .life-head { grid-template-columns:1fr; } .life-big .v { font-size:36px; } .life-ctl { justify-content:flex-start; } .lw { padding:10px var(--s3); } .lw-v b { min-width:0; } }
+
+/* Software: a row a version, its range at 100 %, the weather it ran in and how long, under a year of updates as bars */
+.swup { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s2) var(--s4); margin-bottom:var(--s3); padding:var(--s3) var(--s4); background:var(--panel); border:1px solid var(--rule); border-left:3px solid var(--warn); border-radius:var(--r-card); }
+.swup-h small { color:var(--muted); font-size:var(--t-cap); }
+.swup-n { flex:1 1 100%; order:3; } .swup-n summary { cursor:pointer; color:var(--link); font-size:var(--t-cap); } .swup-n ul { margin:var(--s2) 0 0; padding-left:var(--s4); display:grid; gap:var(--s1); }
+.swup-a { margin-left:auto; font-size:var(--t-cap); }
+.swtl { margin:0; display:grid; gap:6px; padding:0 var(--s1); }
+.swtl-l { position:relative; height:14px; } .swtl-l::before { content:""; position:absolute; left:0; right:0; top:6px; height:1px; background:var(--rule); }
+.swtl-l i { position:absolute; top:2px; width:9px; height:9px; margin-left:-4.5px; border-radius:50%; background:var(--muted); box-shadow:0 0 0 2px var(--bg); } .swtl-l i.cur { background:var(--ink); }
+.swtl-t { position:relative; height:14px; font-size:var(--t-cap); color:var(--muted); } .swtl-t span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
+.swr-c { color:var(--ink) !important; } .swr-c.quiet { color:var(--muted) !important; }
+.swr { display:grid; grid-template-columns:minmax(0, 1.6fr) minmax(0, 1.3fr) minmax(0, .7fr) minmax(0, .7fr); gap:var(--s3); align-items:center; padding:10px var(--s4); }
+.swr > span { min-width:0; display:grid; gap:1px; font-variant-numeric:tabular-nums; }
+.swr small { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.swr-v { font-weight:500; overflow-wrap:anywhere; } .swr-v form { margin-top:4px; }
+.swr-r, .swr-t, .swr-d { text-align:right; } .swr-r { display:block !important; } .swr-r small { display:block; }
+.swr-h { padding-top:var(--s2); padding-bottom:var(--s2); font-size:var(--t-cap); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+.swr-h > span:not(:first-child) { text-align:right; display:block; } .swr-h details.info { display:inline-block; text-transform:none; letter-spacing:0; }
+.tiles.t3:has(+ .swtl) .tile .v.small-v { white-space:normal; overflow-wrap:anywhere; }
+@media (max-width:600px) { .swr { grid-template-columns:minmax(0, 1.3fr) minmax(0, 1.3fr) 40px 44px; gap:var(--s2); padding:10px var(--s3); } .swr-h { font-size:10px; letter-spacing:.04em; } .tiles.t3:has(+ .swtl) { grid-template-columns:1fr 1fr; } .tiles.t3:has(+ .swtl) .tile:first-child { grid-column:1 / -1; } }
+@media (max-width:480px) { .swr-o { display:none; } }
+input.rows-all:not(:checked) ~ .group-b .swr.later { display:none; }
+
+/* Places › Routes: the routes driven most beside the places arrived at most. A route is its
+   count over a thin bar of its share, the two places, then the usual time, energy and Wh/mi */
+.pbar .segmented[aria-label="Places"] { margin-left:var(--s2); }
+.rt-wrap { display:grid; grid-template-columns:minmax(0, 1.7fr) minmax(0, 1fr); gap:var(--s5); align-items:start; }
+.rt, .dt { display:flex; gap:var(--s3); align-items:center; padding:var(--s3) var(--s4); border-bottom:1px solid var(--rule); color:var(--ink); text-decoration:none; min-width:0; }
+.rt:hover, .dt:hover { background:var(--soft); }
+.rt-n { flex:none; min-width:5.2ch; font-variant-numeric:tabular-nums; } .rt-n b { font-size:var(--t-row); font-weight:600; }
+.dt-b i { display:block; height:3px; border-radius:2px; background:var(--data); }
+.rt-m { flex:1; min-width:0; display:grid; gap:3px; }
+.rt-t { font-weight:600; line-height:1.3; overflow-wrap:anywhere; } .rt-ar { color:var(--muted); font-weight:400; margin:0 2px; }
+.rt-tag { display:inline-block; margin-left:var(--s2); padding:1px 8px; border-radius:var(--r-pill); background:var(--soft); color:var(--muted); font-size:12px; font-weight:500; vertical-align:1px; white-space:nowrap; }
+.rt-s { font-size:var(--t-meta); color:var(--muted); font-variant-numeric:tabular-nums; } .rt-s { display:flex; flex-wrap:wrap; column-gap:var(--s3); } .rt-s > span { white-space:nowrap; }
+.rt-q { font-size:12px; color:var(--muted); } .rt-s .rt-ld { display:none; } .pl-slot { display:inline-block; width:.95em; margin-right:.28em; }
+.rt-d, .dt-n span { flex:none; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.dt-m { flex:1; min-width:0; display:grid; gap:5px; } .dt-t { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dt-n { flex:none; display:grid; text-align:right; font-variant-numeric:tabular-nums; } .dt-n b { font-weight:600; }
+@media (max-width:860px) { .rt-wrap { grid-template-columns:1fr; } }
+@media (max-width:600px) { .rt, .dt { padding:var(--s3); gap:var(--s2); } .rt-d { display:none; } .rt-s .rt-ld { display:inline; } .pbar .segmented[aria-label="Places"] { margin-left:0; } }
+.chart-svg .rug { stroke:var(--muted); stroke-width:1; opacity:.6; } .chart-svg .rug-hi { opacity:1; }
+
+/* Calendar totals (_calsum.html): Driven, Charged and Cost as a switch, each with its figure; the
+   chosen one's bar strips beside them (a bar a day, or a month and a week), quieter figures under.
+   On a phone the three share a row and the strips sit under them. */
+.calsum { display:grid; grid-template-columns:minmax(0, auto) minmax(0, 1fr); grid-template-areas:"tabs strip" "q q"; gap:var(--s3) var(--s5); align-items:end; margin-top:var(--s4); padding:var(--s4); background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); }
+.calsum-tabs { grid-area:tabs; display:flex; gap:var(--s1); }
+.calsum-tab { font:inherit; display:grid; gap:2px; text-align:left; min-width:0; padding:var(--s2) var(--s3); border:0; border-radius:var(--r-ctl); background:none; color:var(--muted); cursor:pointer; }
+.calsum-tab .l { font-size:var(--t-cap); letter-spacing:.1em; text-transform:uppercase; }
+.calsum-tab .v { font-size:20px; font-weight:500; color:var(--muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.calsum-tab[aria-pressed="true"] { background:var(--soft); color:var(--ink); }
+.calsum-tab[aria-pressed="true"] .v { font-size:26px; color:var(--ink); }
+.calsum-tab:hover .v { color:var(--ink); }
+.calsum-tab:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
+.calsum-s { grid-area:strip; min-width:0; }
+.calsum-s.two { display:grid; grid-template-columns:12fr 26fr; gap:var(--s5); }
+.calsum-s.two .strip.wk .bar { opacity:.8; }
+.calsum-q { grid-area:q; display:flex; flex-wrap:wrap; gap:var(--s1) var(--s4); font-size:var(--t-meta); color:var(--muted); border-top:1px solid var(--rule); padding-top:var(--s3); }
+.calsum-q span { white-space:nowrap; }
+.calsum + .cal { margin-top:var(--s4); }
+@media (max-width:720px) {
+  .calsum { grid-template-columns:minmax(0, 1fr); grid-template-areas:"tabs" "strip" "q"; padding:var(--s3); }
+  .calsum-tabs { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); }
+  .calsum-tab { padding:var(--s2); } .calsum-tab .v, .calsum-tab[aria-pressed="true"] .v { font-size:18px; overflow:hidden; text-overflow:ellipsis; }
+  .calsum-s.two { grid-template-columns:minmax(0, 1fr); gap:var(--s3); }
+}
+/* the day cell: Wh/mi muted unless 10% off the month's, the costs, the temperature top right; the
+   temperature and Wh/mi go first as the grid narrows, then the costs. ⚡ and its figure stay on one line.
+   Weeks wholly after today are half height: nothing will be in them yet. */
+.cal-head { position:relative; } .cal-head .cal-key { position:absolute; right:0; top:-26px; padding:0; }
+.cal-day .sub { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cal-day .xc, .cal-day .xw { color:var(--muted); } .cal-day .xw.odd { color:var(--ink); }
+.cal-day .d { display:flex; justify-content:space-between; gap:4px; } .cal-day .xt { color:var(--muted); font-variant-numeric:tabular-nums; }
+.cal-day .kwh { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cal-week.fut .cal-day { min-height:42px; }
+@media (max-width:1100px) { .cal-day .xw, .cal-day .xt { display:none; } }
+@media (max-width:720px) { .cal-day .xc, .cal-day .xu { display:none; } .cal-week.fut .cal-day { min-height:32px; } }
+/* the month's battery line: its average a muted dashed line with no label (the headline gives it),
+   charges a filled green band behind the rising steps, drives a faint blue one */
+.calbat .chart-svg .avg { stroke:var(--muted); } .calbat .chart-svg .avg-t { display:none; }
+.calbat .chart-svg .bd-charging { opacity:.3; } .calbat .chart-svg .bd-driving { opacity:.1; }
+.bins td.sub-r { padding-left:var(--s5); color:var(--muted); }
+.sec .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:1px; }
+/* a small month's headline is the measure the switch above shows; the key under the switch */
+.year .ym h3 .ym-v { font-size:18px; font-weight:500; font-variant-numeric:tabular-nums; } .ym-v .m-kwh, .ym-v .m-cost { display:none; }
+body[data-calm="kwh"] .ym-v .m-dist, body[data-calm="cost"] .ym-v .m-dist { display:none; } body[data-calm="kwh"] .ym-v .m-kwh, body[data-calm="cost"] .ym-v .m-cost { display:inline; }
+.cal-legend { display:flex; gap:var(--s4); margin:var(--s2) 0 0; font-size:var(--t-cap); color:var(--muted); } .cal-legend span { display:inline-flex; align-items:center; gap:6px; }
+.cal-legend .lg-shade { width:12px; height:12px; border-radius:3px; background:linear-gradient(90deg, color-mix(in srgb, var(--driving) 15%, var(--panel)), color-mix(in srgb, var(--driving) 55%, var(--panel))); }
+.cal-legend .lg-dot { width:6px; height:6px; border-radius:50%; background:var(--charging); }
+.calsum .strip-t span:first-child { transform:translateX(-4px); }  /* "Jan" under the first week, not past the strip's edge */
+.chip-t i.k-heat { background:radial-gradient(circle, var(--charging) 0 35%, color-mix(in srgb, var(--charging) 35%, transparent) 70%); }
+
+/* Settings › Alerts, a channel not set up yet: its steps folded under its name, a numbered list of
+   short labels and links, the names to put in .env as code. */
+.chan-setup { display:block; padding:0; }
+.steps code var { font-style:normal; color:var(--muted); }  /* a placeholder in a command: bot<token> */
+.chan-setup > summary { display:flex; align-items:center; gap:var(--s3); min-height:48px; padding:var(--s2) var(--s4); list-style:none; cursor:pointer; }
+.chan-setup > summary::-webkit-details-marker { display:none; }
+.chan-setup > summary::after { content:"Set up"; flex:none; font-size:var(--t-meta); color:var(--link); }
+.chan-setup[open] > summary::after { content:"Close"; color:var(--muted); }
+.chan-setup > summary:focus-visible { outline:2px solid var(--link); outline-offset:-2px; }
+.steps { list-style:none; margin:0; padding:0 var(--s4) var(--s4); display:grid; gap:var(--s2); counter-reset:none; }
+.steps li { display:grid; grid-template-columns:22px minmax(0, 1fr); gap:var(--s3); align-items:baseline; font-size:var(--t-meta); }
+.steps .st-n { display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--soft); color:var(--muted); font-size:var(--t-cap); font-weight:600; font-variant-numeric:tabular-nums; }
+.steps .st-t { min-width:0; overflow-wrap:anywhere; }
+.steps code { font-size:12px; padding:1px 5px; border-radius:4px; background:var(--soft); color:var(--ink); }
+.chan-setup > summary .set-s { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .chan-setup > summary::after { margin-left:auto; }
+.group-b .steps li { border:0; padding:0; min-height:0; }
+
+/* Battery › Tire pressure: the four now around a car seen from above, each figure in its line's
+   colour on the charts under it; a tire well under the other three in the warning tone. */
+.tires-head { display:flex; justify-content:center; margin:var(--s2) 0 var(--s3); }
+.tirecar { margin:0; display:grid; grid-template-columns:1fr 44px 1fr; grid-template-rows:1fr 1fr; gap:var(--s2) var(--s3); align-items:center; }
+.tirecar .tc-car { grid-column:2; grid-row:1 / 3; width:44px; height:80px; }
+.tc-car rect:first-child { fill:var(--panel); stroke:var(--muted); stroke-width:1.2; } .tc-car path { stroke:var(--rule); stroke-width:1.2; fill:none; }
+.tc-car .tw { fill:var(--muted); } .tc-car .tw.low { fill:var(--warn); }
+.tirecar .tc { display:grid; font-variant-numeric:tabular-nums; } .tirecar .tc b { font-size:20px; font-weight:500; } .tirecar .tc small { font-size:var(--t-cap); color:var(--muted); }
+.tirecar .tc-fl, .tirecar .tc-rl { grid-column:1; text-align:right; } .tirecar .tc-fr, .tirecar .tc-rr { grid-column:3; }
+.tirecar .tc-fl, .tirecar .tc-fr { grid-row:1; } .tirecar .tc-rl, .tirecar .tc-rr { grid-row:2; }
+.tirecar .tc-fl b { color:var(--ov-x0); } .tirecar .tc-fr b { color:var(--ov-x1); } .tirecar .tc-rl b { color:var(--ov-x2); } .tirecar .tc-rr b { color:var(--ov-x3); }
+.tirecar .tc.low b { color:var(--warn); } .tirecar .tc.low small::after { content:" · low"; color:var(--warn); }
+h3.sub-h { margin:var(--s4) 0 var(--s2); font-size:var(--t-meta); font-weight:600; color:var(--muted); }
+.year .ym h3:has(.ym-v) { grid-template-columns:minmax(0, 1fr) auto; align-items:baseline; column-gap:var(--s2); } .year .ym h3 .more { grid-column:1 / -1; }
+@media (max-width:600px) { .year .ym h3:has(.ym-v) { grid-template-columns:minmax(0, 1fr); } .year .ym h3 .ym-v { font-size:var(--t-meta); color:var(--muted); } }
+.cal-legend { margin-top:var(--s3); } .cal-legend + .year { margin-top:var(--s3); }
+
+/* Map › Where it charges: the month's lines fade under the heat, the month picker rests (the heat
+   is all time), a key from one charge to the most at a spot, and the five places charged at most. */
+.map.heat-on .leaflet-overlay-pane canvas:not(.cc-heat), .map.heat-on .leaflet-overlay-pane svg { opacity:.2; }
+.stepper.rest { opacity:.4; pointer-events:none; }
+.heat-key { display:flex; align-items:center; gap:var(--s2); margin-top:var(--s2); font-size:var(--t-cap); color:var(--muted); }
+.heat-key .hk-bar { width:96px; height:8px; border-radius:4px; background:linear-gradient(90deg, color-mix(in srgb, var(--charging) 15%, transparent), var(--charging) 55%, var(--ink)); }
+.heat-top { margin-top:var(--s4); }
+.sec .sec-more { float:right; font-size:var(--t-meta); font-weight:400; letter-spacing:0; text-transform:none; color:var(--link); text-decoration:none; }
+.map.tall { height:min(70vh, 720px); }
+@media (max-width:600px) { .map.tall { height:min(70vh, 520px); min-height:360px; } }
+.steps .cc-code { font:inherit; display:inline-flex; align-items:center; padding:0; border:0; background:none; cursor:copy; vertical-align:baseline; max-width:100%; }
+.steps .cc-code code { white-space:nowrap; } .steps .cc-code:hover code { box-shadow:inset 0 0 0 1px var(--rule); }
+.steps .cc-code.done code { background:color-mix(in srgb, var(--charging) 25%, var(--soft)); }
+.steps .cc-code.done::after { content:"Copied"; margin-left:6px; font-size:var(--t-cap); color:var(--muted); }
+.steps .cc-code:focus-visible { outline:2px solid var(--link); outline-offset:1px; border-radius:4px; }
+.group.needs .group-b { opacity:.55; } .group.needs .needs-l { margin-left:var(--s2); font-weight:400; letter-spacing:0; text-transform:none; color:var(--warn); }
+
+/* Detail pages: a drive's speed colours and key, the replay, the charge's and parked stretch's
+   blocks. The speed steps are one violet (the chart's Speed line) from pale to deep, so the map
+   and the chart read as one; never gold. */
+:root { --spd0:#B3A1E8; --spd1:#9C83E0; --spd2:#7A52C7; --spd3:#5A33A6; --spd4:#36186E; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --spd0:#4E4380; --spd1:#6F5CB8; --spd2:#9479E6; --spd3:#B9A2FF; --spd4:#E2D8FF; } }
+:root[data-theme="dark"] { --spd0:#4E4380; --spd1:#6F5CB8; --spd2:#9479E6; --spd3:#B9A2FF; --spd4:#E2D8FF; }
+.spd0 { background:var(--spd0); } .spd1 { background:var(--spd1); } .spd2 { background:var(--spd2); } .spd3 { background:var(--spd3); } .spd4 { background:var(--spd4); }
+.drv-maps .trio-r .map { height:min(48vh, 380px); } .drv-maps .trio-a .map, .drv-maps .trio-b .map { height:min(48vh, 380px); }
+@media (max-width:600px) { .drv-maps .trio-r .map { height:240px; } .drv-maps .trio-a .map, .drv-maps .trio-b .map { height:130px; } }
+.drv-key { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2) var(--s4); margin-top:calc(var(--s2) * -1); font-size:var(--t-meta); color:var(--muted); }
+.tr-play { display:inline-flex; align-items:center; gap:var(--s2); min-width:96px; height:var(--h-sm); padding:0 var(--s3) 0 var(--s2); border:1px solid var(--rule); border-radius:var(--r-pill); background:var(--panel); color:var(--ink); font-size:var(--t-meta); font-weight:600; font-variant-numeric:tabular-nums; }
+.tr-play:hover { border-color:var(--muted); } .tr-play:focus-visible { outline:2px solid var(--link); outline-offset:1px; }
+.tr-i { width:14px; height:14px; fill:currentColor; flex:none; } .tr-i .tr-pa { display:none; } .tr-play.on .tr-pl { display:none; } .tr-play.on .tr-pa { display:inline; }
+.spd-key { flex:1 1 280px; display:grid; gap:var(--s1); min-width:0; }
+.spd-bar { display:flex; gap:2px; height:8px; } .spd-bar i { flex-basis:0; min-width:3px; border-radius:2px; }
+.spd-ls { display:flex; flex-wrap:wrap; gap:2px var(--s3); font-size:var(--t-cap); }
+.spd-b { display:inline-flex; align-items:center; gap:var(--s1); white-space:nowrap; } .spd-b i { width:8px; height:8px; border-radius:2px; }
+.spd-b b { color:var(--ink); font-weight:600; }
+.spd-key .on { box-shadow:0 0 0 1.5px var(--panel), 0 0 0 3px var(--ink); } .spd-b.on { box-shadow:none; color:var(--ink); } .spd-b.on i { box-shadow:0 0 0 1.5px var(--panel), 0 0 0 3px var(--ink); }
+.drv-spd b { color:var(--ink); font-weight:600; } .drv-spd > span + span::before { content:" · "; }
+/* with no map base a street-level close-up is a line on a blank square: the route alone, full width */
+body:not([data-close="on"]) .drv-maps { grid-template-columns:1fr; grid-template-areas:"r"; }
+body:not([data-close="on"]) .drv-maps .trio-a, body:not([data-close="on"]) .drv-maps .trio-b { display:none; }
+.drv-own { display:inline-flex; align-items:center; gap:var(--s2); font-size:var(--t-meta); color:var(--muted); cursor:pointer; }
+.chg-map { height:140px; border-radius:var(--r-card); }
+/* What this charge bought: the miles as the headline, the battery it took as a bar, the rest a quiet row */
+.bought { display:grid; gap:var(--s2); }
+.bt-h { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s1) var(--s3); } .bt-h .sec { padding:0; } .bt-h .sp { flex:1; }
+.bt-to { font-size:var(--t-meta); color:var(--muted); text-decoration:none; } a.bt-to:hover { color:var(--ink); }
+.bt-b { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1.4fr); gap:var(--s3) var(--s5); align-items:center; padding:var(--s3) var(--s4); background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); }
+.bt-lead { display:grid; gap:2px; }
+.bt-big { font-size:var(--t-fig); font-weight:600; line-height:1.1; font-variant-numeric:tabular-nums; } .bt-big small { font-size:var(--t-meta); font-weight:400; color:var(--muted); margin-left:3px; }
+.bt-over { font-size:var(--t-meta); color:var(--muted); }
+.bt-bat { display:flex; align-items:center; gap:var(--s2); font-size:var(--t-meta); font-variant-numeric:tabular-nums; }
+.bt-track { position:relative; flex:1; height:8px; border-radius:4px; background:var(--soft); }
+.bt-used { position:absolute; top:0; bottom:0; border-radius:4px; background:var(--gold); opacity:.85; }
+.bt-figs { grid-column:1 / -1; display:grid; grid-template-columns:repeat(auto-fit, minmax(min(130px, 100%), 1fr)); gap:var(--s2) var(--s4); margin:0; padding-top:var(--s2); border-top:1px solid var(--rule); }
+.bt-figs div { display:grid; gap:1px; min-width:0; } .bt-figs dt { font-size:var(--t-cap); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.bt-figs dd { margin:0; font-weight:600; font-variant-numeric:tabular-nums; } .bt-figs dd small { display:block; font-weight:400; font-size:var(--t-meta); color:var(--muted); }
+@media (max-width:600px) { .bt-b { grid-template-columns:1fr; } .bt-figs { grid-template-columns:1fr 1fr; } }
+.chart-svg .bd-sentry { fill:var(--danger); opacity:.07; } .chart-svg .bd-climate { fill:var(--ov-temp); }
+/* a parked row opens its stretch: the whole row is the link, the place name keeps its card above it */
+.row-gap.go { position:relative; } .row-gap.go:hover { color:var(--ink); }
+.row-gap .gap-go { float:right; margin-left:var(--s2); color:var(--muted); text-decoration:none; } .row-gap .gap-go::after { content:""; position:absolute; inset:0; }
+.row-gap.go .pn { position:relative; z-index:1; }
+a.sstop { color:inherit; text-decoration:none; } a.sstop:hover .sstop-w { color:var(--link); }
+/* a drive row's elevation profile: a quiet filled strip with its range beside it */
+.row-el { display:flex; align-items:center; gap:var(--s2); max-width:420px; font-size:var(--t-cap); color:var(--muted); font-variant-numeric:tabular-nums; }
+.row-el svg { flex:1; min-width:0; height:16px; } .row-el path { fill:var(--data); opacity:.3; stroke:var(--data); stroke-width:1; vector-effect:non-scaling-stroke; }  /* neutral: green is charging */
+.row-el span { white-space:nowrap; }
+.chartbox .k-sentry { background:color-mix(in srgb, var(--danger) 30%, var(--panel)); } .chartbox .k-climate { background:color-mix(in srgb, var(--ov-temp) 35%, var(--panel)); }
+/* a profile under the lane on the chart's clock (a drive's height): quiet, neutral, not a state colour */
+.chart-svg .tk-s { font-size:10px; } .chart-svg .strip-a { fill:var(--data); opacity:.16; } .chart-svg .strip-l { fill:none; stroke:var(--data); stroke-width:1.2; stroke-linejoin:round; }
+@media (max-width:600px) { .chart-chips { flex-wrap:wrap; overflow:visible; } }
+/* a detail page's header: the time always shows (a phone too), previous and next as two small links */
+@media (max-width:860px) { .pbar-ctx.keep { display:inline; font-size:var(--t-meta); } }
+.prevnext.pn-in { display:inline-flex; gap:var(--s3); align-items:baseline; font-size:var(--t-meta); }
+.prevnext.pn-in a { display:inline; padding:0; border:0; background:none; color:var(--link); white-space:nowrap; } .prevnext.pn-in a:hover { text-decoration:underline; }
+.prevnext.pn-in .pn-none { display:none; }
+.drv-sum .drv-bat { font-size:var(--t-row); color:var(--ink); font-weight:600; }
+.heroes { grid-template-columns:repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+@media (max-width:600px) { .tiles.heroes { grid-template-columns:1fr 1fr; } .heroes .tile .v { font-size:22px; } }
+/* every other figure of a detail page: a quiet grid, label over value */
+.dgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(170px, 45%), 1fr)); gap:var(--s3) var(--s4); margin:0; padding:var(--s3) var(--s4); border:1px solid var(--rule); border-radius:var(--r-card); }
+.dgrid div { display:grid; gap:1px; min-width:0; } .dgrid dt { font-size:var(--t-cap); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.dgrid dd { margin:0; font-size:var(--t-meta); font-weight:600; font-variant-numeric:tabular-nums; } .dgrid dd small { display:block; font-weight:400; color:var(--muted); }
+body:not([data-close="on"]) .drv-maps .trio-r .map { height:240px; }
+.leaflet-tooltip.tr-end { padding:1px 6px; border:1px solid var(--rule); border-radius:var(--r-pill); background:var(--panel); color:var(--ink); font:inherit; font-size:var(--t-cap); box-shadow:none; white-space:normal; width:max-content; max-width:min(10em, 32vw); overflow-wrap:anywhere; border-radius:10px; }  /* an end's name wraps beside its marker instead of running off the map */
+.leaflet-tooltip.tr-end::before { display:none; }
+/* a charge's or a parked stretch's street strip, named where it was */
+.strip-map { position:relative; margin:0; } .strip-map figcaption { position:absolute; top:var(--s2); left:var(--s2); z-index:500; padding:1px var(--s2); border-radius:var(--r-pill); background:var(--panel); color:var(--ink); font-size:var(--t-cap); pointer-events:none; }
+.bt-bat { padding-top:16px; } .bt-track { display:block; }
+.bt-at { position:absolute; bottom:12px; padding:0 2px; font-size:var(--t-cap); color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; } .bt-at.hi { color:var(--ink); font-weight:600; }
+.bt-at.lo { transform:translateX(-100%); } .bt-at.lo.edge { transform:none; } .bt-at.hi.edge { transform:translateX(-100%); }  /* each end's label outside its end, inside the bar near 0 and 100 */
+/* Day: a drive row's detail line stops at three lines on a phone (the rest is on the drive's page); the map stays under 60% of the screen */
+@media (max-width:600px) { .daycar .row-x { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; } }
+.map.tall.day-map { height:min(60vh, 560px); min-height:280px; }
+.chartbox .s-data { --ov:var(--data); }
+
+/* Price heat: a plan's hours and price chips shade from paper to slate by price. Its own token,
+   as gold is the battery's alone. */
+:root { --price:#3F5A86; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --price:#9DB4E0; } }
+:root[data-theme="dark"] { --price:#9DB4E0; }
+.chip-v.est { box-shadow:inset 0 0 0 1px var(--faint); background:transparent; }
+/* Find my plan (Settings › Money › Find my plan): a step at a time, numbered at the top; the
+   few plans an EV household chooses between, every plan behind Show all with closed and ended
+   folded below and quieter; one plan beside yours, its cost on your own charging first. */
+.find-steps { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2) var(--s4); margin:0; padding:0 var(--s4); list-style:none; counter-reset:step; font-size:var(--t-meta); color:var(--muted); }
+.find-steps li { display:flex; align-items:center; gap:var(--s2); counter-increment:step; }
+.find-steps li::before { content:counter(step); display:grid; place-items:center; width:20px; height:20px; border-radius:50%; border:1.5px solid var(--rule); font-size:var(--t-cap); font-weight:600; box-sizing:border-box; }
+.find-steps li.now { color:var(--ink); font-weight:600; } .find-steps li.now::before { border-color:var(--ink); }
+.find-steps li.done::before { content:"✓"; border-color:var(--ok); background:var(--ok); color:#fff; }
+.find-steps a { color:var(--link); text-decoration:none; }
+.find-change { margin-left:auto; text-transform:none; letter-spacing:0; font-weight:500; color:var(--link); text-decoration:none; }
+.find-head { justify-content:space-between; }
+.find-n { font-size:var(--t-meta); color:var(--muted); }
+.find-filter { flex:0 1 14em; min-width:0; }
+.find-list { display:grid; margin:0; padding:0; list-style:none; }
+.find-list .find-row + .find-row { border-top:1px solid var(--rule); }
+.find .find-list .set-row { padding:var(--s2) var(--s4); }
+.find .set-nav > .set-l { flex:1 1 0; }
+.find-nm { font-weight:500; }
+.find-row.like .find-nm { font-weight:600; }
+.find .badge { vertical-align:1px; background:var(--panel); box-shadow:inset 0 0 0 1px var(--rule); color:var(--muted); }
+.find .badge.like { box-shadow:none; background:color-mix(in srgb, var(--link) 16%, transparent); color:var(--link); }
+.find-row.old .find-nm, .find-row.old .set-row { color:var(--muted); font-weight:400; }
+.find-st { color:var(--warn); }
+.find-more > summary { display:flex; align-items:center; gap:var(--s2); min-height:44px; padding:0 var(--s4); list-style:none; cursor:pointer; font-size:var(--t-meta); color:var(--muted); }
+.find-more > summary::-webkit-details-marker { display:none; }
+.find-more > summary::after { content:""; width:6px; height:6px; margin-left:auto; border:solid var(--faint); border-width:2px 2px 0 0; transform:rotate(135deg); }
+.find-more[open] > summary::after { transform:rotate(-45deg); }
+.find-none { padding:var(--s3) var(--s4); }
+.find-none[hidden], .find-more[hidden] { display:none; }
+.find-kin { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); }
+.find-kin .sel { flex:1 1 14em; min-width:0; }
+.find-pv table.tou { margin:0; }
+.find-cmp { display:flex; flex-wrap:wrap; align-items:flex-end; gap:var(--s2) var(--s5); }
+.find-fig { display:grid; gap:2px; min-width:0; }
+.find-fig b { font-size:var(--t-row); font-weight:600; font-variant-numeric:tabular-nums; color:var(--ink); line-height:1.1; }
+.find-fig:first-child b { font-size:calc(var(--t-row) * 1.35); }
+.find-fig.mine b, .find-fig.other b { color:var(--muted); }
+.find-fig.other b { font-size:var(--t-row); }
+.find-bill b { font-weight:600; }
+.find-file { max-width:100%; min-width:0; }
+.find-cap { flex:1 0 100%; }
+.find-use { justify-content:flex-end; margin:0; }
+.find-use > .set-s { flex:1 1 12em; }
+.find-lower a { white-space:nowrap; font-weight:600; }
+.plan-back { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--s2) var(--s3); padding-top:var(--s2); border-top:1px solid var(--rule); }
+.find-fig.big b { font-size:calc(var(--t-row) * 1.6); color:var(--ink); }
+.find-strip { display:flex; flex-wrap:wrap; gap:var(--s2) var(--s5); padding-left:var(--s4); border-left:1px solid var(--rule); }
+.find-strip .find-fig b { font-size:var(--t-row); color:var(--muted); font-weight:500; }
+.find-est { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--s2) var(--s3); }
+.find-near { display:grid; gap:var(--s2); }
+.find-near .chips, .find-gen .chips { gap:var(--s2); }
+.btn.on { background:var(--ink); border-color:var(--ink); color:var(--bg); cursor:default; }
+.find-filebtn { position:relative; overflow:hidden; cursor:pointer; }
+.find-filebtn:focus-within { outline:2px solid var(--link); outline-offset:2px; }
+.find-file { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; }
+.find-reading { padding:0 var(--s4) var(--s3); margin:0; }
+.find-billf .notice { margin:0 var(--s4) var(--s3); }
+.find-use { display:grid; gap:var(--s2); margin:0; }
+.find-use .acts { justify-content:flex-end; }
+.find-keep { text-align:right; }
+.find.js .find-read { display:none; }
+.find.js .find-go.empty { display:none; }
+
+/* MCP tokens, Settings › API tokens: the coordinates switch shows only for that kind; the pasted client config stacks. */
+.set-p .set-row.mcp-only { display:none; }
+.set-p:has(input[name=kind][value=mcp]:checked) .set-row.mcp-only { display:flex; }
+.mcp-cfg { display:grid; gap:var(--s1); }
+
+/* Smooth live map (Now): the heading arrow ringing the car's dot, turned by script to the car's heading. */
+.cc-arrow { background:none; border:0; pointer-events:none; }
+.cc-arrow i { display:block; width:28px; height:28px; position:relative; }
+.cc-arrow i::before { content:""; position:absolute; left:50%; top:-3px; margin-left:-6px; border:6px solid transparent; border-bottom:10px solid var(--ink); border-top:0; filter:drop-shadow(0 0 1px var(--panel)); }
+/* Every map's credit is one line, cut short on a narrow map; a tap opens all of it (maps.js oneLine).
+   Satellite close-ups: Esri's credit is one line ("Powered by Esri"); a tap opens the full source line. */
+.cc-credit .leaflet-bottom.leaflet-right { max-width:100%; }
+.cc-credit .leaflet-control-container .leaflet-control-attribution { max-width:100%; box-sizing:border-box; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer; }
+.cc-credit .leaflet-control-container .leaflet-control-attribution.open { white-space:normal; }
+.map.cc-sat .leaflet-control-attribution { font-size:9px; line-height:1.3; }
+.map.cc-sat .leaflet-control-attribution .sat-x { display:none; }
+.map.cc-sat .leaflet-control-attribution.open .sat-x { display:inline; }
+
+/* Settings › Commands › Tesla API: the month's use against the allowance */
+.fleet { display:grid; gap:var(--s3); padding:var(--s3) var(--s4); }
+.fleet-h { display:flex; align-items:baseline; justify-content:space-between; gap:var(--s3); flex-wrap:wrap; }
+.fleet-n b { font-size:28px; font-weight:500; }
+.fleet-step.slow, .fleet-step.tight { color:var(--warn); } .fleet-step.stopped { color:var(--danger); }
+.fleet-bar { position:relative; height:8px; border-radius:4px; background:var(--soft); overflow:hidden; }
+.fleet-bar .seg { display:block; height:100%; background:var(--data); } .fleet-bar .seg.slow, .fleet-bar .seg.tight { background:var(--warn); } .fleet-bar .seg.stopped { background:var(--danger); }
+.fleet-bar i { position:absolute; top:0; bottom:0; width:1px; background:var(--muted); opacity:.7; }
+.fleet-pace { display:block; color:var(--muted); font-size:var(--t-meta); } .fleet-pace.over { color:var(--warn); }
+.fleet-strip .sref { stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; vector-effect:non-scaling-stroke; opacity:.8; }
+.fleet-more summary { cursor:pointer; padding:var(--s2) 0; }
+.fleet-t { width:100%; border-collapse:collapse; } .fleet-t th, .fleet-t td { padding:6px 0; } .fleet-t .r { text-align:right; }
+.fleet-cars { display:block; }
+.fleet-t th.r, .fleet-t td.r { padding-left:var(--s4); }  /* Calls and Cost never touch */
+@media (max-width: 600px) { .set-row.hold { display:grid; grid-template-columns:minmax(0, 1fr) auto minmax(0, 1fr); } .hold > .set-l { grid-area:1 / 1 / 2 / 3; } .hold-c { display:contents; } .hold-c label.switch { grid-area:1 / 3; justify-self:end; } .hold-c .field.time { width:100%; min-width:0; } .hold-c .muted { text-align:center; } }  /* a phone: the name and switch on one line, from and to under them */
+.fleet-strip svg { height:32px; }
+.fleet-log { margin:0; }
+.fleet .set-row { padding-left:0; padding-right:0; }
+
+/* Fixing a drive by hand: the split bar under the chart, the buttons in the readings table, a reading left out */
+.drv-pick { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2) var(--s3); padding:var(--s2) var(--s3); border:1px solid var(--rule); border-radius:var(--r-card); background:var(--soft); font-size:var(--t-meta); }
+.drv-pick[hidden] { display:none; }
+.drv-pick-l { flex:1 1 12em; color:var(--muted); } .drv-pick-l b { color:var(--ink); font-variant-numeric:tabular-nums; }
+.drv-merge .pd-confirm { padding:var(--s2) 0 0; }
+.rd-hint { margin-left:var(--s2); color:var(--warn); }
+.rd-b { font:inherit; font-size:11px; line-height:1.4; padding:1px 7px; margin-right:4px; border:1px solid var(--rule); border-radius:var(--r-ctl); background:transparent; color:var(--muted); cursor:pointer; }
+.rd-b:hover, .rd-b:focus-visible { color:var(--ink); border-color:var(--muted); }
+table.readings tr.out td { color:var(--muted); text-decoration:line-through; }
+table.readings tr.odd td:nth-child(2) { box-shadow:inset 3px 0 0 var(--warn); }
+.drv-tools { display:flex; align-items:center; gap:var(--s3); justify-content:flex-end; min-height:0; font-size:var(--t-meta); color:var(--muted); }
+.drv-tools:empty { display:none; }
+.drv-arm-h[hidden] { display:none; }
+.chartbox.arming .chart-svg { cursor:crosshair; outline:2px dashed var(--muted); outline-offset:-2px; border-radius:var(--r-ctl); }
+tr.pickable { cursor:pointer; } tr.pickable:hover td, tr.pickable:focus-visible td { background:var(--soft); }
+tr.pickable.picked td { background:var(--soft); box-shadow:inset 0 1px 0 var(--muted), inset 0 -1px 0 var(--muted); }
+
+/* Charging › Where: one row a place; energy leads with a bar of its share, time and the average
+   session a step quieter; on a phone the count and times fold under the place's name */
+.sites { font-variant-numeric:tabular-nums; }
+.sites th, .sites td { padding:9px 10px; white-space:nowrap; }
+.sites th:first-child, .sites td:first-child { padding-left:var(--s4); white-space:normal; } .sites th:last-child, .sites td:last-child { padding-right:var(--s4); }
+.sites .st-n { display:block; font-weight:500; } .sites .st-n .badge { margin-left:var(--s2); }
+.sites .st-s { display:none; font-size:12px; color:var(--muted); }
+.sites .st-o, .sites td:nth-child(n+6) { color:var(--muted); font-size:13px; }
+.sites .st-k b { font-weight:600; }
+.sites .st-bar { display:block; height:3px; margin-top:4px; margin-left:auto; width:72px; background:var(--soft); border-radius:2px; overflow:hidden; } .sites .st-bar i { display:block; height:100%; background:var(--data); opacity:.7; }
+.sites .st-v { color:var(--ink); } .sites .st-v.part { text-decoration:underline dotted; text-underline-offset:3px; cursor:help; } .sites .st-nil { color:var(--muted); cursor:help; }
+.sites tr.st-more td { color:var(--muted); } .sites tr.st-more .st-n { font-weight:400; }
+.sites tfoot td { border-bottom:0; border-top:1px solid var(--rule); font-weight:600; color:var(--ink); } .sites tfoot .st-bar, .sites tfoot .st-s { display:none; }
+@media (max-width:600px) {
+  .sites .st-o { display:none; } .sites .st-s { display:block; }
+  .sites th, .sites td { padding:9px 6px; } .sites th:first-child, .sites td:first-child { padding-left:var(--s3); } .sites th:last-child, .sites td:last-child { padding-right:var(--s3); }
+  .sites .st-bar { width:48px; }
+}
+
+/* Stats › efficiency by outside temperature (effchart.py): miles a band as quiet bars, the
+   energy a mile as the line over them; compared, the second set in the compare colour */
+.effc { margin:0 0 var(--s4); padding:var(--s3) var(--s4) var(--s2); background:var(--panel); border:1px solid var(--rule); border-radius:var(--r-card); }
+.effc-h { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:var(--s1) var(--s3); margin-bottom:var(--s2); }
+.effc-t { font-size:var(--t-cap); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; }
+.effc-k { display:flex; flex-wrap:wrap; gap:var(--s1) var(--s3); font-size:12px; color:var(--muted); }
+.effc-k .lg { display:inline-flex; align-items:center; gap:5px; } .effc-k i { display:inline-block; width:10px; height:10px; border-radius:2px; }
+.effc-k i.k-a { background:var(--data); } .effc-k i.k-b { background:var(--ov-x0); }
+.effc-k i.k-bar { background:color-mix(in srgb, var(--muted) 35%, transparent); } .effc-k i.k-line { height:2px; border-radius:1px; background:var(--ink); }
+.effc.cmp2 .effc-k i.k-bar, .effc.cmp2 .effc-k i.k-line { display:none; } .effc.cmp2 .effc-k .lg:nth-child(n+3) { display:none; }
+.effc-b { position:relative; margin-right:44px; }
+.effc svg { display:block; width:100%; height:180px; overflow:visible; }
+.effc-g { stroke:var(--rule); stroke-width:1; vector-effect:non-scaling-stroke; }
+.effc-bar { fill:color-mix(in srgb, var(--muted) 28%, transparent); } .effc.cmp2 .effc-bar.s0 { fill:color-mix(in srgb, var(--data) 45%, transparent); } .effc.cmp2 .effc-bar.s1 { fill:color-mix(in srgb, var(--ov-x0) 40%, transparent); }
+.effc-l { fill:none; stroke:var(--ink); stroke-width:2; stroke-linejoin:round; vector-effect:non-scaling-stroke; } .effc.cmp2 .effc-l.s0 { stroke:var(--data); } .effc.cmp2 .effc-l.s1 { stroke:var(--ov-x0); }
+.effc-d { stroke:var(--ink); stroke-width:6; stroke-linecap:round; vector-effect:non-scaling-stroke; } .effc.cmp2 .effc-d.s0 { stroke:var(--data); } .effc.cmp2 .effc-d.s1 { stroke:var(--ov-x0); }
+.effc-hit { fill:transparent; } .effc-hit:hover { fill:color-mix(in srgb, var(--ink) 5%, transparent); }
+.effc-y { position:absolute; top:0; bottom:0; left:100%; width:44px; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; pointer-events:none; }
+.effc-y span { position:absolute; left:8px; transform:translateY(-50%); white-space:nowrap; }
+.effc-x { position:relative; height:16px; margin:4px 44px 0 0; font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.effc-x span { position:absolute; transform:translateX(-50%); white-space:nowrap; } .effc-x .effc-u { left:100%; transform:none; margin-left:8px; }
+@media (max-width:600px) { .effc { padding:var(--s3); } .effc svg { height:150px; } .effc-b, .effc-x { margin-right:36px; } .effc-y { width:36px; } .effc-y span { left:6px; } }
+
+/* the history import's bars (Settings › Cars and sources) */
+progress.imp { width:min(16em, 100%); height:6px; accent-color:var(--ink); }
+.imp-job { gap:var(--s2); }
+
+/* the one-time offer of map backgrounds and place names */
+.offer { margin:0 0 var(--s3); } .offer.inset { margin:0; }
+.offer-t { display:grid; gap:2px; min-width:0; flex:1 1 18rem; }
+.offer form { display:flex; gap:8px; margin:0; }
+.token-row { display:flex; gap:var(--s2); align-items:center; flex-wrap:wrap; } .token-row .token { min-width:0; overflow-wrap:anywhere; }
+.kind-says > [data-k] { display:none; } .set-p:has(input[name=kind][value=read]:checked) .kind-says [data-k=read], .set-p:has(input[name=kind][value=status]:checked) .kind-says [data-k=status], .set-p:has(input[name=kind][value=control]:checked) .kind-says [data-k=control], .set-p:has(input[name=kind][value=mcp]:checked) .kind-says [data-k=mcp], .set-p:has(input[name=kind][value=admin]:checked) .kind-says [data-k=admin] { display:block; }
+.howto { margin:0; padding-left:var(--s5); display:grid; gap:var(--s2); font-size:var(--t-body); }
+.howto b { font-weight:600; margin-right:var(--s1); }
+.tzpick { display:grid; gap:var(--s2); min-width:0; width:100%; }
+.tzpick select { width:100%; min-width:0; }
+.set-row.under .tzpick { max-width:360px; margin-left:auto; }
+@media (max-width: 600px) { .set-row.under .tzpick { max-width:none; margin-left:0; } }
+
+/* The 24 h / 7 d switch swaps the strip and battery line in place; while the new window is on its way they dim and the strip shimmers. */
+#now-win { display:contents; }
+#now-win > section { transition:opacity .15s var(--ease); }
+#now-win[aria-busy="true"] > section { opacity:.45; }
+#now-win[aria-busy="true"] .strip-bar { animation:win-wait 1s ease-in-out infinite alternate; }
+@keyframes win-wait { from { opacity:.5; } to { opacity:1; } }
+@media (prefers-reduced-motion: reduce) { #now-win[aria-busy="true"] .strip-bar { animation:none; } }
+
+/* The first-time note on a map that leaves one finger to the page (maps.js, cooperative). */
+.cc-map-hint { position:absolute; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center; padding:var(--s4); background:rgba(20,19,25,.6); color:#F0EDE4; font-size:var(--t-body); font-weight:500; text-align:center; opacity:0; transition:opacity .25s var(--ease); pointer-events:none; }
+.cc-map-hint.on { opacity:1; }
+
+.rte-h { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s2); overflow-wrap:anywhere; }
+.rte-ends { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap:var(--s3); margin:var(--s3) 0; }
+.rte-end { display:grid; gap:2px; justify-items:start; padding:var(--s3); border:1px solid var(--rule); border-radius:12px; background:var(--panel); min-width:0; } .rte-end > * { max-width:100%; overflow-wrap:anywhere; }
+.rte-l { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; } .rte-n { font-weight:600; } .rte-end .btn { margin-top:var(--s2); }
+.rte-map { height:300px; margin:var(--s3) 0; } .rte-fig small { display:block; } .rte-all { margin:var(--s3) 0 0; }
+.rte-end-map { justify-self:stretch; width:100%; height:160px; margin:var(--s2) 0; border-radius:var(--r-ctl); }  /* each end of a route, close up, to name it by */

@@ -11,39 +11,48 @@ Car Command reads a Tesla directly through Tesla's Fleet API, with a developer a
 | A Powerwall: its live row on Now, and each home charge split into sun, Powerwall and grid | yes | yes |
 | Drives, charges, sleep, the car's live state | no | about once a second |
 
-Car Command does not poll a car for its state, and never wakes one. Live data comes only from the stream, which needs Docker Compose for now. Without it, a TeslaFi or TeslaMate you already run can be the live source ([sources](sources.md#tesla)).
+Car Command does not poll a car for its state, and never wakes one. Live data comes only from the stream. Without it, a TeslaFi or TeslaMate you already run can be the live source ([sources](sources.md#tesla)).
 
 ## What you need
 
 - A developer.tesla.com account with a card on file. Tesla bills its API per use; its pricing page has the current rates.
 - The site on HTTPS at a hostname you control, such as `carcommand.your-domain.example`. Tesla sends your browser back there after the sign-in, and reads the app's public key from it.
 - The key's path reachable from the internet with no sign-in in front of it (see [The key](#the-key)).
-- The three settings below, in the site's environment.
+- The app's three values (below), entered on Connect Tesla.
 
 ## The settings
 
+| Value | What it is |
+|---|---|
+| Client ID | the app's Client ID, from developer.tesla.com |
+| Client secret | the app's Client Secret |
+| Domain | the hostname alone, such as `carcommand.your-domain.example`: no `https://`, no path. Prefilled from `CC_PUBLIC_URL` |
+
+Step 1 on Connect Tesla takes them. They are sealed with `CC_SECRET_KEY`, the way a source's token is, and used from the next request: no restart. A blank secret on a later save keeps the one kept.
+
+To set them outside the page, the environment still works and wins field by field (the page marks each as "from .env"):
+
 | Name | Value |
 |---|---|
-| `TESLA_CLIENT_ID` | the app's Client ID, from developer.tesla.com |
+| `TESLA_CLIENT_ID` | the app's Client ID |
 | `TESLA_CLIENT_SECRET` | the app's Client Secret |
-| `TESLA_DOMAIN` | the hostname alone, such as `carcommand.your-domain.example`: no `https://`, no path |
-| `TESLA_REDIRECT_URI` | only when the site is under a path on that domain: `https://carcommand.your-domain.example/carcommand/settings/sources/tesla/callback` |
+| `TESLA_DOMAIN` | the domain, as above |
+| `TESLA_REDIRECT_URI` | only when the site is under a path on that domain: `https://carcommand.your-domain.example/carcommand/settings/sources/tesla/callback`. Without it the redirect is the domain, plus the path of `CC_PUBLIC_URL`, plus `/settings/sources/tesla/callback` |
 
-They are read only from the environment; the page cannot set them.
-
-- Compose: put them in `stack/.env`, then `docker compose -f stack/docker-compose.yml up -d --no-deps web`. A plain restart keeps the old environment.
-- The one container: `docker stop carcommand && docker rm carcommand`, then the run line again with `-e TESLA_CLIENT_ID=... -e TESLA_CLIENT_SECRET=... -e TESLA_DOMAIN=...`. The data stays in the volume.
+Compose reads them from `stack/.env` (`docker compose -f stack/docker-compose.yml up -d --no-deps web`; a plain restart keeps the old environment). The one container takes `-e TESLA_CLIENT_ID=... -e TESLA_CLIENT_SECRET=... -e TESLA_DOMAIN=...` on a recreate.
 
 ## Step 1: the app
 
-Make a Fleet API app at developer.tesla.com. Step 1 on Connect Tesla shows the values to enter, each with a Copy button:
+Step 1 on Connect Tesla lists these, each value with a Copy button:
 
-- **Grant types:** Authorization Code and Machine-to-Machine. Machine-to-Machine is what registers the domain with Tesla.
-- **Allowed origin:** `https://<TESLA_DOMAIN>`.
-- **Redirect URI:** `https://<TESLA_DOMAIN>/settings/sources/tesla/callback`, or your `TESLA_REDIRECT_URI`.
-- **Scopes:** `openid`, `offline_access`, `vehicle_device_data`, `vehicle_location` and `vehicle_charging_cmds`. Tesla files its charging history and invoices under `vehicle_charging_cmds`; that scope also allows charge commands, and Car Command sends none. For a Powerwall, also allow `energy_device_data`. An app without it still signs in for cars.
+1. Open developer.tesla.com › Dashboard › Create app. Name and description can be anything.
+2. **Grant types:** Authorization Code and Machine-to-Machine. Machine-to-Machine is what registers the domain with Tesla.
+3. **Allowed origin:** `https://<domain>`.
+4. **Redirect URI:** `https://<domain>/settings/sources/tesla/callback`, or your `TESLA_REDIRECT_URI`.
+5. **Scopes:** `openid`, `offline_access`, `vehicle_device_data`, `vehicle_location`, `vehicle_charging_cmds` and `vehicle_cmds`. Tesla files its charging history and invoices under `vehicle_charging_cmds`; it and `vehicle_cmds` allow the commands Settings › Commands sends, and nothing is sent until you turn them on there ([commands.md](commands.md)). For a Powerwall, also allow `energy_device_data`. An app without it still signs in for cars.
+6. Paste the Client ID and Client secret on the page, check the domain, and Save.
 
-Then set the three values above. The step is done once Tesla gives the app a token.
+The step is done once Tesla gives the app a token.
 
 ## Step 2: the key
 
@@ -62,7 +71,7 @@ The path must answer from the internet with the key itself, not a sign-in page. 
 - **Cloudflare Access:** add a second Access application for `<TESLA_DOMAIN>/.well-known/appspecific/com.tesla.3p.public-key.pem` with a Bypass policy for everyone. Leave the rest of the site behind your normal policy.
 - **A site under a path:** proxy that path at the domain's root to the site ([reverse proxy](install.md#behind-a-reverse-proxy)).
 
-With the [stream](tesla-stream.md) set up (`TESLA_STREAM_HOST`), the key moves to the stream's Funnel address, because Tesla keeps one domain per app and the cars only stream to that domain. `TESLA_DOMAIN` then only needs to reach the site from your own browser for the sign-in.
+With the [stream](tesla-stream.md) set up (`TESLA_STREAM_HOST`), the key moves to the stream's Funnel address, because Tesla keeps one domain per app and the cars only stream to that domain. The domain then only needs to reach the site from your own browser for the sign-in.
 
 ## Step 3: sign in
 
@@ -80,7 +89,9 @@ Set up in [Tesla live stream](tesla-stream.md).
 
 | Message | What it means |
 |---|---|
-| Add the app's keys and domain to .env first (step 1). | `TESLA_CLIENT_ID`, `TESLA_CLIENT_SECRET` or `TESLA_DOMAIN` is missing from the site's environment, or the container was restarted, not recreated. |
+| Enter the app's Client ID, secret and domain in step 1 first. | One of the three is missing: not entered on the page and not in the environment. |
+| Still needed: … | The step 1 form was saved without that value. |
+| The domain is the hostname alone… | The domain field held an address, an IP or something that is not a public hostname. |
 | Tesla refused (…): … on step 1 | Usually a wrong Client ID or Secret, or an app without the Machine-to-Machine grant. |
 | `<domain>` did not answer (…). | The key's address is not reachable from the internet: DNS, the certificate, or the proxy. |
 | `<domain>` answered 302, 401 or 403 for the key. That is a sign-in page in front of it… | An access layer guards the key's path. Add the bypass above. |

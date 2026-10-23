@@ -210,6 +210,32 @@ def mix_bar(c: dict) -> dict | None:
     }
 
 
+def rate_bar(c: dict) -> dict | None:
+    """A home charge's rate mix for the bar: the share of its kWh at the plan's off-peak, part-peak
+    and peak rates, from the facts stored beside the charge (nothing is priced here). The note leads
+    with the off-peak share ("all off-peak", "82% off-peak") and adds the sun only when there was
+    some. None away from home or with no plan's split."""
+    if not c.get("at_home") or c.get("off_peak_kwh") is None:
+        return None
+    kwh = {"off": c.get("off_peak_kwh") or 0.0, "part": c.get("part_peak_kwh") or 0.0, "peak": c.get("peak_kwh") or 0.0}
+    total = sum(kwh.values())
+    if total <= 0:
+        return None
+    labels = {"off": "Off-peak", "part": "Part-peak", "peak": "Peak"}
+    parts = [{"key": k, "label": labels[k], "kwh": kwh[k], "percent": 100 * kwh[k] / total, "cost": None, "approx": False} for k in kwh if kwh[k] > 0.005]
+    off = 100 * kwh["off"] / total
+    note = "all off-peak" if off >= 99.5 else f"{round(off)}% off-peak"
+    sun = sun_share(c.get("src_solar_kwh"), c.get("src_battery_kwh"), c.get("src_grid_kwh"), c.get("src_sun_frac")) if c.get("src_status") == "ok" else None
+    if sun is not None and round(sun * 100) > 0:
+        note += f" · {round(sun * 100)}% sun"
+    return {
+        "parts": parts,
+        "label": ", ".join(f"{p['label']} {round(p['percent'])}%" for p in parts),
+        "grad": f"--s:{off:.1f}%;--b:{off + 100 * kwh['part'] / total:.1f}%",
+        "note": note,
+    }
+
+
 def sun_months(rows) -> list[dict]:
     """Home charging by month, newest first, each with the share that was the sun's (direct
     solar plus the Powerwall's solar part) and the kWh it is out of. `rows` are the month

@@ -13,12 +13,12 @@ sys.path.insert(0, str(HERE))
 
 from supervise import Supervisor, default_connectors, desired  # noqa: E402
 
-ENTRY_DEFAULT = '[{"type":"lucid","config":{"refresh_token_file":"/secrets/lucid-token.json","interval":60,"driving_interval":15,"log_level":"info","api_log_level":"error"}}]'
+ENTRY_DEFAULT = '[{"type":"lucid","config":{"refresh_token_file":"/secrets/lucid-token.json","interval":60,"driving_interval":15,"log_level":"info","api_log_level":"error","commands":true}}]'
 
 
 def test_without_a_lucid_source_the_config_is_todays():
     assert default_connectors("/secrets/lucid-token.json", {"CC_POLL_IDLE_S": "60", "CC_POLL_DRIVING_S": "15"}) == ENTRY_DEFAULT
-    # the shell's own default, rendered by the entrypoint as it stands, is the same string
+    # the shell's old default, plus the commands the site now switches: nothing else moved
     shell = subprocess.run(
         [
             "sh",
@@ -28,7 +28,7 @@ def test_without_a_lucid_source_the_config_is_todays():
         capture_output=True,
         text=True,
     ).stdout.strip()
-    assert shell == ENTRY_DEFAULT
+    assert shell.replace('"error"}}]', '"error","commands":true}}]') == ENTRY_DEFAULT
     assert desired([], {}, "/tmp/lucid-token.json") == {"connectors": ENTRY_DEFAULT, "token": None, "from": "file", "env": {"CC_GEOCODER_URL": ""}}
     assert desired([], {"CC_CONNECTORS_JSON": '[{"type":"x"}]'}, "/tmp/t")["connectors"] == '[{"type":"x"}]'
 
@@ -622,6 +622,16 @@ def test_the_entrypoint_moves_the_secrets_into_root_only_files_and_out_of_the_en
     assert 'python3 -s "${CC_SUPERVISE:-/app/supervise.py}"' in entry and "setpriv --reuid=10001" in entry
 
 
+@pytest.mark.parametrize("name", ["DB_PASSWORD", "WEBUI_PASSWORD", "REST_PASSWORD"])
+def test_the_entrypoint_refuses_a_placeholder_password(tmp_path, name):
+    probe = tmp_path / "probe.py"
+    probe.write_text("print('started')\n")
+    env = {"PATH": os.path.dirname(sys.executable) + ":/usr/bin:/bin", "CC_RUN_DIR": str(tmp_path / "run"), "CC_SUPERVISE": str(probe), "DB_PASSWORD": "db", name: "CHANGE_ME"}
+    done = subprocess.run(["/bin/sh", str(HERE / "entrypoint.sh")], capture_output=True, text=True, env=env, timeout=30)
+    assert done.returncode != 0 and "started" not in done.stdout
+    assert name in done.stderr and "CHANGE_ME" in done.stderr and "make setup" in done.stderr
+
+
 def test_with_no_source_at_all_carconnectivity_idles_instead_of_restarting_forever(tmp_path, caplog):
     """No Lucid token anywhere and no other brand: no Lucid block to exit on, so no crash loop.
     It waits with a plain log line, and starts on a token file the moment one appears.
@@ -889,3 +899,14 @@ def test_the_start_count_is_the_supervisors_alone(tmp_path):
     os.chmod(path, 0o644)  # as an older supervisor left it
     s._set_deaths(2)
     assert s._deaths() == 2 and oct(path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_a_refused_lucid_sign_in_is_said_in_words_not_by_class_name():
+    from supervise import lucid_failure
+
+    class APIError(Exception):
+        pass
+
+    assert "APIError" not in lucid_failure(APIError("bad password for owner@example.com")) and "owner@" not in lucid_failure(APIError("owner@example.com"))
+    assert lucid_failure(APIError()).startswith("Lucid did not accept the sign-in")
+    assert lucid_failure(ConnectionError()).startswith("Lucid could not be reached")

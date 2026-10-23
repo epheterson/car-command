@@ -208,3 +208,43 @@ def test_tesla_not_answering_this_page_is_current_and_anything_else_is_named():
     got = teslapage.error_summary([{"name": "Tesla", "body": "Tesla took too long", "at": None}, {"name": "", "body": "something odd", "at": NOW.isoformat()}], "Alpha", NOW)
     assert {e["kind"] for e in got} == {"asked", "other"} and any(e["what"] == "Alpha reported an error" for e in got)
     assert teslapage.error_summary([], "Alpha", NOW) == []
+
+
+def test_connect_tesla_prefills_this_sites_own_address_and_says_step_one_is_in_env():
+    from pathlib import Path
+
+    import jinja2
+
+    import filters
+
+    hints = teslapage.site_hints("https://garage.example", "/carcommand")
+    assert hints == {"domain": "garage.example", "redirect": "https://garage.example/settings/sources/tesla/callback"}, "CC_PUBLIC_URL fills it in"
+    assert teslapage.site_hints("https://pub.example/cc", "")["redirect"] == "https://pub.example/cc/settings/sources/tesla/callback"
+    assert teslapage.site_hints("", "", "set.example", "https://set.example/x")["redirect"] == "https://set.example/x", ".env wins"
+    assert teslapage.site_hints("", "/carcommand") == {"domain": "", "redirect": ""}, "never the address the page was opened on: a home address over http is refused by Tesla"
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(Path(__file__).parent / "templates")))
+    filters.register(env)
+    ctx = dict(root="", now=None, car={"vin": "A", "name": "Alpha"}, active="", vehicles=[], q="", colors={}, names={}, cur="$", st={}, conv={}, saved=False, label="Connect Tesla")
+    html = env.get_template("settings_tesla.html").render(
+        **ctx, steps=teslapage.steps({}), facts={}, links={}, stream=[], tesla_scopes=[], history_step=[], csrf="t", site=hints, app_cfg={"from": {}, "domain": ""}, vault_ready=True
+    )
+    assert "Step 1 is done in" not in html and "TESLA_DOMAIN" not in html, "no .env step any more"
+    assert "https://garage.example" in html and 'value="garage.example"' in html and "your.domain" not in html.split("<script>")[0], "the domain field starts at this site's own address"
+    assert "No public address is set" not in html
+    bare = env.get_template("settings_tesla.html").render(
+        **ctx,
+        steps=teslapage.steps({}),
+        facts={},
+        links={},
+        stream=[],
+        tesla_scopes=[],
+        history_step=[],
+        csrf="t",
+        app_cfg={"from": {}, "domain": ""},
+        vault_ready=True,
+        site=teslapage.site_hints("", ""),
+    )
+    assert (
+        'id="tesla-host"' in bare and "No public address is set" in bare and "Tesla only accepts an https address that reaches this site from the internet" in bare
+    ), "no public address: an empty field and the reason"
+    assert "https://your.domain" in bare and 'data-host-copy="origin" disabled' in bare and "192." not in bare and "garage" not in bare

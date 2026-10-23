@@ -15,16 +15,18 @@ import math
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime  # the `time` module is in use below; the class gets an alias
 from decimal import Decimal
 from pathlib import Path
-from urllib.parse import urlencode, quote, urlparse
+from urllib.parse import parse_qsl, urlencode, quote, urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
+from html import escape as html_escape
 import psycopg
 from contextlib import asynccontextmanager
 
@@ -34,31 +36,72 @@ import csv
 import io
 
 from starlette.background import BackgroundTask
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import Match
 from fastapi.templating import Jinja2Templates
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 import activity
 import auth
 import averages as averages_mod
 import billed
-from charts import line_chart
 import cost
 import planview
+import alertchans
+import carlinks
+import carnames
+import clockfmt
+import esrikey
 import urdb
+import billread
+from regions import name_of, region_of
 import version
 from cost import session_cost
 import settings as settings_mod
-from day import day_sessions, day_totals, elevation_profile, since_charge, time_at_places
-from discover import GEOCELL_BACKFILL, GEOCELL_DDL, NOMINATIM, RENAME_LOCAL_ONCE, geocode_cells, geocoder_route, geocoder_url, requeue_public_geocells as _requeue_public_geocells
-from facts import DDL as FACTS_DDL, clear_prices, drain_reprices, fill_facts, place_sessions, queue_reprice, reopen_average_prices
+from day import bought, day_sessions, day_totals, elevation_profile, since_charge, time_at_places
+from neighbours import neighbours, stretch_at
+import importjob
+import importroutes
+from discover import (
+    GEOCELL_BACKFILL,
+    GEOCELL_DDL,
+    NOMINATIM,
+    RENAME_LOCAL_ONCE,
+    geocode_cells,
+    geocoder_route,
+    geocoder_url,
+    locality_at,
+    name_from,
+    reverse_body as discover_reverse_body,
+    locality_index,
+    requeue_public_geocells as _requeue_public_geocells,
+)
+from facts import (
+    DDL as FACTS_DDL,
+    clear_prices,
+    drain_reprices,
+    fill_facts,
+    fill_trip_facts,
+    place_sessions,
+    queue_reprice,
+    reopen_average_prices,
+    reset_ground,
+    fill_ground,
+    take_meter,
+    FINISHED_CHARGE_SQL,
+)
 from history import IMPORT_DDL
-from filters import places as place_markup, register as register_filters
+from filters import places as place_markup, register as register_filters, short_address
+from nav import settings_without
 import placeicons
 from placeicons import ICON_KEYS
-from places import DDL as PLACES_DDL, PlaceIndex, clamp_radius, is_home as is_home_place, migrate_home, parents as place_parents, place_for, posted_address, resolve_merged
+from places import DDL as PLACES_DDL, PlaceIndex, clamp_radius, is_home as is_home_place, migrate_home, other_homes, parents as place_parents, place_for, posted_address, resolve_merged
 import placeprice
 import adminapi
 from notify import PLUG_REMINDER_BELOW_PCT, plug_in_reminder
@@ -70,6 +113,9 @@ from stats import (
     DRIVE_SORTS,
     calendar_grid,
     charging_summary,
+    place_savings,
+    saving_cell,
+    saving_note,
     drive_cost,
     efficiency_bins,
     efficiency_by_year,
@@ -87,34 +133,71 @@ import service
 from service import due_status
 from samples import charge_samples, drive_samples, run_points, thinned, with_measured_power
 import routematch
-from thumbs import anchored, route_svg, routes_for
+from thumbs import anchored, route_svg, routes_for, thin
 import autotag
 import manual
 import health as health_mod
+import calview
+import tiredays
+import healthlog
 import chartdata
 import daypage
+import driveedits
+import chargestart
+import driverebuild
+import driveview
+import parkedview
 import statspage
+import records as records_mod
+import effcompare
+import effchart
+import stats as stats_mod
+import lifetime
+import mcpserver
+import mcptools
+import otahistory
+import softwarepage
+import toproutes
 import placespage
 import settingsform
+import zonelist
 import sources
 import connectors
+import garageclose
+import garagelog
+import garagedoor
+import garageopen
 import livestream
 import connect
+import devices
 import proxyauth
 from mapsclient import MapsClient, available as maps_available, region_name, region_reason, valid_region_id
 from mapsworker import Worker as MapsWorker
+import terrain as terrain_mod
 import tesla_fleet
+import teslaapp
 import tesla_jws
 import tesla_keys
+import fleet_usage
+import tesla_cmd
+import tesla_proxy
+import commands as commands_mod
+import commandcheck
+import expected as expected_mod
+import charge_hold
+import demo
 import history_writer
 import tesla_compare
 import tesla_live
+import tesla_stream
 import tesla_nav
 import writerswitch
 import identity
+import mapsoffer
 import tesla_net
 import teslapage
 import nowpage
+import reach
 import energy
 import energy_cloud
 import energypage
@@ -122,7 +205,7 @@ import units as units_mod
 import raw
 import notify as notify_mod
 import weather
-from summary import daily_summary_text, drive_announcement_due, summary_due
+from summary import daily_summary_text, drive_announcement_due, drive_whole, summary_due
 from teslafi_live import TeslaFiPoller
 from teslamate_live import TeslaMatePoller
 from units import (
@@ -140,6 +223,7 @@ from units import (
     current_streak,
     daily_breakdown,
     days_between,
+    wakes_per_day,
     drive_kwh,
     electrics_stats,
     humanize_age,
@@ -163,12 +247,29 @@ if not LOG.handlers:
     LOG.addHandler(_handler)
 HERE = Path(__file__).parent
 DB_URL = os.environ["DATABASE_URL"]
+EXPECTED = expected_mod.Expected()  # what accepted commands set, shown until the cars say so
 REST_URL = os.environ.get("CC_REST_URL", "http://carcommand-cc:40000")
 REST_AUTH = base64.b64encode(f"{os.environ['REST_USER']}:{os.environ['REST_PASSWORD']}".encode()).decode()
 TZ = ZoneInfo(os.environ.get("TZ", "America/Los_Angeles"))
-site = FastAPI(title="Car Command")
+# No generated Swagger page: docs/api.md is the reference, and the page showed a stale version and loaded an external favicon the CSP blocks.
+site = FastAPI(title="Car Command", version=version.VERSION, docs_url=None, redoc_url=None, openapi_url=None)
 site.add_middleware(GZipMiddleware, minimum_size=2048)
-site.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+
+
+class HashedStatic(StaticFiles):
+    """The static files. One asked for by its content hash (?v=, the CSS_VERSION or JS_VERSION
+    the pages put in its URL) is kept a year without asking again: a change gives it a new
+    URL. Anything else (the icons, a stale or missing hash) revalidates as before."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        resp = await super().get_response(path, scope)
+        v = dict(parse_qsl(scope.get("query_string", b"").decode())).get("v")
+        if resp.status_code == 200 and v and v == (CSS_VERSION if path.endswith(".css") else JS_VERSION if path.endswith(".js") else None):
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
+site.mount("/static", HashedStatic(directory=HERE / "static"), name="static")
 templates = Jinja2Templates(directory=HERE / "templates")
 register_filters(templates.env, TZ, place_icons=lambda: place_icon_map())
 
@@ -193,6 +294,14 @@ def tristate(value, yes: str, no: str) -> bool | None:
     return None
 
 
+def typed(value, kind: type):
+    """The value when it has the type the connector publishes it as, else None: a leaf an older
+    connector does not have, or one another brand fills with something else."""
+    if kind is float:
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    return value if isinstance(value, kind) else None
+
+
 def garage() -> dict:
     """Every vehicle the connector has, or an empty dict when it is not answering.
 
@@ -206,9 +315,12 @@ def garage() -> dict:
         r.raise_for_status()
     except httpx.HTTPError as err:
         # Remembered for a quarter minute: a hung connector must not cost every page its timeout.
-        _cache["connector_down"] = (datetime.now(timezone.utc), f"CarConnectivity is not answering ({err.__class__.__name__}).")
+        LOG.info("connector not answering: %s", err.__class__.__name__)
+        _cache["connector_down"] = (datetime.now(timezone.utc), "CarConnectivity is not answering.")
+        _cache.setdefault("connector_down_since", datetime.now(timezone.utc))
         return {}
     _cache.pop("connector_down", None)
+    _cache.pop("connector_down_since", None)
     _cache["connector_seen"] = True
     tree = r.json() or {}
     _cache["garage_tree"] = (datetime.now(timezone.utc), tree)  # the recorder's snapshot hook keeps it raw
@@ -216,6 +328,14 @@ def garage() -> dict:
 
 
 NO_CONNECTOR = "CarConnectivity is not running; every page reads logged history."
+CONNECTOR_GRACE_S = 60
+NEEDS_CONNECTOR = "CarConnectivity is not running, so nothing was saved. Start it: docker compose -f stack/docker-compose.yml up -d cc"
+
+
+def connector_answers() -> bool:
+    """Whether the connector answers right now (the garage call, kept a quarter minute)."""
+    garage()
+    return not _cache.get("connector_down")
 
 
 def connector_down() -> str | None:
@@ -226,7 +346,31 @@ def connector_down() -> str | None:
     held = _cache.get("connector_down")
     if not held:
         return None
-    return held[1] if _cache.get("connector_seen") else NO_CONNECTOR
+    if not _cache.get("connector_seen"):
+        return NO_CONNECTOR
+    # A connector that answered before and has just stopped is most often restarting (a source
+    # added or removed restarts it): the warning waits until it has been quiet a minute.
+    since = _cache.get("connector_down_since") or held[0]
+    return held[1] if (datetime.now(timezone.utc) - since).total_seconds() >= CONNECTOR_GRACE_S else None
+
+
+SHOWN: dict[str, str] = {}  # vin -> the name pages show (carnames), refreshed by every all_vehicles()
+
+
+def shown_name(vin, name):
+    """A car's name as pages show it: the owner's rename, else the source's, told apart from a twin."""
+    if vin in SHOWN:
+        return SHOWN[vin]
+    st = cached_only("settings") or {}  # never the database: a page asks this for every car it draws
+    return carnames.display_names({vin: name}, st.get("car_names")).get(vin, name)
+
+
+def with_shown(rows):
+    """Rows that carry a car's source name as car_name, with the name pages show (shown_name) in its place."""
+    for r in rows:
+        if r.get("vin"):
+            r["car_name"] = shown_name(r["vin"], r.get("car_name"))
+    return rows
 
 
 def all_vehicles() -> list[dict]:
@@ -237,7 +381,14 @@ def all_vehicles() -> list[dict]:
         for r in conn.execute("SELECT vin, name FROM vehicles ORDER BY name").fetchall():
             if r["vin"] not in live:
                 out.append({"vin": r["vin"], "name": r["name"] or r["vin"], "live": False})
-    return out
+    shown = carnames.display_names({v["vin"]: v["name"] for v in out}, current_settings().get("car_names"))
+    SHOWN.clear()
+    SHOWN.update(shown)
+    for v in out:
+        v["source_name"], v["name"] = v["name"], shown[v["vin"]]
+    # by the source's name, then VIN, whatever each car's source: the menu and All cars list them in the same
+    # order every time, and renaming a car does not move it
+    return sorted(out, key=lambda v: (nowpage.car_sort_key(v["source_name"]), v["vin"]))
 
 
 def reported_at(v: dict) -> datetime | None:
@@ -258,10 +409,38 @@ def connector_status() -> tuple[datetime | None, str | None]:
     if g:
         times = [t for t in (reported_at(v) for v in g.values()) if t]
         return (max(times) if times else None, None)
+    if _cache.get("connector_down") and not connector_down():
+        return (None, "CarConnectivity is restarting.")  # inside the grace: not yet a fault, and not the token
     return (None, connector_down() or "CarConnectivity reports no car. Lucid may have stopped taking the token: sign in again.")
 
 
 def live_vehicle(vin: str | None = None) -> dict:
+    """A car as it reports itself, with what a command it just accepted set laid over it
+    until the report catches up (expected.py)."""
+    now = datetime.now(timezone.utc)
+    car = EXPECTED.apply(reported_vehicle(vin), now)
+    if car.get("vin"):
+        car = dict(car, name=shown_name(car["vin"], car.get("name")))
+    # Out of reach: the newest real reading is too old for the state it claims (reach.py). The
+    # position is only read for a driving connector car, so a parked garage asks for nothing.
+    fix = latest_fixes().get(car.get("vin")) if reach.needs_fix(car) else None
+    seen = reach.seen_if_offline(car, fix, now)
+    return dict(car, offline=seen is not None, last_seen=seen)
+
+
+def latest_fixes() -> dict[str, datetime]:
+    """Each car's newest recorded position, kept twenty seconds. The recorder writes one only when the
+    car moves, which is what tells a car on the road from the cloud repeating its last values."""
+
+    def load():
+        with db() as conn:
+            rows = conn.execute("SELECT v.vin, (SELECT p.at FROM cc_positions p WHERE p.vin = v.vin ORDER BY p.at DESC LIMIT 1) AS at FROM vehicles v").fetchall()
+        return {r["vin"]: r["at"] for r in rows if r["at"]}
+
+    return cached("latest_fixes", 20, load)
+
+
+def reported_vehicle(vin: str | None = None) -> dict:
     vin = vin or None  # the empty car has a blank vin; that is "no car", not "a car called ''"
     g = garage()
     if vin is not None and vin not in g:
@@ -278,6 +457,18 @@ def live_vehicle(vin: str | None = None) -> dict:
     loc = v.get("position", {}).get("position_location", {})
     address = ", ".join(x for x in (leaf(loc, "road"), leaf(loc, "city")) if x) or None
     here = place_for(leaf(v, "position", "latitude"), leaf(v, "position", "longitude"), places()) or {}
+    street, town = where_words(leaf(v, "position", "latitude"), leaf(v, "position", "longitude"))
+    clock = datetime.now(timezone.utc)
+    # Whole minutes to the target, from the connector's own estimate or the power now; None when not charging.
+    minutes_left = charge_minutes_left(
+        status,
+        leaf(v, "charging", "estimated_date_reached"),
+        leaf(v, "charging", "power"),
+        leaf(v, "drives", "primary", "level"),
+        leaf(v, "charging", "settings", "target_level"),
+        leaf(v, "battery_capacity_kwh") or leaf(v, "drives", "primary", "battery", "available_capacity"),
+        clock,
+    )
     return {
         "vin": vin,
         "name": leaf(v, "name") or vin,
@@ -301,20 +492,19 @@ def live_vehicle(vin: str | None = None) -> dict:
         "climate": leaf(v, "climatization", "state"),
         "charging_power_kw": leaf(v, "charging", "power"),
         "charge_target": leaf(v, "charging", "settings", "target_level"),
-        # Whole minutes to the target, from the connector's own estimate or the power now; None when not charging.
-        "charge_minutes_left": charge_minutes_left(
-            status,
-            leaf(v, "charging", "estimated_date_reached"),
-            leaf(v, "charging", "power"),
-            leaf(v, "drives", "primary", "level"),
-            leaf(v, "charging", "settings", "target_level"),
-            leaf(v, "battery_capacity_kwh") or leaf(v, "drives", "primary", "battery", "available_capacity"),
-            datetime.now(timezone.utc),
-        ),
+        "charge_minutes_left": minutes_left,
+        "charge_full_at": clock + timedelta(minutes=minutes_left) if minutes_left else None,
+        # From connector 0.4.0 (None before it, and for any car that does not publish it): the
+        # car's own meter for this charge, only while charging.
+        "charge_session_kwh": typed(leaf(v, "charge_session_energy"), float),
         # Tri-state like `locked`: None until the connector publishes it, which the Lucid
         # one does from v0.1.7. A car that has not said is not a car left unplugged.
         "plugged": tristate(leaf(v, "charging", "connector", "connection_state"), "connected", "disconnected"),
         "windows_open": tristate(leaf(v, "windows", "open_state"), "open", "closed"),
+        "trunk_open": tristate(leaf(v, "doors", "trunk", "open_state"), "open", "closed"),
+        "frunk_open": tristate(leaf(v, "doors", "frunk", "open_state"), "open", "closed"),
+        # The charge port's door, from the Lucid connector's `charge_port` (0.3.1 on): ajar counts as open; None until it says.
+        "port_open": True if leaf(v, "charge_port") == "ajar" else tristate(leaf(v, "charge_port"), "open", "closed"),
         # Connector-specific, from v0.1.7 of the Lucid connector: None until then.
         "sentry": leaf(v, "sentry") if isinstance(leaf(v, "sentry"), bool) else None,
         "inside_f": c_to_f(leaf(v, "inside_temperature")) if leaf(v, "inside_temperature") is not None else None,
@@ -329,7 +519,22 @@ def live_vehicle(vin: str | None = None) -> dict:
         "pack_capacity_kwh": leaf(v, "battery_capacity_kwh"),
         "pack_energy_kwh": leaf(v, "battery_energy_kwh"),
         "battery_warning": leaf(v, "battery_health_warning") if isinstance(leaf(v, "battery_health_warning"), bool) else None,
-        "update_available": leaf(v, "software_update_available") if isinstance(leaf(v, "software_update_available"), bool) else None,
+        **update_waiting(v),
+        # 0.4.0: the alarm going off (disarmed, armed, pre-alarm, tilt, shock, intrusion, panic), why the
+        # guard mode is paused, whether it has a drive to record to, the two occupant warnings
+        # (level-1 to -3, stage-1 to -3), the key fob, defrost and the rear window heater together,
+        # and the car's own battery-health number.
+        "alarm_status": typed(leaf(v, "alarm_status"), str),
+        "sentry_paused": typed(leaf(v, "sentry_inactive_reason"), str),
+        "sentry_usb": typed(leaf(v, "sentry_usb_drive_connected"), bool),
+        "living_object": typed(leaf(v, "living_object_detection"), str),
+        "occupant_warning": typed(leaf(v, "unattended_occupant_detection"), str),
+        "keyfob_low": typed(leaf(v, "keyfob_battery_low"), bool),
+        "window_heating": tristate(leaf(v, "window_heating", "heating_state"), "on", "off"),
+        "battery_health": typed(leaf(v, "battery_health_level"), float),
+        # The GPS height as the car sends it, unit unknown (one read 8932 where the Teslas record 123 m):
+        # kept beside each position for elevfit.py to fit, never shown and never taken as metres.
+        "elevation_raw": typed(leaf(v, "gps_elevation_raw"), float),
         "lat": leaf(v, "position", "latitude"),
         "lon": leaf(v, "position", "longitude"),
         "heading": leaf(v, "position", "heading"),
@@ -337,7 +542,8 @@ def live_vehicle(vin: str | None = None) -> dict:
         # model has no home for one. km/h from the car; the tables are imperial.
         "speed_mph": km_to_mi(leaf(v, "speed")),
         # the address the owner gave the place they are at wins over the car's own lookup
-        "address": here.get("user_address") or address,
+        "address": here.get("user_address") or address or street,
+        "locality": town,
         "place": here.get("name"),
         # only a name the owner gave: a place the site named itself may be a street
         "place_named": here.get("name") if here and not here.get("auto") else None,
@@ -349,6 +555,30 @@ def live_vehicle(vin: str | None = None) -> dict:
     }
 
 
+DRIVE_OF = "(SELECT id FROM drives WHERE vin = %s ORDER BY id LIMIT 1)"  # the car's one drives row
+
+
+def update_waiting(v: dict) -> dict:
+    """Whether a car on the connector says an update is waiting, and from connector 0.4.0 which
+    one: its version, the minutes it takes to install, and the maker's notes and their link."""
+    install_s = typed(leaf(v, "software_update_install_time"), float)
+    return {
+        "update_available": typed(leaf(v, "software_update_available"), bool),
+        "update_version": typed(leaf(v, "software_update_version"), str),
+        "update_install_min": round(install_s / 60) if install_s else None,
+        "update_notes": typed(leaf(v, "software_update_release_notes"), str),
+        "update_notes_url": typed(leaf(v, "software_update_release_notes_url"), str),
+    }
+
+
+def live_reading(vin: str) -> dict | None:
+    """What the connector last said of a car, from the tree the last call to it kept (garage()):
+    no call of its own. Only what a page needs that the car list does not carry."""
+    held = _cache.get("garage_tree")
+    v = held[1].get(vin) if held else None
+    return {"vin": vin, **update_waiting(v)} if isinstance(v, dict) else None
+
+
 def stored_vehicle(vin: str) -> dict:
     """A vehicle with no live connector (imported history only): last known values from the tables."""
     with db() as conn:
@@ -356,9 +586,11 @@ def stored_vehicle(vin: str) -> dict:
         if v is None:
             raise HTTPException(404, "No such vehicle.")
         pos = conn.execute("SELECT at, latitude, longitude, level, odometer FROM cc_positions WHERE vin = %s ORDER BY at DESC LIMIT 1", (vin,)).fetchone()
-        lvl = conn.execute("SELECT l.level, l.last_date FROM drive_levels l JOIN drives d ON d.id = l.drive_id WHERE d.vin = %s ORDER BY l.last_date DESC LIMIT 1", (vin,)).fetchone()
-        rng = conn.execute("SELECT l.range FROM drive_ranges l JOIN drives d ON d.id = l.drive_id WHERE d.vin = %s ORDER BY l.last_date DESC LIMIT 1", (vin,)).fetchone()
-        st = conn.execute("SELECT state::text AS s, last_date FROM states WHERE vin = %s ORDER BY last_date DESC LIMIT 1", (vin,)).fetchone()
+        # The newest run by first_date, on the (drive_id or vin, first_date) indexes, with the drive id
+        # resolved first: ordered by last_date (no index) each was a scan of the whole table, 50 ms a page.
+        lvl = conn.execute(f"SELECT l.level, l.last_date FROM drive_levels l WHERE l.drive_id = {DRIVE_OF} ORDER BY l.first_date DESC LIMIT 1", (vin,)).fetchone()
+        rng = conn.execute(f"SELECT l.range FROM drive_ranges l WHERE l.drive_id = {DRIVE_OF} ORDER BY l.first_date DESC LIMIT 1", (vin,)).fetchone()
+        st = conn.execute("SELECT state::text AS s, last_date FROM states WHERE vin = %s ORDER BY first_date DESC LIMIT 1", (vin,)).fetchone()
         cap = conn.execute("SELECT capacity FROM drives WHERE vin = %s ORDER BY id LIMIT 1", (vin,)).fetchone()
         sw = conn.execute("SELECT version FROM cc_software WHERE vin = %s ORDER BY seen_at DESC LIMIT 1", (vin,)).fetchone()
         # the car's own trip meters, from the newest feed row when a feed is on for this car
@@ -367,8 +599,9 @@ def stored_vehicle(vin: str) -> dict:
                 """SELECT at, data->>'SelfDrivingMilesSinceReset' AS fsd, data->>'MilesSinceReset' AS trip, data->>'inside_tempF' AS inside,
                                       data->>'outside_tempF' AS outside, data->>'locked' AS locked, data->>'sentry_mode' AS sentry,
                                       data->>'charging_state' AS charging_state, data->>'charge_limit_soc' AS charge_limit,
-                                      data->>'carState' AS car_state, data->>'battery_level' AS level,
-                                      data->>'latitude' AS lat, data->>'longitude' AS lon
+                                      data->>'carState' AS car_state, data->>'battery_level' AS level, data->>'charge_energy_added' AS kwh_added,
+                                      data->>'latitude' AS lat, data->>'longitude' AS lon,
+                                      data->>'fd_window' AS fd, data->>'fp_window' AS fp, data->>'rd_window' AS rd, data->>'rp_window' AS rp
                                FROM cc_teslafi_rows WHERE vin = %s AND data->>'battery_level' IS NOT NULL ORDER BY at DESC LIMIT 1""",
                 (vin,),
             ).fetchone()
@@ -393,44 +626,84 @@ def stored_vehicle(vin: str) -> dict:
     sentry = activity.sentry_on(feed["sentry"]) if feed and feed["at"] and clock - feed["at"] <= nowpage.FEED_FRESH else None
     # The car's own stream, when it has said something newer than both (memory: no query)
     st = activity.stream_now(tesla_stream_worker.carried.get(vin), clock)
-    if st and (updated is None or st["at"] > updated):
+    if st.get("fresh") and (updated is None or st["at"] > updated):
         status = "Driving" if st["driving"] else ("Idle" if status == "Driving" else status)
+        if not st["driving"] and "charging" in st:
+            status = "Charging" if st["charging"] else ("Idle" if status == "Charging" else status)
         updated, source = st["at"], "stream"
         soc, odometer = st.get("level", soc), st.get("odometer", odometer)
         sentry = st.get("sentry", sentry)
-    # What the stream says of the lock, doors and windows right now; unsaid is unknown, not "unlocked"
-    locked, doors_open, windows_open = st.get("locked"), st.get("doors_open", False), st.get("windows_open")
+    sentry_threat = st.get("sentry_threat")
+    # The lock, doors and windows as the car last said (a sleeping car changes none of them); the feed's
+    # newest full row where the stream has not said; unsaid is unknown, not "unlocked"
+    locked = st.get("locked") if st.get("locked") is not None else (activity.truth(feed["locked"]) if feed else None)
+    doors_open = st.get("doors_open", False)
+    windows_open = st.get("windows_open")
+    if windows_open is None and feed and any(feed[k] not in (None, "") for k in ("fd", "fp", "rd", "rp")):
+        windows_open = any(_float_or_none(feed[k]) for k in ("fd", "fp", "rd", "rp"))
+    trunk_open, frunk_open = st.get("trunk_open"), st.get("frunk_open")
+    # temperatures only from a reading of now: the stream's fresh word, else a feed row of the last half hour
+    feed_now = bool(feed and feed["at"] and clock - feed["at"] <= timedelta(minutes=30))
+    inside_f = st.get("inside_f", _float_or_none(feed["inside"]) if feed_now else None)
+    outside_f = st.get("outside_f", _float_or_none(feed["outside"]) if feed_now else None)
+    locked_at = st.get("said_at") if st.get("locked") is not None else (feed["at"] if feed and locked is not None else None)
+    if sentry is None and status == "Sleeping":
+        sentry = False  # a Tesla does not sleep with Sentry on
     here = place_for(lat, lon, known) or {}
+    street, town = where_words(lat, lon)
     return {
         "vin": vin,
         "name": v["name"] or vin,
         "model": f"{v['manufacturer'] or ''} {v['model'] or ''}".strip(),
-        "software": sw["version"] if sw else None,
+        "software": st.get("software") or (sw["version"] if sw else None),
         "status": status,
         "status_class": status.lower(),
         "soc": soc,
-        "range_mi": rng["range"] if rng else None,
-        "range_full_mi": None,
+        "range_mi": st.get("range_mi", rng["range"] if rng else None),
+        "range_full_mi": st.get("range_full_mi"),
         "odometer_mi": odometer,
-        "outside_f": None,
+        "outside_f": outside_f,
+        "inside_f": inside_f,
+        "locked_at": locked_at,
         "battery_f": None,
         "capacity_kwh": cap["capacity"] if cap else None,
         "make": identity.make_of(vin, v["manufacturer"]),
         "sentry": sentry,
+        "sentry_threat": sentry_threat,
         "source": source,
         "locked": locked,
-        "plugged": plugged_state(feed["charging_state"]) if feed else None,
+        "plugged": st["plugged"] if "plugged" in st else plugged_state(feed["charging_state"]) if feed else None,
         "doors_open": doors_open,
         "windows_open": windows_open,
-        "climate": None,
-        "charging_power_kw": None,
-        "charge_target": charge_limit(feed["charge_limit"]) if feed else None,
-        "charge_minutes_left": None,
+        "trunk_open": trunk_open,
+        "frunk_open": frunk_open,
+        "climate": st.get("climate"),
+        "climate_keeper": st.get("climate_keeper"),
+        "climate_set_f": st.get("climate_set_f"),
+        "preconditioning": st.get("preconditioning"),
+        "window_heating": st.get("window_heating"),
+        "driver_present": st.get("driver_present"),
+        "port_open": st.get("port_open"),
+        "cable_latched": st.get("cable_latched"),
+        "update_available": st.get("update_available"),
+        "charger_volts": st.get("charger_volts"),
+        "charger_amps": st.get("charger_amps"),
+        "charge_amps_set": st.get("charge_amps_set"),
+        "charge_rate_mph": st.get("charge_rate_mph"),
+        "charge_session_kwh": st.get("charge_session_kwh"),
+        "charging_power_kw": st.get("charging_power_kw"),
+        "charge_target": st["charge_limit"] if "charge_limit" in st else charge_limit(feed["charge_limit"]) if feed else None,
+        "charge_minutes_left": st.get("charge_minutes_left"),
+        # the car's own count of the charge it took last, held after the cable comes out (the feed's)
+        "charge_kwh_added": _float_or_none(feed["kwh_added"]) if feed else None,
+        "charge_kwh_at": feed["at"] if feed else None,  # whose charge that count is: the Watcher takes it only from inside one
         "lat": lat,
         "lon": lon,
         "heading": None,
         "speed_mph": None,
-        "address": None,
+        # the owner's address for the place, else the street the naming loop cached for this spot
+        "address": here.get("user_address") or street,
+        "locality": town,
         "place": here.get("name"),
         "place_named": here.get("name") if here and not here.get("auto") else None,
         "at_home": is_home_place(here),
@@ -505,8 +778,12 @@ def meters_from_feed(feed) -> dict | None:
 
 
 def pick(request: Request) -> dict:
-    """The vehicle this request is about: ?vin=..., ?vin=all for the whole garage, or the first live one."""
+    """The vehicle this request is about: ?vin=..., ?vin=all for the whole garage, or the first live one.
+    A form answered with a page rather than a redirect (a refused add, a token just made) is about
+    the car of the page it was posted from."""
     vin = request.query_params.get("vin")
+    if vin is None and request.method == "POST":
+        vin = same_site_referer_vin(request)
     if vin == GARAGE:
         return garage_car()
     return live_vehicle(vin)
@@ -593,10 +870,47 @@ def record_software(vin: str, version: str | None) -> None:
             conn.commit()
 
 
+_ota_stored: dict[str, str] = {}  # per VIN, the history text last written to the software table
+
+
+def record_ota_history(vin: str) -> None:
+    """The versions the connector lists for a car (Lucid's OTA history) into the software table, from the
+    tree the last call to it kept. The text is parsed and stored only when it differs from the last one
+    stored, so a poll that brings the same history costs no query."""
+    held = _cache.get("garage_tree")
+    v = held[1].get(vin) if held else None
+    raw = typed(leaf(v, "software_history"), str) if isinstance(v, dict) else None
+    if not raw or _ota_stored.get(vin) == raw:
+        return
+    with db() as conn:
+        otahistory.store(conn, vin, otahistory.parse(raw))
+    _ota_stored[vin] = raw
+
+
 def tires_same(a, b, tolerance: float = 0.3) -> bool:
     """Four pressures continue one run while none has moved more than `tolerance` psi: the
     sensor wobbles a tenth between polls, and a run per wobble is a table of noise."""
     return all(x is not None and y is not None and abs(float(x) - float(y)) <= tolerance for x, y in zip(a, b))
+
+
+HEALTH = healthlog.HealthLog()  # the cars' own battery-health number a day, loaded at startup
+
+
+def record_car_figures(car: dict) -> None:
+    """What a live car says that only lasts while it says it: the meter of the charge under way
+    (gone the moment charging stops), and its battery-health number once a day. One write a
+    tick while charging, one a day otherwise, nothing for a car whose connector has neither."""
+    kwh, level, today = car.get("charge_session_kwh"), car.get("battery_health"), datetime.now(TZ).date()
+    metering = kwh is not None and car.get("status") == "Charging"
+    if not car.get("live") or not (metering or (level is not None and HEALTH.due(car["vin"], today))):
+        return
+    with db() as conn:
+        if metering:
+            take_meter(conn, car["vin"], kwh, datetime.now(timezone.utc))
+        kept = HEALTH.record(conn, car["vin"], level, today)
+        conn.commit()
+    if kept:
+        HEALTH.keep(car["vin"], kept)  # only once it is in the table: a failed commit tries again next tick
 
 
 def record_runs(car: dict) -> None:
@@ -695,7 +1009,7 @@ def service_items(vin: str | None) -> list[dict]:
         by_item.setdefault(f["item_id"], []).append(dict(f, size_text=service.size_text(f["size"])))
     for it in items:
         it["files"] = by_item.get(it["id"], [])
-    return items
+    return with_shown(items)
 
 
 def service_due(vin: str, odometer: float | None) -> list[dict]:
@@ -753,6 +1067,13 @@ def cached(key: str, ttl_s: int, load):
     return value
 
 
+def cached_only(key: str):
+    """What `cached` last kept under `key`, however old, or None: for a page that shows a
+    figure when a background pass has worked it out and never works it out itself."""
+    hit = _cache.get(key)
+    return hit[1] if hit else None
+
+
 def place_arrivals() -> list[tuple]:
     """Every drive's end with the car's next departure: (vin, lat, lon, arrived, left).
     One query for every car, kept ten minutes; the Places page draws each place's stays
@@ -760,10 +1081,10 @@ def place_arrivals() -> list[tuple]:
 
     def load():
         with db() as conn:
-            rows = conn.execute("""SELECT vin, lat, lon, arrived, left_at FROM (
+            rows = conn.execute(f"""SELECT vin, lat, lon, arrived, left_at FROM (
                        SELECT vin, destination_position_latitude AS lat, destination_position_longitude AS lon, destination_date AS arrived,
                               LEAD(start_date) OVER (PARTITION BY vin ORDER BY start_date) AS left_at
-                       FROM trips) t
+                       FROM trips t WHERE TRUE{driveedits.ABSORBED}) t
                    WHERE arrived IS NOT NULL AND lat IS NOT NULL""").fetchall()
         return [(r["vin"], r["lat"], r["lon"], r["arrived"], r["left_at"]) for r in rows]
 
@@ -879,6 +1200,38 @@ def geocells() -> dict[tuple[float, float], str]:
     return cached("geocells", 300, load)
 
 
+def geotowns() -> dict[tuple[float, float], str]:
+    """About-1-km square -> its town ("Springfield, IL"), from the cells already named:
+    what a parked car reads as before its own cell has a name. Kept warm by the naming
+    loop, so a page reads it from memory."""
+
+    def load():
+        with db() as conn:
+            rows = conn.execute("SELECT lat3, lon3, name, address FROM cc_geocells WHERE name IS NOT NULL").fetchall()
+        return locality_index((r["lat3"], r["lon3"], r["name"], r["address"]) for r in rows)
+
+    return cached("geotowns", 300, load)
+
+
+def warm_where(now: datetime | None = None) -> None:
+    """Reload the street and town caches a minute before they would expire, from the
+    naming loop, so Now never waits on either load."""
+    now = now or datetime.now(timezone.utc)
+    for key, load in (("geocells", geocells), ("geotowns", geotowns)):
+        hit = _cache.get(key)
+        if hit is None or (now - hit[0]).total_seconds() > 240:
+            _cache.pop(key, None)
+            load()
+
+
+def where_words(lat, lon) -> tuple[str | None, str | None]:
+    """(street, town) for a position no named place covers: its cell's cached name, and the
+    town around it. Both from memory; nothing is looked up here."""
+    if lat is None or lon is None:
+        return None, None
+    return rough_label(lat, lon, geocells()), locality_at(lat, lon, geotowns())
+
+
 def rough_label(lat, lon, cells: dict) -> str | None:
     if lat is None or lon is None:
         return None
@@ -988,6 +1341,8 @@ def forget_places() -> None:
     _cache.pop("place_nav", None)
     _cache.pop("place_icons", None)
     _cache.pop("geocells", None)
+    for k in [k for k in _cache if k.startswith("top_routes:")]:
+        _cache.pop(k, None)
 
 
 def rename_place(
@@ -1028,8 +1383,22 @@ def rename_place(
             queue_reprice(conn, after)
         if is_home_place(before) != is_home_place(after):
             queue_with_parts(conn, after)
+        demote_other_homes(conn, place_id)
         conn.commit()
     forget_places()
+
+
+def demote_other_homes(conn, keep_id: int) -> None:
+    """There is one home: when `keep_id` is home, every other place that was takes the "no icon" mark
+    (icon 'none', so its name's guess does not bring it back) and its charges are priced again.
+    The caller commits."""
+    rows = [dict(r) for r in conn.execute("SELECT id, name, latitude, longitude, radius_m, icon, auto, merged_into FROM cc_places").fetchall()]
+    if not any(r["id"] == keep_id and is_home_place(r) for r in rows):
+        return
+    for r in other_homes(rows, keep_id):
+        conn.execute("UPDATE cc_places SET icon = %s WHERE id = %s", ("none", r["id"]))
+        queue_with_parts(conn, {**r, "icon": "none"})
+        LOG.info("places: %r (id %s) is no longer home; %r is", r.get("name"), r["id"], keep_id)
 
 
 def merge_places(keep_id: int, other_ids) -> bool:
@@ -1113,6 +1482,7 @@ def add_place(name: str, lat: float, lon: float, radius_m: float, icon: str | No
         row = {"id": new["id"], "name": name, "latitude": lat, "longitude": lon, "radius_m": radius_m, "icon": icon, "auto": False}
         if is_home_place(row):
             queue_reprice(conn, row)
+            demote_other_homes(conn, new["id"])
         conn.commit()
     forget_places()
 
@@ -1169,6 +1539,7 @@ def pin_place(
         now = {**was, "name": name, "auto": False, "icon": was.get("icon") if icon is None else icon}
         if is_home_place(was) != is_home_place(now):
             queue_with_parts(conn, now)
+        demote_other_homes(conn, hit["id"])
         conn.commit()
         return hit["id"]
     new = conn.execute(
@@ -1182,6 +1553,7 @@ def pin_place(
         set_place_price(conn, new["id"], price)
     if address[0]:
         conn.execute("UPDATE cc_places SET user_address = %s WHERE id = %s", (address[1], new["id"]))
+    demote_other_homes(conn, new["id"])
     conn.commit()
     return new["id"]
 
@@ -1193,7 +1565,7 @@ def ribbon(vin: str, hours: int = 24, end: datetime | None = None) -> list[dict]
         states = conn.execute("SELECT first_date, last_date, state::text AS s FROM states WHERE vin=%s AND last_date > %s ORDER BY first_date", (vin, start)).fetchall()
         charging = conn.execute("SELECT first_date, last_date, state::text AS s FROM charging_states WHERE vin=%s AND last_date > %s ORDER BY first_date", (vin, start)).fetchall()
     to_rows = lambda rows: [(r["first_date"], r["last_date"], r["s"]) for r in rows]
-    return ribbon_segments(to_rows(states), to_rows(charging), start, end)
+    return ribbon_segments(to_rows(states), to_rows(charging), start, end, car_on_rows(vin, start, end))
 
 
 # A car left in accessory or ignition on the driveway is not a drive. The database
@@ -1220,8 +1592,20 @@ def charged_sql() -> str:
 
 # A drive or charge hidden by hand (the tow, the test at the dealer) leaves every list and
 # total on the same clause the thresholds ride, and is found again on the Hidden list.
-HIDDEN_DRIVE = " AND t.id NOT IN (SELECT ref_id FROM cc_hidden WHERE kind = 'drive')"
+HIDDEN_DRIVE = " AND t.id NOT IN (SELECT ref_id FROM cc_hidden WHERE kind = 'drive')" + driveedits.ABSORBED  # and the drives a merge took in
 HIDDEN_CHARGE = " AND c.id NOT IN (SELECT ref_id FROM cc_hidden WHERE kind = 'charge')"
+
+
+def summary_kwh(r: dict) -> float | None:
+    """A drive's energy as its source summed it (TeslaFi's drive summaries, cc_trip_extras.kwh).
+    Such a drive has no battery line inside it, so the levels either side are one far-off
+    reading twice ("90→90%"): they are dropped rather than shown."""
+    kwh = r.get("summary_kwh")
+    if kwh is None:
+        return None
+    if r.get("level_start") is not None and r.get("level_start") == r.get("level_end"):
+        r["level_start"] = r["level_end"] = None
+    return kwh
 
 
 TRIP_SELECT = """
@@ -1229,7 +1613,9 @@ TRIP_SELECT = """
            t.start_position_latitude, t.start_position_longitude, t.destination_position_latitude, t.destination_position_longitude,
            sl.road AS start_road, sl.city AS start_city, dl.road AS dest_road, dl.city AS dest_city,
            f.level_start, f.level_end, NULLIF(f.temp_f, -999) AS temp_f, NULLIF(f.range_start, -999) AS range_start, NULLIF(f.range_end, -999) AS range_end,
-           NULLIF(f.max_mph, -1) AS max_mph, t.vin, v.name AS car_name, g.tag, g.note, x.fsd_miles, w.code AS weather_code, w.wind_kmh AS weather_wind_kmh, (mt.ref_id IS NOT NULL) AS by_hand
+           NULLIF(f.max_mph, -1) AS max_mph, t.vin, v.name AS car_name, g.tag, g.note, x.fsd_miles, x.kwh AS summary_kwh, w.code AS weather_code, w.wind_kmh AS weather_wind_kmh, (mt.ref_id IS NOT NULL) AS by_hand,
+           COALESCE(f.ground_hi_m, NULLIF(f.elev_max_m, -99999)) AS elev_max_m, COALESCE(f.ground_lo_m, NULLIF(f.elev_min_m, -99999)) AS elev_min_m,
+           NULLIF(f.ground_climb_m, -1) AS ground_climb_m, f.ground_descent_m
     FROM trips t
     LEFT JOIN cc_manual mt ON mt.kind = 'drive' AND mt.ref_id = t.id
     LEFT JOIN vehicles v ON v.vin = t.vin
@@ -1254,6 +1640,7 @@ def _window(col: str, start: datetime | None, end: datetime | None) -> tuple[str
 
 
 def _finish_drive(r: dict, known: list[dict], cells: dict | None = None, energy: dict | None = None, by_year: dict | None = None) -> dict:
+    with_shown([r])
     cells = cells if cells is not None else geocells()
     energy = energy if energy is not None else vehicle_energy()
     by_year = by_year if by_year is not None else rated_mile_years()
@@ -1264,10 +1651,12 @@ def _finish_drive(r: dict, known: list[dict], cells: dict | None = None, energy:
     at = place_for(a, b, known)
     r["from"] = at["name"] if at else (start_fallback or "Unnamed spot")
     r["from_named"] = at is not None
+    r["from_id"] = at["id"] if at else None  # the place's own id: what a route's filter goes by, since a found place has no name of its own to pick
     r["from_ref"] = placespage.ref(r["from"], a, b, at)  # the naming card opens on it
     if r["destination_date"] is None:
         r["to"] = "In progress"
         r["to_named"] = True
+        r["to_id"] = None
         r["to_ref"] = None
     else:
         a, b = r["destination_position_latitude"], r["destination_position_longitude"]
@@ -1275,10 +1664,11 @@ def _finish_drive(r: dict, known: list[dict], cells: dict | None = None, energy:
         at = place_for(a, b, known)
         r["to"] = at["name"] if at else (dest_fallback or "Unnamed spot")
         r["to_named"] = at is not None
+        r["to_id"] = at["id"] if at else None
         r["to_ref"] = placespage.ref(r["to"], a, b, at)
     cap, k = energy.get(r.get("vin"), (None, None))
     k = rated_mile_kwh(by_year, r.get("vin"), r.get("start_date"), k, TZ)
-    r["kwh_used"] = drive_kwh(r.get("level_start"), r.get("level_end"), cap, r.get("range_start"), r.get("range_end"), k)
+    r["kwh_used"] = summary_kwh(r) or drive_kwh(r.get("level_start"), r.get("level_end"), cap, r.get("range_start"), r.get("range_end"), k)
     r["wh_per_mi"] = (r["kwh_used"] * 1000 / r["miles"]) if r["kwh_used"] and r.get("miles") and r["miles"] > 0.5 else None
     r["rated_used"] = (r["range_start"] - r["range_end"]) if r.get("range_start") is not None and r.get("range_end") is not None else None
     r["cost"], r["cost_estimate"] = drive_cost(r.get("kwh_used"), home_rates().get(r.get("vin")))
@@ -1304,9 +1694,10 @@ def drives(vin: str | None, limit: int | None = 50, start: datetime | None = Non
     return [_finish_drive(r, known, cells, energy, by_year) for r in rows]
 
 
-def drives_light(vin: str | None, since: datetime | None) -> list[dict]:
-    """Drives without place labels, for pages that only add numbers up (efficiency bins, the odometer chart)."""
-    where, args = _window("t.start_date", since, None)
+def drives_light(vin: str | None, since: datetime | None, until: datetime | None = None) -> list[dict]:
+    """Drives without place labels, for pages that only add numbers up (efficiency bins, the odometer chart),
+    started from `since` up to `until` (exclusive; either open)."""
+    where, args = _window("t.start_date", since, until)
     vw, vargs = _vin_clause(vin)
     energy, by_year = vehicle_energy(), rated_mile_years()
     with db() as conn:
@@ -1315,7 +1706,9 @@ def drives_light(vin: str | None, since: datetime | None) -> list[dict]:
         r["miles"] = (r["destination_odometer"] - r["start_odometer"]) if r["destination_odometer"] is not None and r["start_odometer"] is not None else None
         r["duration"] = (r["destination_date"] - r["start_date"]) if r["destination_date"] else None
         cap, k = energy.get(r.get("vin"), (None, None))
-        r["kwh_used"] = drive_kwh(r.get("level_start"), r.get("level_end"), cap, r.get("range_start"), r.get("range_end"), rated_mile_kwh(by_year, r.get("vin"), r.get("start_date"), k, TZ))
+        r["kwh_used"] = summary_kwh(r) or drive_kwh(
+            r.get("level_start"), r.get("level_end"), cap, r.get("range_start"), r.get("range_end"), rated_mile_kwh(by_year, r.get("vin"), r.get("start_date"), k, TZ)
+        )
     return rows
 
 
@@ -1329,7 +1722,7 @@ def drive(vin: str | None, trip_id: int) -> dict | None:
 def latest_dates(vin: str | None) -> dict:
     vw, vargs = _vin_clause(vin)
     with db() as conn:
-        t = conn.execute("SELECT MAX(start_date) AS d FROM trips t WHERE TRUE" + vw, vargs).fetchone()
+        t = conn.execute("SELECT MAX(start_date) AS d FROM trips t WHERE TRUE" + vw + driveedits.ABSORBED, vargs).fetchone()
         c = conn.execute("SELECT MAX(session_start_date) AS d FROM charging_sessions t WHERE TRUE" + vw, vargs).fetchone()
     return {"drive": t["d"] if t else None, "charge": c["d"] if c else None}
 
@@ -1337,7 +1730,7 @@ def latest_dates(vin: str | None) -> dict:
 CHARGE_SELECT = """
     SELECT c.id, c.session_start_date, c.session_end_date, c.plug_connected_date, c.plug_disconnected_date,
            c.start_level, c.end_level, c.charging_type::text AS charging_type, l.road, l.city,
-           c.session_position_latitude, c.session_position_longitude,
+           c.session_position_latitude, c.session_position_longitude, c.session_odometer, c.session_charge_type::text AS session_charge_type,
            COALESCE(f.kwh, c.real_charged) AS kwh, COALESCE(f.cost, c.real_cost) AS cost, f.plan AS rate_plan, f.at_home, NULLIF(f.range_added, -999) AS range_added,
            f.off_peak_kwh, f.part_peak_kwh, f.peak_kwh, f.period_kwh, f.cost_source, f.region, f.rate_month, c.vin, v.name AS car_name, (m.ref_id IS NOT NULL) AS by_hand,
            x.status AS src_status, x.solar_kwh AS src_solar_kwh, x.battery_kwh AS src_battery_kwh, x.grid_kwh AS src_grid_kwh, x.battery_sun_frac AS src_sun_frac,
@@ -1373,7 +1766,13 @@ def today_by_car() -> dict[str, dict]:
     return cached("today", 60, load)
 
 
+# How long a charge with no end is taken to be still going. A slow charge on a wall socket
+# runs a day and more; a session left open longer than this lost its end.
+OPEN_CHARGE_LIVE = timedelta(days=3)
+
+
 def _finish_charge(r: dict, known: list[dict]) -> dict:
+    with_shown([r])
     fallback = ", ".join(x for x in (r["road"], r["city"]) if x) or rough_label(r["session_position_latitude"], r["session_position_longitude"], geocells())
     a, b = r["session_position_latitude"], r["session_position_longitude"]
     at = place_for(a, b, known)
@@ -1381,8 +1780,12 @@ def _finish_charge(r: dict, known: list[dict]) -> dict:
     r["where_ref"] = placespage.ref(r["where"], a, b, at)
     r["gained"] = (r["end_level"] - r["start_level"]) if r["end_level"] is not None and r["start_level"] is not None else None
     r["duration"] = (r["session_end_date"] - r["session_start_date"]) if r["session_end_date"] and r["session_start_date"] else None
+    # no end yet: still charging, or (days on) an end the logger never wrote; either way no energy to show
+    r["open"] = r["session_start_date"] is not None and r["session_end_date"] is None
+    r["live"] = r["open"] and r["session_start_date"] > datetime.now(timezone.utc) - OPEN_CHARGE_LIVE
     r["cost_estimate"] = r.get("cost_source") == "average" and r.get("cost") is not None
     r["mix"] = energypage.mix_bar(r) if r.get("at_home") else None  # stored beside the facts: nothing worked out here
+    r["rate"] = energypage.rate_bar(r)
     return r
 
 
@@ -1391,8 +1794,9 @@ def charges(vin: str | None, limit: int | None = 50, start: datetime | None = No
     where, args = _window("c.session_start_date", start, end)
     vw, vargs = _vin_clause(vin)
     with db() as conn:
+        # a row with no start is the logger's plug-in record (plugged in, never charged), not a charge
         rows = conn.execute(
-            CHARGE_SELECT + " WHERE TRUE" + vw.replace("t.vin", "c.vin") + where + charged_sql() + " ORDER BY c.session_start_date DESC NULLS LAST" + (" LIMIT %s" if limit else ""),
+            CHARGE_SELECT + " WHERE c.session_start_date IS NOT NULL" + vw.replace("t.vin", "c.vin") + where + charged_sql() + " ORDER BY c.session_start_date DESC" + (" LIMIT %s" if limit else ""),
             [*vargs, *args, *([limit] if limit else [])],
         ).fetchall()
     known = places()
@@ -1410,19 +1814,44 @@ def software_events(vin: str | None, start: datetime, end: datetime) -> list[dic
     """Version changes in the window: a row that repeats the car's previous version is not one."""
     vw, vargs = _vin_clause(vin)
     with db() as conn:
-        return conn.execute(
+        rows = conn.execute(
             "SELECT t.vin, t.version, t.seen_at, v.name AS car_name FROM"
             " (SELECT t.vin, t.version, t.seen_at, LAG(t.version) OVER (PARTITION BY t.vin ORDER BY t.seen_at, t.id) AS prev FROM cc_software t WHERE TRUE" + vw + ") t"
             " LEFT JOIN vehicles v ON v.vin = t.vin"
             " WHERE t.prev IS DISTINCT FROM t.version AND t.seen_at >= %s AND t.seen_at < %s ORDER BY t.seen_at DESC",
             [*vargs, start, end],
         ).fetchall()
+    return with_shown(rows)
 
 
 def is_home(lat, lon, known=None) -> bool:
     """Whether (lat, lon) is at a place named Home (places.is_home). `known` is the places
     to look in, read once by a caller that asks many times."""
     return is_home_place(place_for(lat, lon, places() if known is None else known))
+
+
+REBUILD_EVERY_S = 300
+REBUILD_DAYS = 3
+_rebuild_at = float("-inf")
+
+
+def rebuild_connector_drives() -> None:
+    """Put a connector car's recent drives right from its states and readings (driverebuild), and fill a charge
+    the plugin closed without opening (chargestart), at most every
+    five minutes, in the recorder's thread after its readings are written. CC_DRIVE_REBUILD=0 turns it off."""
+    global _rebuild_at
+    if os.environ.get("CC_DRIVE_REBUILD", "1") == "0" or time.monotonic() - _rebuild_at < REBUILD_EVERY_S:
+        return
+    _rebuild_at = time.monotonic()
+    since = datetime.now(timezone.utc) - timedelta(days=REBUILD_DAYS)
+    with db() as conn:
+        for vin, _name in driverebuild.connector_cars(conn, since):
+            acts = driverebuild.run(conn, vin, since)
+            done = [a for a in acts if a["do"] in driverebuild.TO_DO]
+            if done:
+                LOG.info("drives rebuilt for %s: %s", vin[-4:], ", ".join(driverebuild.line(a) for a in done))
+            for f in chargestart.run(conn, vin, since):
+                LOG.info("charge start filled for %s: %s", vin[-4:], chargestart.line(f))
 
 
 def fill_missing_facts() -> None:
@@ -1437,6 +1866,14 @@ def fill_missing_facts() -> None:
         drain_reprices(conn, known)
         for v in conn.execute("SELECT vin FROM vehicles").fetchall():
             fill_facts(conn, v["vin"], TZ, home, averages=averages_mod.active(), place_of=place_of, **fast)
+        try:
+            # finished days of tire pressure, a few hundred a tick (the Battery page's every-day chart)
+            for v in conn.execute("SELECT vin FROM vehicles").fetchall():
+                tiredays.fill(conn, v["vin"], TZ, datetime.now(TZ).date())
+            conn.commit()
+        except Exception as err:  # noqa: BLE001 - the facts above stand without it
+            conn.rollback()
+            LOG.warning("tire days: %s", err)
     try:
         cached("energy_sources", 60, fill_energy_sources)  # at most once a minute, whatever the number of cars or snapshots
     except Exception as err:  # noqa: BLE001 - the facts above stand without it
@@ -1463,6 +1900,16 @@ def state_rows(vin: str, table: str, column: str, since: datetime, until: dateti
             f"SELECT first_date, last_date, {column}::text AS s FROM {table} WHERE vin=%s AND last_date > %s AND first_date < %s ORDER BY first_date", (vin, since, until or datetime.now(timezone.utc))
         ).fetchall()
     return [(r["first_date"], r["last_date"], r["s"]) for r in rows]
+
+
+def car_on_rows(vin: str | None, since: datetime, until: datetime) -> list[tuple[datetime, datetime, str]]:
+    """The car on and parked with no drive (cc_car_on, written by the drive rebuild), as state-shaped
+    rows. One indexed read of a table the rebuild keeps; a car with none costs nothing more."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT first_date, last_date, vin FROM cc_car_on WHERE (%s::text IS NULL OR vin = %s) AND last_date > %s AND first_date < %s ORDER BY first_date", (vin, vin, since, until)
+        ).fetchall()
+    return [(r["first_date"], r["last_date"], r["vin"]) for r in rows]
 
 
 def drive_series(vin: str, table: str, column: str, days: int) -> list[tuple[datetime, float]]:
@@ -1501,15 +1948,16 @@ def battery_series(vin: str, days: int = 7) -> list[tuple[datetime, float]]:
     return [(r["first_date"], r["level"]) for r in rows]
 
 
-def sparkline(series: list[tuple[datetime, float]], width: int = 600, height: int = 80) -> str:
-    """SVG polyline points for a level-over-time series, or '' when there is nothing to draw."""
+def sparkline(series: list[tuple[datetime, float]], width: int = 600, height: int = 80, window: tuple[datetime, datetime] | None = None) -> str:
+    """SVG polyline points for a level-over-time series, or '' when there is nothing to draw. With a
+    `window` the x axis is that stretch of time, so a moment sits where the strip above puts it."""
     if len(series) < 2:
         return ""
-    t0, t1 = series[0][0], series[-1][0]
+    t0, t1 = window or (series[0][0], series[-1][0])
     span = (t1 - t0).total_seconds() or 1
     pts = []
     for t, level in series:
-        x = (t - t0).total_seconds() / span * width
+        x = max(0.0, min(float(width), (t - t0).total_seconds() / span * width))
         y = height - (level / 100) * height
         pts.append(f"{x:.1f},{y:.1f}")
     return " ".join(pts)
@@ -1539,6 +1987,21 @@ def here_of(path: str, root: str, query: str) -> str:
     return (rel or "/") + (f"?{query}" if query else "")
 
 
+def car_makes(vehicles: list[dict], idents: dict[str, dict]) -> tuple[list, bool]:
+    """The cars' makes and whether one is read through the connector: the facts that decide which
+    Settings rows and alert kinds this install can use. From what a page has already loaded."""
+    return [(idents.get(v["vin"]) or {}).get("make") for v in vehicles], any(v.get("live") for v in vehicles)
+
+
+def tesla_usable(vehicles: list[dict], makes: list) -> bool:
+    """Whether Settings › Energy and Commands have something to work on: a Tesla car read live
+    (the connector, a feed, the stream) or the Tesla developer app configured. A Tesla that
+    exists only as imported history can use neither."""
+    if tesla_cfg(load=False)["client_id"]:
+        return True
+    return any((m or "").lower() == "tesla" and source_of(v) != "history" for v, m in zip(vehicles, makes))
+
+
 def page(request: Request, name: str, **ctx) -> HTMLResponse:
     # root_path is "/cc" when reached through the tunnel mount, "" on the LAN port.
     vehicles = all_vehicles()
@@ -1546,14 +2009,19 @@ def page(request: Request, name: str, **ctx) -> HTMLResponse:
     q = f"?vin={vin}" if vin and len(vehicles) > 1 else ""
     colors = car_colors(vehicles)
     idents = car_identities(vehicles)
-    return templates.TemplateResponse(
+    makes, live = car_makes(vehicles, idents)
+    tesla = tesla_usable(vehicles, makes)
+    side_hidden = settingsform.hidden_rows(current_settings(), tesla=tesla, commandable=live) - {str(ctx.get("active", "")).removeprefix("settings-")}
+    root = request.scope.get("root_path", "")
+    response = templates.TemplateResponse(
         request,
         name,
         {
-            "root": request.scope.get("root_path", ""),
+            "root": root,
             "theme": THEME,
             "week_start": WEEK_START,
             "alert_kinds": notify_mod.kinds_for(i["make"] for i in idents.values()),
+            "nav_settings": settings_without(side_hidden),
             "guard": {v: identity.guard_name(i["make"]) for v, i in idents.items()},
             "guard_all": identity.guard_label(i["make"] for i in idents.values()),
             "now": datetime.now(TZ),
@@ -1575,15 +2043,20 @@ def page(request: Request, name: str, **ctx) -> HTMLResponse:
             **ctx,
         },
     )
+    if q:  # every in-site page link the template left without the car keeps it
+        response.body = carlinks.keep_car_links(response.body.decode(), root, vin).encode()
+        response.headers["content-length"] = str(len(response.body))
+    return response
 
 
 # Browsers heuristically cache a stylesheet with no Cache-Control for days; a
 # content hash in the URL makes every deploy's CSS take effect on the next load.
 CSS_VERSION = hashlib.md5((HERE / "static" / "style.css").read_bytes()).hexdigest()[:8]
 templates.env.globals["version"] = version.VERSION
-JS_VERSION = hashlib.md5(
-    (HERE / "static" / "prefetch.js").read_bytes() + (HERE / "static" / "shell.js").read_bytes() + (HERE / "static" / "chart.js").read_bytes() + (HERE / "static" / "maps.js").read_bytes()
-).hexdigest()[:8]
+templates.env.globals["heading"] = lambda name: activity.heading(name, [h.get("name") for h in home_places()])  # "home" or "to Work"
+# Every script, so a change to any one of them gives them all a new URL (HashedStatic keeps a
+# hashed URL a year); view.js, placecard.js and placesmap.js were once left out.
+JS_VERSION = hashlib.md5(b"".join(f.read_bytes() for f in sorted((HERE / "static").glob("*.js")))).hexdigest()[:8]
 
 
 def current_settings() -> dict:
@@ -1621,8 +2094,11 @@ DATE_ORDER = "mdy"
 SUMMARY_AT = dtime(7, 0)
 
 
+ESRI_KEY: str | None = None  # the owner's ArcGIS key, opened at startup and when it is saved (esrikey.py)
+
+
 def apply_settings(st: dict) -> None:
-    global WEATHER_ON, WEATHER_METRIC, THEME, MIN_DRIVE_MI, MIN_CHARGE_KWH, WEEK_START, CLOCK, DATE_ORDER, SUMMARY_AT
+    global CSP, WEATHER_ON, WEATHER_METRIC, THEME, MIN_DRIVE_MI, MIN_CHARGE_KWH, WEEK_START, CLOCK, DATE_ORDER, SUMMARY_AT
     cost.use_plan(st.get("rate_plan"))
     notify_mod.TIRE_LOW, notify_mod.TIRE_HIGH = st.get("tire_low_psi"), st.get("tire_high_psi")
     use_units(st.get("units") == "metric")
@@ -1638,10 +2114,17 @@ def apply_settings(st: dict) -> None:
     SUMMARY_AT = parse_hhmm(st.get("summary_at")) or dtime(7, 0)
     recorder.muted = set()
     recorder.routes = notify_mod.routes_from(st)
+    fleet_usage.METER.configure(st)
     register_filters(templates.env, TZ, CLOCK, DATE_ORDER, place_icons=lambda: place_icon_map())
     # a global, not a page() context value, so every render that draws a map reads it,
     # including one that never passes settings; reset here on startup and every save
     templates.env.globals["public_tiles"] = bool(st.get("public_tiles"))
+    imagery = bool(st.get("satellite") and ESRI_KEY)  # satellite needs the owner's key as well as the switch
+    templates.env.globals["satellite"] = imagery
+    templates.env.globals["satellite_key"] = ESRI_KEY if imagery else ""
+    templates.env.globals["close_maps"] = bool(st.get("public_tiles") or imagery)  # the street-level close-ups and strips draw with either base
+    CSP = build_csp(bool(st.get("public_tiles")), imagery)
+    SECURITY_HEADERS["Content-Security-Policy"] = CSP
 
 
 def car_colors(vehicles: list[dict]) -> dict[str, int]:
@@ -1650,7 +2133,22 @@ def car_colors(vehicles: list[dict]) -> dict[str, int]:
     Every page and map takes car colours from here."""
     rows, _ = identity_rows()
     paints = {vin: (i["paint"] or {}).get("hex") for vin, i in car_identities(vehicles).items()}
-    return identity.chart_colors([v["vin"] for v in vehicles], {vin: r.get("chart") for vin, r in rows.items()}, paints)
+    vins = [v["vin"] for v in vehicles]
+    picked = identity.chart_colors(vins, {vin: r.get("chart") for vin, r in rows.items()}, paints, {vin: r.get("chart_auto") for vin, r in rows.items()})
+    fresh = {v: c for v, c in picked.items() if rows.get(v, {}).get("chart_auto") is None and rows.get(v, {}).get("chart") is None}
+    if fresh:
+        _keep_colors(fresh)
+    return picked
+
+
+def _keep_colors(fresh: dict[str, int]) -> None:
+    """Write down the colours cars were first shown in (once per car; a car never changes colour afterwards)."""
+    try:
+        with db() as conn:
+            identity.keep_colors(conn, fresh)
+        _cache.pop("identity", None)
+    except Exception as err:  # a colour that cannot be kept is recomputed next time, never a broken page
+        LOG.warning("car colours: %s", err)
 
 
 def identity_rows() -> tuple[dict[str, dict], dict[str, tuple]]:
@@ -1688,13 +2186,13 @@ def car_identities(vehicles: list[dict]) -> dict[str, dict]:
 # One household, one password. The state lives here rather than in a request-scoped
 # dependency because the middleware runs before every route and must not open the
 # database on each hit; it is filled at startup and again when the password changes.
-FAILURES = auth.Failures()  # failed sign-ins, per client and in total; see auth.Failures
+FAILURES = auth.Failures(on_brake=lambda: brake_alert())  # failed sign-ins, per client and in total; see auth.Failures
 # A token in a URL can leak (logs, history), so it is read from a form field or the
-# X-CSRF-Token header; the query string only for a photo upload, whose body is larger than
-# FORM_LIMIT and so is never read here to find one.
-QUERY_TOKEN_PATHS = re.compile(r"/service/\d+/files")
+# X-CSRF-Token header; the query string only for a photo upload or a bill's PDF, whose body
+# is larger than FORM_LIMIT and so is never read here to find one.
+QUERY_TOKEN_PATHS = re.compile(r"/service/\d+/files|/settings/money/plan/bill")
 FORM_LIMIT = 1 << 20  # a form larger than this is not one of ours; it goes to the route unread and is refused for want of a token
-AUTH = {"enabled": os.environ.get("CC_AUTH", "on").lower() not in ("off", "0", "false", "no"), "secret": "", "password": None, "admin_anywhere": False, "first_start": None}
+AUTH = {"enabled": os.environ.get("CC_AUTH", "on").lower() not in ("off", "0", "false", "no"), "secret": "", "password": None, "admin_anywhere": False, "first_start": None, "epoch": 0, "revoked": {}}
 # Sign-in through Cloudflare Access: the team and audience its JWTs must carry. Filled by load_auth from the
 # environment or the database; empty means not in use.
 CF: dict = {"team": None, "aud": None, "env_team": False, "env_aud": False}
@@ -1728,6 +2226,10 @@ VAULT = sources.Vault(os.environ.get("CC_SECRET_KEY"))
 # The optional local maps add-on. Unset MAPS_URL and every call answers None at once;
 # only Settings > Maps and the user-initiated picker ever call it.
 MAPS = MapsClient(os.environ.get("MAPS_URL"))
+# The downloaded terrain model (terrain.py). Empty or unset: every page keeps the car's own
+# heights. TERRAIN_WANTED collects tiles a drive passed through that are not here yet.
+TERRAIN = terrain_mod.Terrain(os.environ.get("TERRAIN_DIR"))
+TERRAIN_WANTED: set[str] = set()
 
 
 def load_auth() -> None:
@@ -1739,13 +2241,19 @@ def load_auth() -> None:
         history = conn.execute("SELECT 1 FROM cc_auth LIMIT 1").fetchone() is not None
         if not history and (conn.execute("SELECT to_regclass('vehicles') IS NOT NULL AS t").fetchone() or {}).get("t"):
             history = conn.execute("SELECT 1 FROM vehicles LIMIT 1").fetchone() is not None
-        secret = os.environ.get("CC_SECRET") or auth.store_get(conn, "secret")
+        env_secret, stored_secret = os.environ.get("CC_SECRET"), auth.store_get(conn, "secret")
+        if env_secret and stored_secret:
+            # The key in .env signs; the one in the database is dead weight a dump would carry, and would sign
+            # again (old sessions with it) if .env ever lost its own.
+            auth.store_delete(conn, "secret")
+        secret = env_secret or stored_secret
         if not secret:
             secret = auth.new_secret()  # generated once and kept, so a restart signs nobody out
             auth.store_set(conn, "secret", secret)
         env_password = os.environ.get("CC_PASSWORD")
         password = auth.hash_password(env_password) if env_password else auth.store_get(conn, "password")
         anywhere = auth.store_get(conn, ADMIN_ANYWHERE_KEY) == "1"
+        epoch, revoked = session_state(auth.store_get(conn, EPOCH_KEY), auth.store_get(conn, REVOKED_KEY))
         switch = auth.store_get(conn, SIGNIN_KEY)
         # When this site first started with no password: the no-code window for the home network opens then, and a
         # restart does not reopen it.
@@ -1769,7 +2277,7 @@ def load_auth() -> None:
     CF.update(team=team, aud=aud if team else None, env_team=bool(team and env_team), env_aud=bool(team and env_aud))
     PROXY.clear()
     # One assignment, so no request ever sees sign-in on without the password that goes with it.
-    AUTH.update(enabled=enabled, secret=secret, password=password, admin_anywhere=anywhere, first_start=first_start)
+    AUTH.update(enabled=enabled, secret=secret, password=password, admin_anywhere=anywhere, first_start=first_start, epoch=epoch, revoked=revoked)
     reload_tokens()
     admins = sum(1 for t in TOKENS.values() if t["kind"] == "admin")
     LOG.info(
@@ -1789,6 +2297,39 @@ def load_auth() -> None:
 
 
 SIGNIN_KEY = "enabled"  # in cc_auth: sign-in on or off as chosen in Settings; absent means CC_AUTH decides
+EPOCH_KEY = "epoch"  # in cc_auth: the session generation; one more ends every session (auth.new_session)
+REVOKED_KEY = "revoked"  # in cc_auth: sessions signed out one at a time, as {payload: issued}, a month at most
+
+
+def session_state(epoch: str | None, revoked: str | None) -> tuple[int, dict]:
+    """The session generation and the signed-out list as stored; a damaged value is the empty one."""
+    try:
+        gen = int(epoch or 0)
+    except ValueError:
+        gen = 0
+    try:
+        out = json.loads(revoked or "{}")
+    except ValueError:
+        out = {}
+    return gen, out if isinstance(out, dict) else {}
+
+
+def session_ok(cookie: str | None) -> bool:
+    """A live session: read from memory only, so the page path gains nothing."""
+    return auth.valid_session(AUTH["secret"], cookie, AUTH["epoch"], AUTH["revoked"])
+
+
+def new_session() -> str:
+    return auth.new_session(AUTH["secret"], AUTH["epoch"])
+
+
+def end_sessions(conn) -> None:
+    """Every session ends: the next generation, stored, and in memory before anything else is answered."""
+    epoch = AUTH["epoch"] + 1
+    auth.store_set(conn, EPOCH_KEY, str(epoch))
+    AUTH["epoch"] = epoch
+
+
 ADMIN_ANYWHERE_KEY = "admin_anywhere"  # in cc_auth beside the password, not in the settings a page renders from
 TOKENS: dict[str, dict] = {}  # token hash -> {"label", "vin", "kind", "last4"}; the middleware reads this, never the table
 
@@ -1799,9 +2340,16 @@ def reload_tokens() -> None:
     # The read and the swap under one lock: a reload that read before a mint must not apply after the
     # reload that read once it was made, or it would take the new token out again.
     with TOKENS_LOCK, db() as conn:
-        rows = conn.execute("SELECT hash, label, vin, kind, last4, share_place FROM cc_api_tokens").fetchall()
+        rows = conn.execute("SELECT hash, label, vin, kind, last4, share_place, coords FROM cc_api_tokens").fetchall()
         fresh = {
-            r["hash"]: {"label": r["label"], "vin": r["vin"] if r["kind"] != "admin" else None, "kind": auth.kind_of(r["kind"]), "last4": r["last4"], "share_place": bool(r.get("share_place"))}
+            r["hash"]: {
+                "label": r["label"],
+                "vin": r["vin"] if r["kind"] != "admin" else None,
+                "kind": auth.kind_of(r["kind"]),
+                "last4": r["last4"],
+                "share_place": bool(r.get("share_place")),
+                "coords": bool(r.get("coords")),
+            }
             for r in rows
         }
         # In place and never emptied: a request in flight between a clear and an update would be told its valid token is not one.
@@ -1826,11 +2374,25 @@ def csrf_for(request: Request) -> str:
 
 
 def set_session(response: Response, request: Request, cookie: str | None) -> None:
-    """One cookie at path /, so the LAN port and the /cc mount share a sign-in."""
+    """One cookie at path /, so the LAN port and the /cc mount share a sign-in. A sign-in also marks the
+    browser as known for a year (auth.new_device), which signing out leaves in place."""
     if cookie is None:
         response.delete_cookie(auth.SESSION_COOKIE, path="/")
-    else:
-        response.set_cookie(auth.SESSION_COOKIE, cookie, max_age=auth.SESSION_MAX_AGE, httponly=True, samesite="lax", secure=request.url.scheme == "https", path="/")
+        return
+    secure = request.url.scheme == "https"
+    response.set_cookie(auth.SESSION_COOKIE, cookie, max_age=auth.SESSION_MAX_AGE, httponly=True, samesite="lax", secure=secure, path="/")
+    response.set_cookie(auth.DEVICE_COOKIE, auth.new_device(AUTH["secret"]), max_age=auth.DEVICE_MAX_AGE, httponly=True, samesite="lax", secure=secure, path="/")
+
+
+def known_device(request: Request) -> bool:
+    """Whether this browser has signed in here before: the global sign-in brake does not hold it."""
+    return auth.known_device(AUTH["secret"], request.cookies.get(auth.DEVICE_COOKIE))
+
+
+def brake_alert() -> None:
+    """Failed sign-ins from many addresses now hold back every new browser: say so, off the request's thread."""
+    text = f"Car Command is slowing every new sign-in after {auth.GLOBAL_FACTOR * auth.LOCKOUT_AFTER} failed tries from many addresses. Browsers that have signed in before are not held."
+    threading.Thread(target=recorder.notify, args=(text, "login"), daemon=True).start()
 
 
 def safe_next(target: str) -> str:
@@ -1853,7 +2415,33 @@ def to_site(request: Request, target: str, status_code: int = 303) -> RedirectRe
     root = request.scope.get("root_path", "")
     if root not in ("/cc", "/carcommand"):
         root = ""
-    return RedirectResponse(root + safe_next(target), status_code=status_code)
+    return RedirectResponse(root + keep_car(request, safe_next(target)), status_code=status_code)
+
+
+CAR_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
+
+
+def keep_car(request: Request, target: str) -> str:
+    """A Settings page reached by a redirect stays on the car it was left on. The car comes from
+    the request's ?vin=, else from the page the form was on (Referer, same-origin only), else is
+    the one this page showed, which a source added a moment ago has not changed yet: so the sidebar
+    does not move to another car after an import or a click in Settings."""
+    path, sep, frag = target.partition("#")
+    if not path.startswith("/settings") or "vin=" in path:
+        return target
+    vin = request.query_params.get("vin")
+    if not vin:
+        ref = urlparse(request.headers.get("referer") or "")
+        if ref.netloc == request.headers.get("host"):
+            vin = dict(parse_qsl(ref.query)).get("vin")
+    if not vin:
+        try:
+            vin = live_vehicle(None).get("vin")
+        except Exception:  # noqa: BLE001 - a redirect never waits on the car
+            vin = None
+    if not vin or not (vin == GARAGE or CAR_ID.fullmatch(vin)):
+        return target
+    return path + ("&" if "?" in path else "?") + "vin=" + vin + sep + frag
 
 
 SLOW_MS = 1000.0
@@ -1874,7 +2462,17 @@ async def timing(request: Request, call_next):
     line = slow_line(request.method, request.url.path, (time.monotonic() - t0) * 1000)
     if line:
         LOG.warning(line)
+    if 300 <= response.status_code < 400 and "location" in response.headers:  # a redirect keeps the car it was asked on
+        vin = request.query_params.get("vin") or same_site_referer_vin(request)
+        if vin and (vin == GARAGE or CAR_ID.fullmatch(vin)):
+            response.headers["location"] = carlinks.redirect_with_car(response.headers["location"], request.scope.get("root_path", ""), vin)
     return response
+
+
+def same_site_referer_vin(request: Request) -> str | None:
+    """The car in the URL of the page a form was posted from, when that page is on this host."""
+    ref = urlparse(request.headers.get("referer") or "")
+    return dict(parse_qsl(ref.query)).get("vin") if ref.netloc == request.headers.get("host") else None
 
 
 def site_path(request: Request) -> str:
@@ -1883,6 +2481,22 @@ def site_path(request: Request) -> str:
     root, raw = request.scope.get("root_path", ""), request.scope.get("path", "/")
     path = raw[len(root) :] if root and raw.startswith(root) else raw
     return path or "/"
+
+
+API_URL_TOKEN_KEYS = ("token", "access_token", "api_key", "apikey", "key")
+
+
+def api_methods_allowed(scope) -> list[str]:
+    """The methods an /api/ path answers to when it answers to none of this request's: [] when the
+    path is unknown or the method is fine (the router then says what it says)."""
+    allowed: set[str] = set()
+    for r in site.routes:
+        match, _child = r.matches(scope)
+        if match == Match.FULL:
+            return []
+        if match == Match.PARTIAL:
+            allowed |= set(getattr(r, "methods", None) or ())
+    return sorted(allowed)
 
 
 @site.middleware("http")
@@ -1934,25 +2548,48 @@ async def guard(request: Request, call_next):
     # An API token stands in for the cookie on /api/ paths and nowhere else, so a token
     # in a script cannot open a page. Scoped tokens answer for their car only.
     token = None
+    if path == auth.MCP_PATH:
+        # The MCP endpoint takes an MCP token and nothing else: no session, so a page in a browser can never drive it
+        # (a cookie is sent along with a cross-site request, a bearer header is not), and no other kind of token.
+        raw = auth.bearer_of(request.headers.get("authorization"))
+        token = TOKENS.get(auth.token_hash(raw)) if raw else None
+        if token is None:
+            return JSONResponse({"error": "send an MCP token as Authorization: Bearer; make one in Settings"}, status_code=401, headers={"WWW-Authenticate": "Bearer"})
+        if token.get("kind") != "mcp":
+            return JSONResponse({"error": "this endpoint takes an MCP token; make one in Settings, under API tokens"}, status_code=403)
+        request.state.token = token
+        token["used"] = datetime.now(timezone.utc)
+        return await call_next(request)
     if path.startswith("/api/"):
         raw = auth.bearer_of(request.headers.get("authorization"))
         token = TOKENS.get(auth.token_hash(raw)) if raw else None
+        if token is not None and token.get("kind") == "mcp":
+            return JSONResponse({"error": "an MCP token opens only /mcp"}, status_code=403)
         if path.startswith(auth.ADMIN_PREFIX):
             return await admin_call(request, call_next, token, path)
-        if raw and token is None and cf is None and not (AUTH["enabled"] and auth.valid_session(AUTH["secret"], cookie)):
+        if raw and token is None and cf is None and not (AUTH["enabled"] and session_ok(cookie)):
             # A token that was revoked, or never was one: say so, so the app reconnects, rather than sending it to a login page.
             return JSONResponse({"error": "this token is not valid; reconnect"}, status_code=401)
         if token is not None and token.get("kind") == "status" and path not in auth.STATUS_PATHS:
             return JSONResponse({"error": "a status token opens only /api/now and /api/stream"}, status_code=403)
-        if token is not None and not auth.token_allows(token["vin"], request.query_params.get("vin")):
+        commanded = COMMAND_PATH.match(path)
+        if token is not None and commanded and token.get("kind") != "control":
+            return JSONResponse({"error": "only a control token sends commands"}, status_code=403)
+        if token is not None and not auth.token_allows(token["vin"], commanded.group(1) if commanded else request.query_params.get("vin")):
             return JSONResponse({"error": "this token is for one car; ask for it with ?vin="}, status_code=403)
+    if path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS") and (session_ok(cookie) or token is not None or cf is not None):
+        allowed = api_methods_allowed(request.scope)
+        if allowed:  # the path is there, only not for this method: a JSON answer, not the form-token page
+            return JSONResponse({"error": f"{request.method} is not allowed here; use {', '.join(allowed)}"}, status_code=405, headers={"Allow": ", ".join(allowed)})
     verdict = auth.gate(
         path,
         request.method,
         enabled=AUTH["enabled"],
         password_set=bool(AUTH["password"]) or cf_on(),
-        signed_in=auth.valid_session(AUTH["secret"], cookie) or token is not None or cf is not None,
-        csrf_valid=auth.csrf_ok(AUTH["secret"], csrf_subject(cookie, cf), submitted),
+        signed_in=session_ok(cookie) or token is not None or cf is not None,
+        # A control token's command needs no form token: a browser cannot attach a bearer
+        # header to a cross-site request, and no cookie stands in for it there.
+        csrf_valid=auth.csrf_ok(AUTH["secret"], csrf_subject(cookie, cf), submitted) or (token is not None and token.get("kind") == "control" and COMMAND_PATH.match(path) is not None),
     )
     if verdict == "login" and cf_on() and not AUTH["password"]:
         return cf_only_page(request)
@@ -1963,8 +2600,27 @@ async def guard(request: Request, call_next):
             # middleware runs on every request and does not open the database.
             token["used"] = datetime.now(timezone.utc)
         return await call_next(request)
+    if path.startswith("/api/") and verdict in ("login", "setup"):
+        # an API caller is a program: say what to send, never the sign-in page
+        in_url = any(k in request.query_params for k in API_URL_TOKEN_KEYS)
+        said = (
+            "this install has no password yet: open the site in a browser to set it up"
+            if verdict == "setup"
+            else (
+                "send the token as an Authorization: Bearer header; a token in the URL is ignored"
+                if in_url
+                else "this call needs a token: send it as Authorization: Bearer, made in Settings under Sign-in and API"
+            )
+        )
+        return JSONResponse(
+            {"error": said},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if verdict == "setup":
         return RedirectResponse(f"{root}/setup", status_code=303)
+    if verdict == "csrf" and path.startswith("/api/"):
+        return JSONResponse({"error": "this call changes something: send it with a control token (commands) or from the signed-in site"}, status_code=400)
     if verdict == "csrf":
         return refusal(request, 400, "That form was stale.", "Reload the page you came from and try again.")
     if request.method in ("GET", "HEAD"):
@@ -1974,24 +2630,34 @@ async def guard(request: Request, call_next):
 
 
 # On every answer. The pages carry inline scripts and styles, so those stay allowed; what the
-# policy holds is where anything else may come from: this site, the two CDNs the map scripts
-# are pinned on (with integrity hashes), and, with public map backgrounds on in Settings ›
-# Maps, OpenFreeMap's styles and tiles and OpenStreetMap's raster tiles. No page may be framed.
-CSP = "; ".join(
-    (
-        "default-src 'self'",
-        "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net",
-        "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net",
-        "img-src 'self' data: blob: https://unpkg.com https://tile.openstreetmap.org https://tiles.openfreemap.org",
-        "connect-src 'self' https://tiles.openfreemap.org",
-        "font-src 'self' data:",
-        "worker-src 'self' blob:",
-        "frame-ancestors 'none'",
-        "object-src 'none'",
-        "base-uri 'self'",
-        "form-action 'self'",
+# policy holds is where anything else may come from: this site (the map scripts are vendored under
+# static/vendor), and, only while the matching switch in Settings › Maps
+# is on, OpenFreeMap's styles and tiles and OpenStreetMap's raster tiles (public backgrounds),
+# and Esri's World Imagery tiles (satellite, with a key). No page may be framed.
+def build_csp(tiles: bool = False, imagery: bool = False) -> str:
+    images = ["'self'", "data:", "blob:"]
+    if tiles:
+        images += ["https://tile.openstreetmap.org", "https://tiles.openfreemap.org"]
+    if imagery:
+        images.append("https://ibasemaps-api.arcgis.com")
+    return "; ".join(
+        (
+            "default-src 'self'",
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src " + " ".join(images),
+            "connect-src 'self'" + (" https://tiles.openfreemap.org" if tiles else ""),
+            "font-src 'self' data:",
+            "worker-src 'self' blob:",
+            "frame-ancestors 'none'",
+            "object-src 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+        )
     )
-)
+
+
+CSP = build_csp()  # the current policy: apply_settings rebuilds it when the map switches change
 SECURITY_HEADERS = {
     "Content-Security-Policy": CSP,
     "X-Frame-Options": "DENY",
@@ -2039,7 +2705,7 @@ async def admin_call(request: Request, call_next, token: dict | None, path: str)
     finally:
         write, held = REFUSALS.admit(f"{token.get('label')}…{token.get('last4')}", bool(refused))
         if write:
-            await asyncio.to_thread(audit, token, request.method, path, status, auth.client_ip(request.headers, request.client.host if request.client else None), held)
+            await asyncio.to_thread(audit, token, request.method, path, status, seen_from(request), held)
 
 
 API_LOG_PRUNED = {"at": 0.0}
@@ -2107,10 +2773,18 @@ def setup_needs_code(request: Request) -> bool:
     return not auth.setup_keyless(request.scope.get(TruePeer.KEY), request.headers, first_start=AUTH["first_start"])
 
 
+def setup_code_command() -> str:
+    """The one command that prints the setup code for this install: CC_INSTALL says which (the one container
+    sets it; a compose checkout is the default). The compose form names the file so it runs from the checkout root."""
+    if os.environ.get("CC_INSTALL") == "one-container":
+        return "docker exec carcommand carcommand web python3 setup_code.py"
+    return "docker compose -f stack/docker-compose.yml exec web python3 setup_code.py"
+
+
 def setup_flags(request: Request) -> dict:
     """What the setup page shows: whether it needs the code, and whether only the first hour has run out."""
     why = auth.setup_keyless_why(request.scope.get(TruePeer.KEY), request.headers, first_start=AUTH["first_start"])
-    return {"keyless": why == "yes", "window_passed": why == "expired"}
+    return {"keyless": why == "yes", "window_passed": why == "expired", "code_command": setup_code_command(), "password": "", "confirm": ""}
 
 
 @site.get("/setup", response_class=HTMLResponse)
@@ -2128,41 +2802,92 @@ def setup_save(request: Request, password: str = Form(...), confirm: str = Form(
     need_code = not flags["keyless"]
     if need_code:
         key, now = sign_in_key(request), time.time()
-        held = FAILURES.wait(key, now)
+        held = FAILURES.wait(key, now, known_device(request))
         if held > 0:
-            return auth_page(request, "setup.html", 429, error=f"Too many tries. Wait {int(held) + 1} seconds.", **flags)
+            return auth_page(request, "setup.html", 429, error=f"Too many tries. Wait {int(held) + 1} seconds.", **{**flags, "password": password, "confirm": confirm})
         FAILURES.record(key, now)  # counted before the check and forgiven after it, as everywhere else
         if not auth.setup_code_ok(AUTH["secret"], code):
-            return auth_page(request, "setup.html", 403, error="That setup code is not right.", **flags)
+            return auth_page(request, "setup.html", 403, error="That setup code is not right.", **{**flags, "password": password, "confirm": confirm})
         FAILURES.clear(key)
     problem = auth.password_problem(password, confirm)
     if problem:
-        return auth_page(request, "setup.html", error=problem, **flags)
+        return auth_page(request, "setup.html", error=problem, **{**flags, "password": password, "confirm": confirm})
     with db() as conn:
         auth.store_set(conn, "password", auth.hash_password(password))
     load_auth()
     r = RedirectResponse(f"{request.scope.get('root_path', '')}/", status_code=303)
-    set_session(r, request, auth.new_session(AUTH["secret"]))
+    set_session(r, request, new_session())
     return r
+
+
+@site.get("/hello", response_class=HTMLResponse)
+def hello_form(request: Request):
+    st = current_settings()
+    if st.get("timezone") is not None:
+        return to_site(request, "/")
+    return auth_page(request, "hello.html", error=None, bad=set(), typed=False, zone=TZ.key, zone_groups=zonelist.with_current(TZ.key), units=st.get("units"), currency=st.get("currency"))
+
+
+@site.post("/hello")
+async def hello_save(request: Request):
+    """The first run's three answers. A zone already set is never asked again, and never overwritten from here."""
+    form = await request.form()
+    st = current_settings()
+    if st.get("timezone") is not None:
+        return to_site(request, "/")
+    zone = settings_mod.valid_zone(form.get("timezone"))
+    units = form.get("units") if form.get("units") in ("imperial", "metric") else None
+    currency = " ".join(str(form.get("currency") or "").split())[:4]
+    bad = {
+        k: m
+        for k, m in (("timezone", "Pick a time zone from the list."), ("units", "Pick imperial or metric."), ("currency", "Type a currency symbol, like $ or €."))
+        if not {"timezone": zone, "units": units, "currency": currency}[k]
+    }
+    if bad:
+        return auth_page(
+            request,
+            "hello.html",
+            400,
+            error=next(iter(bad.values())),
+            bad=set(bad),
+            typed=True,
+            zone=str(form.get("timezone") or "").strip()[:64] or TZ.key,
+            zone_groups=zonelist.with_current(settings_mod.valid_zone(form.get("timezone")) or TZ.key),
+            units=units or st.get("units"),
+            currency=" ".join(str(form.get("currency") or "").split())[:4] or st.get("currency"),
+        )
+    with db() as conn:
+        for key, value in (("timezone", zone), ("units", units), ("currency", currency)):
+            settings_mod.save(conn, key, value)
+    settings_changed()
+    return to_site(request, "/")
 
 
 @site.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str = ""):
-    if not AUTH["enabled"] or auth.valid_session(AUTH["secret"], session_of(request)):
+    if not AUTH["enabled"] or session_ok(session_of(request)):
         return RedirectResponse(f"{request.scope.get('root_path', '')}/", status_code=303)
     return auth_page(request, "login.html", error=None, next=safe_next(next))
 
 
 def sign_in_key(request: Request) -> str:
-    """Who a failed sign-in counts against: judged from the socket's own address (auth.throttle_key)."""
-    peer = request.scope.get("cc_peer") or (request.client.host if request.client else None)
-    return auth.throttle_key(request.headers, peer)
+    """Who a failed sign-in counts against: judged from the socket's own address, an IPv6 one as its /64 (auth.sign_in_key)."""
+    return auth.sign_in_key(request.headers, socket_peer(request))
+
+
+def socket_peer(request: Request) -> str | None:
+    return request.scope.get("cc_peer") or (request.client.host if request.client else None)
+
+
+def seen_from(request: Request) -> str:
+    """Where a request came from, for an alert or the audit log (auth.seen_from)."""
+    return auth.seen_from(request.headers, socket_peer(request))
 
 
 @site.post("/login")
 def login_submit(request: Request, password: str = Form(...), next: str = Form("")):
     target, key, now = safe_next(next), sign_in_key(request), time.time()
-    held = FAILURES.wait(key, now)
+    held = FAILURES.wait(key, now, known_device(request))
     if held > 0:
         return auth_page(request, "login.html", 429, error=f"Too many tries. Wait {int(held) + 1} seconds.", next=target)
     if not auth.verify_password(AUTH["password"], password):
@@ -2171,12 +2896,12 @@ def login_submit(request: Request, password: str = Form(...), next: str = Form("
         return auth_page(request, "login.html", 401, error="That password is not right.", next=target)
     FAILURES.clear(key)
     r = to_site(request, target)
-    set_session(r, request, auth.new_session(AUTH["secret"]))
+    set_session(r, request, new_session())
     # A login alert: who and from where, on every channel that is set up.
-    agent = (request.headers.get("user-agent") or "")[:80]
+    # In words: the browser and the kind of place, never the raw user-agent or a Docker gateway address (the audit log keeps the address).
+    agent = devices.browser(request.headers.get("user-agent"))
     recorder.notify(
-        f"Signed in to Car Command from {auth.client_ip(request.headers, request.client.host if request.client else None)} at {datetime.now(TZ).strftime('%b %-d, %-I:%M %p')}"
-        + (f" · {agent}" if agent else ""),
+        f"Signed in to Car Command from {devices.where(seen_from(request)) or 'an unknown address'} at {clockfmt.text(datetime.now(TZ), '%b %-d, %-I:%M %p')}" + (f" · {agent}" if agent else ""),
         "login",
     )
     return r
@@ -2190,7 +2915,7 @@ CONNECT_BODY_MAX = 4096
 
 
 def connect_key(request: Request) -> str:
-    return "connect:" + auth.client_prefix(sign_in_key(request))
+    return "connect:" + sign_in_key(request)
 
 
 async def read_capped(request: Request, limit: int) -> bytes | None:
@@ -2245,11 +2970,7 @@ def connect_form(request: Request):
     params, problem = connect.check_request(request.query_params, APP_REDIRECTS)
     if problem:
         return connect_refusal(request, "Can't connect that app.", problem)
-    if (
-        params["redirect_uri"] in APP_REDIRECTS
-        and (auth.valid_session(AUTH["secret"], session_of(request)) or getattr(request.state, "cf", None))
-        and (known_app := app_known(params["redirect_uri"], params["client"]))
-    ):
+    if params["redirect_uri"] in APP_REDIRECTS and (session_ok(session_of(request)) or getattr(request.state, "cf", None)) and (known_app := app_known(params["redirect_uri"], params["client"])):
         # An install that lists an app's redirect trusts that app once someone has allowed it here by hand:
         # after that, someone already signed in is sent straight back to it with a code, and the sign-in sheet
         # just closes. The token still shows in Settings, and Forget there brings the Allow page back.
@@ -2380,7 +3101,23 @@ async def connect_token(request: Request):
 
 
 @site.post("/logout")
-def logout(request: Request):
+async def logout(request: Request):
+    """Signs this browser out on the server too, so a copy of its cookie opens nothing. Other devices stay
+    signed in; Settings signs them out (signin_everywhere)."""
+    cookie = session_of(request)
+
+    def save() -> None:
+        if not session_ok(cookie):
+            return
+        with db() as conn:
+            revoked = auth.revoke(AUTH["revoked"], AUTH["secret"], cookie, time.time())
+            auth.store_set(conn, REVOKED_KEY, json.dumps(revoked))
+            AUTH["revoked"] = revoked
+
+    try:
+        await asyncio.to_thread(save)
+    except Exception as err:  # noqa: BLE001 - the browser is still signed out; only the server-side end failed
+        LOG.warning("sign-out: could not record it on the server: %s", err)
     r = RedirectResponse(f"{request.scope.get('root_path', '')}/login", status_code=303)
     set_session(r, request, None)
     return r
@@ -2440,7 +3177,9 @@ def now(request: Request):
     vehicles = all_vehicles() if "vin" not in request.query_params else []
     car = garage_car() if len(vehicles) > 1 else pick(request)
     if car.get("empty"):
-        return page(request, "welcome.html", car=car, active="now", connector=connector_down())
+        if current_settings().get("timezone") is None:
+            return to_site(request, "/hello")  # first run: the zone, units and currency come before the first look
+        return page(request, "welcome.html", car=car, active="now", connector=connector_down(), install=os.environ.get("CC_INSTALL") or "compose")
     if car.get("garage"):
         cars = []
         for v in all_vehicles():
@@ -2448,9 +3187,7 @@ def now(request: Request):
             c["ribbon"] = ribbon(v["vin"])
             c["last_drive"] = next(iter(drives(v["vin"], 1)), None)
             c["route"] = tesla_stream_worker.route(v["vin"])
-            c["ident"] = car_identities([v])[v["vin"]]
             cars.append(c)
-        cars.sort(key=lambda c: (not c["live"], -(c["updated"].timestamp() if c.get("updated") else 0)))
         today = today_by_car()
         end = datetime.now(timezone.utc)
         acts = activity_banners(cars)
@@ -2468,29 +3205,90 @@ def now(request: Request):
             active="now",
             live_vin=GARAGE,
         )
-    series = battery_series(car["vin"])
+    win = nowpage.window_of(request.query_params.get("win"), request.cookies.get(nowpage.WINDOW_COOKIE))
+    end = datetime.now(timezone.utc)
     ds = drives(car["vin"], 5)
-    spans = [d["start_date"] for d in ds] + [d["destination_date"] for d in ds if d.get("destination_date")]
+    # today's drives join the five recent ones in the one positions read: the map draws the
+    # day's path from the same rows the thumbnails are drawn from
+    day_start = day_bounds(None)[0]
+    seen = {d["id"] for d in ds}
+    since = min(day_start, end - timedelta(hours=26))  # the day's path and the 24-hour strip
+    both = ds + [d for d in drives(car["vin"], None, since, None) if d["id"] not in seen]
+    spans = [d["start_date"] for d in both] + [d["destination_date"] for d in both if d.get("destination_date")]
+    pts = route_points(both, min(spans), max(spans), "simple", 200) if spans else {}
+    # the strip's charges: the five recent ones, and any the last day holds beyond them
+    chs = charges(car["vin"], 5)
+    seen_c = {c["id"] for c in chs}
+    chs += [c for c in charges(car["vin"], None, end - timedelta(hours=26), None) if c["id"] not in seen_c]
+    window = now_window(car, win, end, (both, chs) if win == "24h" else None)  # a week of strip links to its drives and charges too; the routes stay with the day
     acts = activity_banners([car])
-    return page(
+    resp = page(
         request,
         "now.html",
         **now_card_data(car),
         acts=acts,
         act_sig=activity.signature(acts),
-        thumbs=route_thumbs(ds, min(spans), max(spans), 64, 36) if spans else {},
+        thumbs={d["id"]: route_svg(thin(pts[d["id"]]), 64, 36) for d in ds if d["id"] in pts},
+        **now_paths(ds, both, pts, day_start),
         car=car,
-        ribbon=ribbon(car["vin"]),
-        spark=sparkline(series),
+        **window,
         software=software_history(car["vin"]),
-        spark_first=series[0][0] if series else None,
         drives=ds,
-        charges=charges(car["vin"], 5),
-        ticks=nowpage.strip_ticks(datetime.now(timezone.utc) - timedelta(hours=24), datetime.now(timezone.utc), TZ),
-        pw=energy_now(),
+        charges=chs[:5],
         active="now",
         live_vin=car["vin"],
     )
+    if request.query_params.get("win") in nowpage.WINDOWS:  # the toggle: remembered by this browser
+        remember_window(request, resp, win)
+    return resp
+
+
+def remember_window(request: Request, resp: Response, win: str) -> None:
+    resp.set_cookie(nowpage.WINDOW_COOKIE, win, max_age=365 * 86400, samesite="lax", path=request.scope.get("root_path", "") or "/")
+
+
+def now_window(car: dict, win: str, end: datetime, marks: tuple[list[dict], list[dict]] | None = None) -> dict:
+    """What the 24 h / 7 d switch changes on Now: the strip with its axis and links, the battery
+    line, over the last `win`. `marks` are the drives and charges the strip links to, when the page
+    already holds them; otherwise they are read for the window."""
+    span_h = nowpage.WINDOWS[win]
+    start = end - timedelta(hours=span_h)
+    series = battery_series(car["vin"], span_h // 24 or 1)
+    if car.get("soc") is not None:
+        series = [*series, (end, float(car["soc"]))]  # the line runs to now at the level it has now
+    rib = ribbon(car["vin"], span_h, end)
+    marks_drives, marks_charges = marks or (drives(car["vin"], None, start, None), charges(car["vin"], None, start, None))
+    return {
+        "win": win,
+        "ribbon": rib,
+        "strip_marks": nowpage.strip_marks(rib, marks_drives, marks_charges),
+        "spark": sparkline(series, window=(start, end)),
+        "ticks": nowpage.strip_ticks(start, end, TZ, **nowpage.TICKS[win]),
+    }
+
+
+@site.get("/now/window", response_class=HTMLResponse)
+def now_window_page(request: Request, win: str = "24h"):
+    """The strip and battery line alone, for the 24 h / 7 d switch to swap in without a reload."""
+    car = pick(request)
+    if car.get("garage") or car.get("empty") or win not in nowpage.WINDOWS:
+        raise HTTPException(404)
+    vehicles = all_vehicles()
+    html = templates.env.get_template("_now_window.html").render(
+        root=request.scope.get("root_path", ""), q=f"?vin={car['vin']}" if len(vehicles) > 1 else "", car=car, u=units_mod.ACTIVE, **now_window(car, win, datetime.now(timezone.utc))
+    )
+    resp = HTMLResponse(html, headers={"Cache-Control": "no-store"})
+    remember_window(request, resp, win)
+    return resp
+
+
+def now_paths(recent: list[dict], both: list[dict], pts: dict, day_start: datetime) -> dict:
+    """The route map beside the car's: today's drives, or on a day without any the last drive."""
+    day = nowpage.day_path(both, pts, day_start)
+    if day:
+        return {"day_path": day, "path_kind": "today"}
+    last = next((d for d in recent if d["id"] in pts), None)
+    return {"day_path": [pts[last["id"]]] if last else [], "path_kind": "last" if last else None}
 
 
 # ---- the live Now page: each open Now or garage page holds one stream, and gets its car's
@@ -2524,6 +3322,7 @@ def now_card_data(car: dict) -> dict:
         "tread_last": next(iter(tread_log([car["vin"]])), None),
         "route": tesla_stream_worker.route(car["vin"]),  # from memory: the stream's newest values
         "ident": car_identities([{"vin": car["vin"]}])[car["vin"]],
+        "cmd": command_view(car),  # from memory: settings, the connector's tree, the token's scopes
     }
 
 
@@ -2581,6 +3380,7 @@ def activity_banners(cars: list[dict]) -> list[dict]:
     if not active:
         return []
     energy, out = vehicle_energy(), []
+    home_names = [h.get("name") for h in home_places()]
     with db() as conn:
         feed_table = conn.execute("SELECT to_regclass('cc_teslafi_rows') AS t").fetchone()["t"]
         for c, k in active:
@@ -2589,8 +3389,9 @@ def activity_banners(cars: list[dict]) -> list[dict]:
             span = activity.run(activity_rows(conn, c, k, now), "Driving" if k == "driving" else "Charging", now)
             route = live_route_of(conn, c["vin"], span[0]["at"] if span else now - timedelta(hours=1), now) if k == "driving" else None
             cap, per_rated = energy.get(c["vin"], (None, None))
-            out.append(activity.banner(c, k, span, now, route=route, capacity_kwh=cap or c.get("capacity_kwh"), kwh_per_rated_mi=per_rated))
-    return sorted(out, key=lambda b: b["name"].lower())  # the page and the stream list the cars in different orders
+            before = next(iter(drives(c["vin"], 1)), None) if k == "driving" else None
+            out.append(activity.banner(c, k, span, now, route=route, capacity_kwh=cap or c.get("capacity_kwh"), kwh_per_rated_mi=per_rated, last_drive=before, home_names=home_names))
+    return sorted(out, key=lambda b: nowpage.car_sort_key(b["name"]))
 
 
 ACT_KEY = "activity"  # the banners' place in a stream's cards (data-live="activity"): no vin is called that
@@ -2623,9 +3424,8 @@ def draw_live_cards(vin: str | None, root: str) -> dict[str, dict]:
             c["ribbon"] = kept[1]
             c["last_drive"] = cached(f"live-last-drive:{v['vin']}", 60, lambda v=v: next(iter(drives(v["vin"], 1)), None))
             c["route"] = tesla_stream_worker.route(v["vin"])
-            c["ident"] = car_identities([v])[v["vin"]]
             html = _garage_card().render(c=c, root=root, colors=colors, today=today.get(c["vin"]), ticks=ticks)
-            out[c["vin"]] = {"html": html, "lat": c.get("lat"), "lon": c.get("lon")}
+            out[c["vin"]] = {"html": html, "lat": c.get("lat"), "lon": c.get("lon"), "heading": c.get("heading")}
             cars.append(c)
         out[ACT_KEY] = {"html": _activity_html(activity_banners(cars), root, colors, link=True)}
         return out
@@ -2633,9 +3433,10 @@ def draw_live_cards(vin: str | None, root: str) -> dict[str, dict]:
     if not car.get("vin"):
         return {}
     q = f"?vin={car['vin']}" if len(vehicles) > 1 else ""
-    html = templates.env.get_template("_now_hero.html").render(car=car, root=root, q=q, **now_card_data(car))
+    data = now_card_data(car)
+    html = templates.env.get_template("_now_hero.html").render(car=car, root=root, q=q, **data)
     acts = _activity_html(activity_banners([car]), root, car_colors(vehicles), link=False)
-    return {car["vin"]: {"html": html, "lat": car.get("lat"), "lon": car.get("lon")}, ACT_KEY: {"html": acts}}
+    return {car["vin"]: {"html": html, "lat": car.get("lat"), "lon": car.get("lon"), "heading": car.get("heading")}, ACT_KEY: {"html": acts}}
 
 
 class StreamEnded(Exception):
@@ -2753,6 +3554,7 @@ async def api_stream(request: Request, vin: str | None = None):
     if vin and vin != GARAGE and vin not in {v["vin"] for v in await asyncio.to_thread(all_vehicles)}:
         return JSONResponse({"error": "no such car"}, status_code=404)
     prev: dict[str, str] = {}
+    prev_garage: list[dict | None] = [None]
     token = getattr(request.state, "token", None)
     held = auth.token_hash(auth.bearer_of(request.headers.get("authorization")) or "") if token else None
     if held and STREAMS_OPEN.get(held, 0) >= STREAM_CAP:
@@ -2779,8 +3581,15 @@ async def api_stream(request: Request, vin: str | None = None):
             raise StreamEnded  # revoked while open: no more of the car, however long the connection lives
         now = TOKENS.get(held) or token or {}  # the token as it is now: the owner may have changed what it may see
         status = now.get("kind") == "status"
-        sent, prev = livestream.changed_states(prev, shared_states(vin, status, status and bool(now.get("share_place"))))
-        return [livestream.sse("now", s) for s in sent]
+        places = not status or bool(now.get("share_place"))
+        sent, prev = livestream.changed_states(prev, shared_states(vin, status, status and places))
+        frames = [livestream.sse("now", s) for s in sent]
+        if garagedoor.configured():  # the door, with whether a car is home judged from every car, whatever this stream is limited to
+            door = garagedoor.READER.now(shared_states(None, False), places)
+            if door is not None and door != prev_garage[0]:
+                frames.append(livestream.sse("garage", door))
+            prev_garage[0] = door
+        return frames
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}, background=BackgroundTask(release))
 
@@ -2791,11 +3600,24 @@ def list_window(month: str | None, from_: str | None, to: str | None, latest) ->
     if d0 or d1:
         start = datetime(d0.year, d0.month, d0.day, tzinfo=TZ) if d0 else datetime(2000, 1, 1, tzinfo=TZ)
         end = (datetime(d1.year, d1.month, d1.day, tzinfo=TZ) + timedelta(days=1)) if d1 else datetime.now(TZ) + timedelta(days=1)
-        label = f"{d0.strftime('%b %-d, %Y') if d0 else 'the beginning'} to {d1.strftime('%b %-d, %Y') if d1 else 'today'}"
+        label = f"{clockfmt.text(d0, '%b %-d, %Y') if d0 else 'the beginning'} to {clockfmt.text(d1, '%b %-d, %Y') if d1 else 'today'}"
         return {"start": start, "end": end, "label": label, "ym": None, "custom": True, "from": d0, "to": d1, "is_current": True, "prev": None, "next": None, "prev_label": "", "next_label": ""}
     w = month_window(month, TZ, latest)
     w["custom"] = False
     return w
+
+
+def capped(request: Request, rows: list[dict], key: str, desc: bool, at: str) -> tuple[list[dict], dict | None]:
+    """A list cut to daypage.LIST_CAP rows (more with ?rows=), and the link to the rest."""
+    try:
+        limit = max(daypage.LIST_CAP, int(request.query_params.get("rows") or 0))
+    except ValueError:
+        limit = daypage.LIST_CAP
+    rows, left = daypage.cap(rows, limit, TZ, at if key == "start" else None)
+    if not left:
+        return rows, None
+    keep = [(k, v) for k, v in request.query_params.multi_items() if k != "rows"]
+    return rows, {"left": left, "label": "Show older" if key == "start" and desc else "Show more", "href": "?" + urlencode(keep + [("rows", str(len(rows) + daypage.LIST_CAP))])}
 
 
 def sort_base(request: Request) -> str:
@@ -2809,16 +3631,20 @@ def drives_page(request: Request, month: str | None = None, from_: str | None = 
     car = pick(request)
     w = list_window(month, from_, to, latest_dates(car["vin"])["drive"])
     qp = request.query_params
-    flt = {"frm": qp.get("at") or None, "to": qp.get("dest") or None, "both_ways": qp.get("both") == "on", "min_mi": _float_or_none(qp.get("min")), "text": qp.get("q") or None}
+    every = places_detail()
+    (frm, frm_id), (to, to_id) = end_filter(qp.get("at"), every), end_filter(qp.get("dest"), every)
+    flt = {"frm": frm, "to": to, "frm_id": frm_id, "to_id": to_id, "both_ways": qp.get("both") == "on", "min_mi": _float_or_none(qp.get("min")), "text": qp.get("q") or None}
     hidden = qp.get("show") == "hidden"
     rows = hidden_drives(car["vin"]) if hidden else filter_drives(drives(car["vin"], None, w["start"], w["end"]), **flt)
     rows, key, desc = sort_rows(rows, sort, dir != "asc", DRIVE_SORTS)
+    rows, more = capped(request, rows, key, desc, "start_date")
     days = daypage.by_day(rows, TZ, "start_date") if key == "start" else None
     return page(
         request,
         "drives.html",
         car=car,
         drives=rows,
+        more=more,
         days=days,
         window=w,
         sort=key,
@@ -2829,8 +3655,34 @@ def drives_page(request: Request, month: str | None = None, from_: str | None = 
         now_local=datetime.now(TZ),
         said=qp.get("said"),
         flt=dict(flt, raw=dict(qp)),
+        ends=filter_ends(qp.get("at"), qp.get("dest"), every, named_places()),
         hidden=hidden,
     )
+
+
+def end_filter(value: str | None, every: list[dict]) -> tuple[str | None, int | None]:
+    """One end of the Drives filter as (name, place id): a place's name, or "#12" for a place
+    by its id, which is how a route reaches a found place that has no name to pick. An id no
+    place has matches nothing, not everything."""
+    if not value:
+        return None, None
+    if re.fullmatch(r"#\d{1,9}", value):
+        pid = int(value[1:])
+        return None, pid if any(p["id"] == pid for p in every) else -1
+    return value, None
+
+
+def filter_ends(frm: str | None, to: str | None, every: list[dict], named: list[dict]) -> dict:
+    """What the Drives filter says in words and what its two dropdowns hold beyond the named
+    places: each end's label, and an extra option when the end is a place nobody named."""
+    by_id = {f"#{p['id']}": p["name"] for p in every}
+    names = {p["name"] for p in named}
+
+    def end(v):
+        label = by_id.get(v, v) if v else None
+        return {"value": v or "", "label": label, "extra": bool(v) and v not in names}
+
+    return {"from": end(frm), "to": end(to)}
 
 
 def _float_or_none(v: str | None) -> float | None:
@@ -2863,9 +3715,34 @@ def calendar_page(request: Request, month: str | None = None, year: int | None =
         month["days_driven"] = sum(1 for c in month_cells if c["drives"])
         month["best_day"] = max((c for c in month_cells if c["drives"]), key=lambda c: c["miles"], default=None)
     vins = [v["vin"] for v in all_vehicles()] if car.get("garage") else [car["vin"]]
+    # A day's Wh/mi and cost, the strips beside the totals and the battery line: all from the
+    # rows above, but the level runs, which are a month of one indexed table per car.
+    md, mc = [d for d in ds if inside(d.get("start_date"))], [c for c in cs if inside(c.get("session_start_date"))]
+    day_rows = {r["period"]: r for r in summarize(md, mc, "day", TZ, None, None)}
+    root, vq = request.scope.get("root_path", ""), (f"&vin={car['vin']}" if len(all_vehicles()) > 1 else "")
+    anchor = w["start"].date()
+    strips_ = calview.month_strips(
+        anchor.year,
+        anchor.month,
+        calview.day_values(month_cells, day_rows, units_mod.ACTIVE),
+        datetime.now(TZ).date(),
+        units_mod.ACTIVE,
+        current_settings().get("currency", "$"),
+        lambda d: f"{root}/day?date={d.isoformat()}{vq}",
+    )
+    strips_[2]["est"] = bool(month and month.get("avg_cost"))  # Cost, as the Charging table marks it
+    st = current_settings()
+    petrol = petrol_comparison(charge_groups(car["vin"], w["start"], w["end"]), car_efficiency(), st.get("gas_mpg"), averages_mod.active(), st.get("gas_price")) if mc else None
+    battery = [{"vin": v, "chart": month_battery(v, w, [d for d in md if d.get("vin") == v], [c for c in mc if c.get("vin") == v])} for v in vins]
     return page(
         request,
         "calendar.html",
+        day_rows=day_rows,
+        day_temps=calview.day_temps(md, TZ),
+        split=calview.charge_split(mc),
+        petrol=petrol,
+        strips=strips_,
+        battery=[b for b in battery if b["chart"]],
         car=car,
         weeks=weeks,
         window=w,
@@ -2875,6 +3752,31 @@ def calendar_page(request: Request, month: str | None = None, year: int | None =
         max_miles=max((c["miles"] for c in month_cells), default=0.0),
         charge_pins=charge_pins([c for c in cs if inside(c.get("session_start_date"))]),
         active="calendar",
+    )
+
+
+def month_battery(vin: str, w: dict, ds: list[dict], cs: list[dict]) -> dict | None:
+    """One car's battery line for a calendar month (calview.month_chart). A past month is kept
+    six hours, this one five minutes: the level runs are the only rows it reads."""
+
+    def load():
+        with db() as conn:
+            rows = conn.execute(month_levels_sql(), {"vin": vin, "a": w["start"], "b": w["end"]}).fetchall()
+        # each run as its two ends, clipped to the month, so steps draw as steps
+        levels = [p for r in rows for p in ((max(r["first_date"], w["start"]), r["level"]), (min(r["last_date"], w["end"]), r["level"]))]
+        return calview.month_chart(levels, ds, cs, w["start"], w["end"], datetime.now(timezone.utc), TZ, units_mod.ACTIVE)
+
+    return cached(f"calbat:{vin}:{w['ym']}:{units_mod.ACTIVE.metric}", 300 if w["is_current"] else 21600, load)
+
+
+def month_levels_sql() -> str:
+    """A month's level runs and the one in force when it began, each a range on drive_levels'
+    (drive_id, first_date) index (the lateral keeps the second from reading every earlier run),
+    so a month of a car logged for years reads that month alone."""
+    run = "SELECT l.first_date, l.last_date, l.level FROM drive_levels l WHERE l.drive_id = d.id AND l.level IS NOT NULL"
+    return (
+        f"SELECT x.* FROM drives d CROSS JOIN LATERAL ({run} AND l.first_date < %(a)s ORDER BY l.first_date DESC LIMIT 1) x WHERE d.vin = %(vin)s"
+        f" UNION ALL SELECT x.* FROM drives d CROSS JOIN LATERAL ({run} AND l.first_date >= %(a)s AND l.first_date < %(b)s) x WHERE d.vin = %(vin)s ORDER BY first_date"
     )
 
 
@@ -2904,9 +3806,31 @@ def calendar_year(request: Request, car: dict, year: int) -> HTMLResponse:
     totals = {k: sum(m["totals"][k] for m in months) for k in ("drives", "miles", "charges", "kwh")}
     totals["days_driven"] = sum(m["days_driven"] for m in months)
     best = max((c for c in cells if c["drives"]), key=lambda c: c["miles"], default=None)
+    # The strips beside the totals and under each small month: the cells' days, the day rows' cost
+    inside = lambda t: t is not None and start <= t < end  # noqa: E731
+    yd, yc = [d for d in ds if inside(d.get("start_date"))], [c for c in cs if inside(c.get("session_start_date"))]
+    summary = summarize(yd, yc, "day", TZ, None, None)
+    u, root = units_mod.ACTIVE, request.scope.get("root_path", "")
+    vq = f"&vin={car['vin']}" if len(all_vehicles()) > 1 else ""
+    vals = calview.day_values(cells, {r["period"]: r for r in summary}, u)
+    today = datetime.now(TZ).date()
+    strips_ = calview.year_strips(
+        year,
+        vals,
+        today,
+        u,
+        current_settings().get("currency", "$"),
+        lambda y, m: f"{root}/calendar?month={y}-{m:02d}{vq}",
+        lambda d: f"{root}/calendar?month={d:%Y-%m}{vq}",
+        "sunday" if WEEK_START == 6 else "monday",
+    )
+    strips_[2]["est"] = any(r.get("avg_cost") for r in summary)
+    for i, m in enumerate(months, 1):
+        m["cost"] = sum(v for d, v in vals["cost"].items() if d.month == i)
     return page(
         request,
         "calendar_year.html",
+        strips=strips_,
         car=car,
         year=year,
         months=months,
@@ -2921,7 +3845,7 @@ def calendar_year(request: Request, car: dict, year: int) -> HTMLResponse:
 _driveprint_cache: dict[str, tuple[datetime, list]] = {}
 
 
-def driveprint(vin: str) -> list[list]:
+def driveprint(vin: str, fresh: bool = False) -> list[list]:
     """Every 100 m cell the car has reported from: where, how many times, and when it
     first arrived. Grouped once an hour per vehicle; 522K positions become ~60K cells.
 
@@ -2930,7 +3854,7 @@ def driveprint(vin: str) -> list[list]:
     drive". Map payloads drop it again, so the JSON is the same size it was."""
     hit = _driveprint_cache.get(vin)
     now = datetime.now(timezone.utc)
-    if hit and now - hit[0] < timedelta(hours=1):
+    if hit and not fresh and now - hit[0] < timedelta(hours=1):
         return hit[1]
     with db() as conn:
         rows = conn.execute(
@@ -2976,6 +3900,8 @@ def map_page(request: Request, month: str | None = None):
 @site.get("/api/month-routes")
 def api_month_routes(vin: str | None = None, month: str | None = None):
     """Per-drive polylines for one month, downsampled, with the car's colour index; the Calendar's map."""
+    if month and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+        return JSONResponse({"error": "month is YYYY-MM, like 2026-03"}, status_code=400)
     car_vins = [v["vin"] for v in all_vehicles()] if vin == GARAGE else [pick_vin(vin)]
     colors = car_colors(all_vehicles())
     w = month_window(month, TZ)
@@ -2983,7 +3909,8 @@ def api_month_routes(vin: str | None = None, month: str | None = None):
     with db() as conn:
         for v in car_vins:
             rows = conn.execute(
-                """SELECT at, latitude, longitude FROM cc_positions WHERE vin = %s AND at >= %s AND at < %s AND UPPER(state) = 'DRIVING' ORDER BY at""", (v, w["start"], w["end"])
+                "SELECT at, latitude, longitude FROM cc_positions p WHERE vin = %s AND at >= %s AND at < %s AND UPPER(state) = 'DRIVING'" + driveedits.left_out() + " ORDER BY at",
+                (v, w["start"], w["end"]),
             ).fetchall()
             # A drive matched to the roads draws that line, and its readings are left out of
             # the plain lines below (the same drive twice would be a straight-cut ghost).
@@ -3017,7 +3944,9 @@ def matched_spans(conn, vin: str, start: datetime, end: datetime) -> list[tuple[
     lines = routematch.matched_lines(conn, vin, start, end)
     if not lines:
         return []
-    trips = conn.execute("SELECT start_date, destination_date FROM trips WHERE vin = %s AND start_date >= %s AND start_date < %s AND destination_date IS NOT NULL", (vin, start, end)).fetchall()
+    trips = conn.execute(
+        "SELECT t.start_date, t.destination_date FROM trips t WHERE t.vin = %s AND t.start_date >= %s AND t.start_date < %s AND t.destination_date IS NOT NULL" + driveedits.ABSORBED, (vin, start, end)
+    ).fetchall()
     out = []
     for t in trips:
         pts = routematch.line_for(lines, t["start_date"], t["destination_date"])
@@ -3039,7 +3968,7 @@ def compact_line(pts: list) -> list:
 _driveprint_body: dict[str, tuple[datetime, bytes, tuple]] = {}
 
 
-def driveprint_body(key: str) -> bytes:
+def driveprint_body(key: str, fresh: bool = False) -> bytes:
     """The finished JSON for one map, cached as bytes.
 
     The per-vehicle cells were already cached, so the grouping query ran once an hour —
@@ -3055,7 +3984,7 @@ def driveprint_body(key: str) -> bytes:
     now = datetime.now(timezone.utc)
     vehicles = all_vehicles()
     order = tuple(v["vin"] for v in vehicles)
-    if hit and now - hit[0] < timedelta(hours=1) and hit[2] == order:
+    if hit and not fresh and now - hit[0] < timedelta(hours=1) and hit[2] == order:
         return hit[1]
     at = {vin: i for i, vin in enumerate(order)}
     if key == GARAGE:
@@ -3067,12 +3996,61 @@ def driveprint_body(key: str) -> bytes:
     return body
 
 
+def warm_driveprints(every: int = 2700) -> None:
+    """Build every car's cells and every map's body in the background, at start and then each
+    45 minutes, inside the hour both are kept: the Map and a drive's new ground never build
+    them on a request (cold, that was 0.8-1 s), except after a drive edit forgets the cells."""
+    while True:
+        try:
+            vins = [v["vin"] for v in all_vehicles()]
+            for vin in vins:
+                driveprint(vin, fresh=True)
+            for key in [GARAGE, *vins]:  # the garage first: the key the Map opens on
+                driveprint_body(key, fresh=True)
+        except Exception as err:  # noqa: BLE001 - a request builds what it needs, as before
+            LOG.warning("driveprint warm-up: %s", err)
+        time.sleep(every)
+
+
 @site.get("/api/driveprint")
 def api_driveprint(vin: str | None = None):
     """[[lat, lon, n, car], ...], car being its place in the garage's order (the switcher's);
     vin=all gives every car."""
     key = GARAGE if vin == GARAGE else pick_vin(vin)
     return Response(content=driveprint_body(key), media_type="application/json")
+
+
+@site.get("/api/charge-heat")
+def api_charge_heat(vin: str | None = None):
+    """Every charge the cars have made, grouped to about 100 m: {pts: [[lat, lon, charges,
+    car], ...], top: the five places charged at most (calview.charge_places)}, car being its
+    place in the garage's order. The Map's heat layer and the list under it; kept ten minutes."""
+    order = [v["vin"] for v in all_vehicles()]
+    vins = order if vin == GARAGE else [pick_vin(vin)]
+
+    def load():
+        with db() as conn:
+            rows = conn.execute(charge_heat_sql(), (vins,)).fetchall()
+        known, cells = places(), geocells()
+        name = lambda lat, lon: (place_for(lat, lon, known) or {}).get("name") or rough_label(lat, lon, cells)  # noqa: E731
+        spots = [{"lat": float(r["lat"]), "lon": float(r["lon"]), "n": int(r["n"]), "kwh": float(r["kwh"]), "cost": float(r["cost"]), "priced_kwh": float(r["priced_kwh"])} for r in rows]
+        return {
+            "pts": [[s_["lat"], s_["lon"], s_["n"], order.index(r["vin"]) if r["vin"] in order else 0] for s_, r in zip(spots, rows)],
+            "top": calview.charge_places(spots, name),
+        }
+
+    return JSONResponse(cached("charge_heat:" + ",".join(vins), 600, load))
+
+
+def charge_heat_sql() -> str:
+    """Charges by car and ~100 m spot, on the same thresholds and hidden rows as every list:
+    how many, the kWh, and the cost with the kWh it priced (for a fair price per kWh)."""
+    return (
+        "SELECT c.vin, ROUND(c.session_position_latitude::numeric, 3) AS lat, ROUND(c.session_position_longitude::numeric, 3) AS lon, COUNT(*) AS n,"
+        " COALESCE(SUM(COALESCE(f.kwh, c.real_charged)), 0) AS kwh, COALESCE(SUM(f.cost), 0) AS cost, COALESCE(SUM(f.kwh) FILTER (WHERE f.cost IS NOT NULL), 0) AS priced_kwh"
+        " FROM charging_sessions c LEFT JOIN cc_charge_facts f ON f.session_id = c.id"
+        " WHERE c.vin = ANY(%s) AND c.session_position_latitude IS NOT NULL AND c.session_position_longitude IS NOT NULL" + charged_sql() + " GROUP BY 1, 2, 3"
+    )
 
 
 def pick_vin(vin: str | None) -> str:
@@ -3086,24 +4064,28 @@ def since_last_charge(vin: str, when: datetime, kwh_per_rated_mi: float | None) 
     """Battery stats since the last charge, as of `when`; day.since_charge decides which readings still stand."""
     with db() as conn:
         last = conn.execute("SELECT session_end_date, end_level FROM charging_sessions WHERE vin = %s AND session_end_date <= %s ORDER BY session_end_date DESC LIMIT 1", (vin, when)).fetchone()
-        if not last:
-            return None
-        t0 = last["session_end_date"]
-        LEVEL_AT = "SELECT l.level AS v, l.last_date FROM drive_levels l JOIN drives d ON d.id = l.drive_id WHERE d.vin = %s AND l.first_date <= %s ORDER BY l.first_date DESC LIMIT 1"
-        # Same rewrite as the facts queries, and this one is on a page: with the join
-        # inside, each of these scans every drive_ranges row rather than seeking the
-        # (drive_id, first_date) index.
-        RANGE_AT = "SELECT r.range AS v, r.last_date FROM drive_ranges r WHERE r.drive_id = (SELECT id FROM drives WHERE vin = %s) AND r.first_date <= %s ORDER BY r.first_date DESC LIMIT 1"
-        lv0, lv1 = conn.execute(LEVEL_AT, (vin, t0)).fetchone(), conn.execute(LEVEL_AT, (vin, when)).fetchone()
-        r0, r1 = conn.execute(RANGE_AT, (vin, t0)).fetchone(), conn.execute(RANGE_AT, (vin, when)).fetchone()
-        moved = conn.execute(
-            """SELECT COALESCE(SUM(destination_odometer - start_odometer) FILTER (WHERE destination_odometer IS NOT NULL), 0) AS mi,
-                      MAX(COALESCE(destination_date, start_date)) AS last_move
-               FROM trips WHERE vin = %s AND start_date >= %s AND start_date <= %s""",
-            (vin, t0, when),
-        ).fetchone()
+        return between_charges(conn, vin, last["session_end_date"], last["end_level"], when, kwh_per_rated_mi) if last else None
+
+
+def between_charges(conn, vin: str, t0: datetime, end_level: float | None, when: datetime, kwh_per_rated_mi: float | None) -> dict:
+    """What the battery did from a charge's end, `t0`, to `when`: Since the last charge on the
+    Day page, and What this charge bought (until the next one) on a charge's page. Six
+    indexed lookups and one sum over the trips between."""
+    LEVEL_AT = "SELECT l.level AS v, l.last_date FROM drive_levels l JOIN drives d ON d.id = l.drive_id WHERE d.vin = %s AND l.first_date <= %s ORDER BY l.first_date DESC LIMIT 1"
+    # Same rewrite as the facts queries, and this one is on a page: with the join
+    # inside, each of these scans every drive_ranges row rather than seeking the
+    # (drive_id, first_date) index.
+    RANGE_AT = "SELECT r.range AS v, r.last_date FROM drive_ranges r WHERE r.drive_id = (SELECT id FROM drives WHERE vin = %s) AND r.first_date <= %s ORDER BY r.first_date DESC LIMIT 1"
+    lv0, lv1 = conn.execute(LEVEL_AT, (vin, t0)).fetchone(), conn.execute(LEVEL_AT, (vin, when)).fetchone()
+    r0, r1 = conn.execute(RANGE_AT, (vin, t0)).fetchone(), conn.execute(RANGE_AT, (vin, when)).fetchone()
+    moved = conn.execute(
+        """SELECT COALESCE(SUM(destination_odometer - start_odometer) FILTER (WHERE destination_odometer IS NOT NULL), 0) AS mi,
+                  MAX(COALESCE(destination_date, start_date)) AS last_move
+           FROM trips t WHERE vin = %s AND start_date >= %s AND start_date <= %s""" + driveedits.ABSORBED,
+        (vin, t0, when),
+    ).fetchone()
     pair = lambda r: (r["v"], r["last_date"]) if r and r["v"] is not None else None
-    return since_charge(t0, when, last["end_level"], pair(lv0), pair(lv1), pair(r0), pair(r1), moved["mi"] if moved else 0.0, moved["last_move"] if moved else None, kwh_per_rated_mi)
+    return since_charge(t0, when, end_level, pair(lv0), pair(lv1), pair(r0), pair(r1), moved["mi"] if moved else 0.0, moved["last_move"] if moved else None, kwh_per_rated_mi)
 
 
 def day_bounds(day: str | None) -> tuple[datetime, datetime, date]:
@@ -3139,9 +4121,18 @@ def day_for_car(v: dict, start: datetime, end: datetime, now_utc: datetime) -> d
                 "SELECT first_date, last_date, sentry, climate FROM cc_modes WHERE vin = %s AND last_date >= %s AND first_date < %s ORDER BY first_date", (vin, start, until)
             ).fetchall()
         ]
-        track = conn.execute("SELECT at, latitude, longitude, state, elevation FROM cc_positions WHERE vin = %s AND at >= %s AND at < %s ORDER BY at", (vin, start, end)).fetchall()
+        track = conn.execute(
+            "SELECT at, latitude, longitude, state, elevation FROM cc_positions p WHERE vin = %s AND at >= %s AND at < %s " + driveedits.left_out() + " ORDER BY at", (vin, start, end)
+        ).fetchall()
         matched = routematch.matched_lines(conn, vin, lookback, end, "simple")
-    rows = day_sessions(ds, cs, states, levels, start, until, ranges, inside, modes, k) if until > start else []
+        # every drive around the day, hidden and tiny ones too, for the miles none of them holds
+        around = conn.execute(
+            "SELECT start_date, destination_date, start_odometer, destination_odometer FROM trips WHERE vin = %s AND start_date >= %s AND start_date < %s ORDER BY start_date",
+            (vin, start - timedelta(hours=12), end + timedelta(hours=12)),
+        ).fetchall()
+    car_on = car_on_rows(vin, start, until)
+    rows = day_sessions(ds, cs, states, levels, start, until, ranges, inside, modes, k, car_on) if until > start else []
+    unlogged_mi = daypage.unlogged([dict(t) for t in around], rows)
     # one polyline per drive, so parked hours do not draw a line to nowhere
     routes = []
     for r in rows:
@@ -3151,23 +4142,25 @@ def day_for_car(v: dict, start: datetime, end: datetime, now_utc: datetime) -> d
             pts = routematch.choose([[p["latitude"], p["longitude"]] for p in inside_drive], routematch.line_for(matched, r["start"], r["end"]))
             if len(pts) >= 2:
                 routes.append(pts)
-            _series, r["climb_ft"], r["descent_ft"] = elevation_profile(inside_drive)
+            inside_drive, r["ground"] = terrain_mod.ground_track(inside_drive, TERRAIN)  # the ground under the road when the model covers the drive
+            heights, r["climb_ft"], r["descent_ft"] = elevation_profile(inside_drive)
+            r["elev"] = driveview.elevation_spark(heights)  # the row's profile, from the day's positions already in hand
     return {
         "vin": vin,
         "name": v["name"],
         "live": v["live"],
-        "ribbon": ribbon_segments(states, charging, start, until) if until > start else [],
+        "ribbon": ribbon_segments(states, charging, start, until, car_on) if until > start else [],
         "since_charge": since_last_charge(vin, until, k),
         "places": time_at_places(rows, start, until),
         "rows": rows,
-        "totals": day_totals(rows, cap, k),
+        "totals": dict(day_totals(rows, cap, k), unlogged_mi=unlogged_mi),
         "routes": routes,
         "chart": chartdata.payload(
             start,
             end,
             {"key": "level", "label": "Battery", "unit": "%", "lo": 0, "hi": 100, "points": chartdata.thin([(t, lv) for t, lv in levels if t <= until], start, until)},
             chartdata.extras(ranges, temps, start, until, units_mod.ACTIVE),
-            chartdata.lane(ribbon_segments(states, charging, start, until)) if until > start else [],
+            chartdata.lane(ribbon_segments(states, charging, start, until, car_on)) if until > start else [],
             [
                 {
                     "a": r["start"].timestamp(),
@@ -3180,6 +4173,7 @@ def day_for_car(v: dict, start: datetime, end: datetime, now_utc: datetime) -> d
                 if r["kind"] in ("drive", "charge") and r.get("start")
             ],
             ticks=chartdata.ticks(start, end, TZ),
+            tz=TZ,
         ),
     }
 
@@ -3198,9 +4192,9 @@ def day_page(request: Request, date: str | None = None, show: str = "all"):
     blocks.sort(key=lambda b: (b["totals"]["drives"] + b["totals"]["charges"], b["totals"]["miles"]), reverse=True)
     if show != "all":
         kind = {"drives": "drive", "charges": "charge", "parked": "parked", "idles": "parked", "sleeps": "parked"}[show]
-        sub = {"idles": "idle", "sleeps": "sleep"}.get(show)
+        sub = {"idles": ("idle", "caron"), "sleeps": ("sleep",)}.get(show)
         for b in blocks:
-            b["rows"] = [r for r in b["rows"] if r["kind"] == kind and (sub is None or r.get("sub") == sub)]
+            b["rows"] = [r for r in b["rows"] if r["kind"] == kind and (sub is None or r.get("sub") in sub)]
     return page(
         request,
         "day.html",
@@ -3213,6 +4207,7 @@ def day_page(request: Request, date: str | None = None, show: str = "all"):
         next=(d + timedelta(days=1)) if d < datetime.now(TZ).date() else None,
         active="timeline",
         month=d.strftime("%Y-%m"),
+        raw_readings=has_raw_readings(car),
     )
 
 
@@ -3229,7 +4224,8 @@ def timeline_page(request: Request, month: str | None = None, kind: str = "all")
     ds = drives(vin, None, w["start"], w["end"]) if kind in ("all", "drives") else []
     cs = charges(vin, None, w["start"], w["end"]) if kind in ("all", "charges") else []
     sw = software_events(vin, w["start"], w["end"]) if kind in ("all", "software") else []
-    days = timeline_days(ds, cs, sw, TZ, parked=kind == "all")
+    garage = garagelog.attach(ds, garage_events(vin, w["start"], w["end"])) if ds else {}
+    days = timeline_days(ds, cs, sw, TZ, parked=kind == "all", garage=garage, car_on=car_on_rows(vin, w["start"], w["end"]) if kind == "all" else ())
     return page(
         request,
         "timeline.html",
@@ -3253,9 +4249,14 @@ def parked_ends(conn, vin: str, start: datetime, end: datetime) -> tuple[list | 
 
 
 def route_thumbs(trips: list[dict], start: datetime, end: datetime, width: int = 96, height: int = 48) -> dict[int, str]:
-    """{trip id: inline SVG of its route} for one page of drives: one positions query a
-    car for the window, the same rows the Calendar's month map fetches, drawn small."""
-    out: dict[int, str] = {}
+    """{trip id: inline SVG of its route} for one page of drives, drawn small."""
+    return {i: route_svg(pts, width, height) for i, pts in route_points(trips, start, end).items()}
+
+
+def route_points(trips: list[dict], start: datetime, end: datetime, kind: str = "thumb", limit: int = 40) -> dict[int, list]:
+    """{trip id: thinned [lat, lon] route} for a set of drives: one positions query a car for
+    the window, the same rows the Calendar's month map fetches."""
+    out: dict[int, list] = {}
     by_vin: dict[str, list[dict]] = {}
     for t in trips:
         by_vin.setdefault(t["vin"], []).append(t)
@@ -3264,16 +4265,15 @@ def route_thumbs(trips: list[dict], start: datetime, end: datetime, width: int =
             # every fix, not just the driving ones, and a margin either side: a route starts and
             # ends at the parked fix around it (thumbs.anchored)
             rows = conn.execute(
-                "SELECT at, latitude, longitude FROM cc_positions WHERE vin = %s AND at >= %s AND at < %s ORDER BY at", (vin, start - timedelta(hours=12), end + timedelta(hours=12))
+                "SELECT at, latitude, longitude FROM cc_positions p WHERE vin = %s AND at >= %s AND at < %s " + driveedits.left_out() + " ORDER BY at",
+                (vin, start - timedelta(hours=12), end + timedelta(hours=12)),
             ).fetchall()
-            drawn = routes_for(mine, [(r["at"], r["latitude"], r["longitude"]) for r in rows])
-            lines = routematch.matched_lines(conn, vin, start - timedelta(hours=12), end + timedelta(hours=12), "thumb")
+            out.update(routes_for(mine, [(r["at"], r["latitude"], r["longitude"]) for r in rows], limit))
+            lines = routematch.matched_lines(conn, vin, start - timedelta(hours=12), end + timedelta(hours=12), kind)
             for t in mine:
                 pts = routematch.line_for(lines, t["start_date"], t.get("destination_date"))
                 if pts:
-                    drawn[t["id"]] = pts  # stored thinned at match time
-            for trip_id, pts in drawn.items():
-                out[trip_id] = route_svg(pts, width, height)
+                    out[t["id"]] = pts  # stored thinned at match time
     return out
 
 
@@ -3289,12 +4289,14 @@ def charges_page(request: Request, month: str | None = None, from_: str | None =
         else filter_charges(charges(car["vin"], None, w["start"], w["end"]), where=qp.get("place") or None, kind=qp.get("kind") or None, min_kwh=_float_or_none(qp.get("min")))
     )
     rows, key, desc = sort_rows(rows, sort, dir != "asc", CHARGE_SORTS)
+    rows, more = capped(request, rows, key, desc, "session_start_date")
     days = daypage.by_day(rows, TZ, "session_start_date") if key == "start" else None
     return page(
         request,
         "charges.html",
         car=car,
         charges=rows,
+        more=more,
         days=days,
         window=w,
         sort=key,
@@ -3319,9 +4321,13 @@ def place_named(name: str | None) -> dict | None:
     return next((p for p in places_detail() if p["name"].lower() == name), None) if name else None
 
 
-def last_odometer(vin: str) -> float | None:
+def last_odometer(vin: str, at: datetime | None = None) -> float | None:
+    """The odometer the last drive ended on; with `at`, the last drive that began by then, so a drive added after the fact lands where it happened."""
     with db() as conn:
-        r = conn.execute("SELECT destination_odometer AS o FROM trips WHERE vin = %s AND destination_odometer IS NOT NULL ORDER BY start_date DESC LIMIT 1", (vin,)).fetchone()
+        r = conn.execute(
+            "SELECT destination_odometer AS o FROM trips WHERE vin = %s AND destination_odometer IS NOT NULL AND (%s::timestamptz IS NULL OR start_date <= %s) ORDER BY start_date DESC LIMIT 1",
+            (vin, at, at),
+        ).fetchone()
     return float(r["o"]) if r and r["o"] is not None else None
 
 
@@ -3361,7 +4367,9 @@ def charge_by_hand_remove(request: Request, session_id: int, vin: str = Form("")
 async def drive_by_hand(request: Request):
     form = await request.form()
     vin = (form.get("vin") or "").strip()
-    row = manual.drive_from_form(form, TZ, datetime.now(timezone.utc), place_named(form.get("from_place")), place_named(form.get("to_place")), last_odometer(vin) if vin else None)
+    row = manual.drive_from_form(
+        form, TZ, datetime.now(timezone.utc), place_named(form.get("from_place")), place_named(form.get("to_place")), last_odometer(vin, manual.parse_local(form.get("start"), TZ)) if vin else None
+    )
     back = f"/drives?vin={vin}"
     if isinstance(row, str):
         return to_site(request, back + "&said=" + quote(row))
@@ -3386,6 +4394,8 @@ async def drive_by_hand(request: Request):
 @site.post("/drives/{trip_id}/remove")
 def drive_by_hand_remove(request: Request, trip_id: int, vin: str = Form("")):
     with db() as conn:
+        if driveedits.involved(conn, trip_id):  # a change stands on it: undo that first, or it would point at nothing
+            return to_site(request, f"/drives/{trip_id}?said={driveedits.CODES[driveedits.MSG['stands']]}" + (f"&vin={vin}" if vin else ""))
         if conn.execute("SELECT 1 FROM cc_manual WHERE kind = 'drive' AND ref_id = %s", (trip_id,)).fetchone():
             conn.execute("DELETE FROM cc_trip_facts WHERE trip_id = %s", (trip_id,))
             conn.execute("DELETE FROM cc_drive_tags WHERE trip_id = %s", (trip_id,))
@@ -3398,14 +4408,14 @@ def drive_by_hand_remove(request: Request, trip_id: int, vin: str = Form("")):
 def sleep_block(vin: str, name: str, w: dict | None, since: datetime, until: datetime, first_day, last_day, now_utc: datetime, search: dict | None = None) -> dict:
     states = state_rows(vin, "states", "state", since, until)
     charging = state_rows(vin, "charging_states", "state", since, until)
-    days = days_between(states, charging, first_day, last_day, TZ, now_utc)
+    days = days_between(states, charging, first_day, last_day, TZ, now_utc, car_on_rows(vin, since, until))
     first_known = next((i for i, d in enumerate(days) if d["known_h"] > 0), max(len(days) - 1, 0))
     days = days[first_known:]  # nothing to say about days before logging began
     known = [d for d in days if d["known_h"] > 0]
-    span = known if w else known[-7:]
+    span = known  # the window on screen, all of it: a 14-day view summarises 14 days
     summary = {
         "asleep_pct": (sum(d["hours"]["sleeping"] for d in span) / sum(d["known_h"] for d in span) * 100) if span else None,
-        "wakeups_per_day": (sum(d["wakeups"] for d in span) / len(span)) if span else None,
+        "wakeups_per_day": wakes_per_day(span),
         "driving_h": sum(d["hours"]["driving"] for d in span),
         "charging_h": sum(d["hours"]["charging"] for d in span),
         "days": len(span),
@@ -3470,7 +4480,33 @@ def tire_series(vin: str, days: int = 30) -> dict[str, list[tuple[datetime, floa
     return {w: run_points([(r["first_date"], r["last_date"], r[w]) for r in rows], since, now) for w in ("fl", "fr", "rl", "rr")}
 
 
-def battery_block(v: dict) -> dict:
+def tire_history(vin: str) -> dict | None:
+    """The four pressures a day since the car first reported them, against the day's outside
+    temperature (calview.tire_days): the finished days as the facts tick kept them
+    (tiredays), today worked out from its own runs. Kept ten minutes."""
+
+    def load():
+        with db() as conn:
+            rows = tiredays.history(conn, vin, TZ, datetime.now(TZ).date())
+        rows = [r for r in rows if any(r[w] is not None for w in tiredays.TIRES)]
+        return calview.tire_days(rows, [{"day": r["day"], "f": r["outside_f"]} for r in rows], units_mod.ACTIVE, TZ, current_settings().get("tire_low_psi"))
+
+    return cached(f"tires:{vin}:{units_mod.ACTIVE.metric}", 600, load)
+
+
+def tire_block(v: dict) -> dict:
+    """One car's tire pressure for the Service page: the four now, the last 30 days as one chart
+    (the four in their own colours over their average) and the every-day history."""
+    vin = v["vin"]
+    u = units_mod.ACTIVE
+    now = datetime.now(timezone.utc)
+    tires = {w: [[t.timestamp(), x] for t, x in pts] for w, pts in tire_series(vin).items()}
+    low = current_settings().get("tire_low_psi")
+    month = calview.tire_chart(now - timedelta(days=30), now, tires, [], u, TZ, low, temp_on=False) if any(tires.values()) else None
+    return {"vin": vin, "name": v.get("name") or vin, "tires": month, "tire_now": calview.tire_now(tires), "tire_history": tire_history(vin)}
+
+
+def battery_block(v: dict, view: dict | None = None) -> dict:
     vin = v["vin"]
     level = drive_series(vin, "drive_levels", "level", 30)
     rng = drive_series(vin, "drive_ranges", "range", 30)
@@ -3495,23 +4531,70 @@ def battery_block(v: dict) -> dict:
         if full
         else None
     )
-    tires = tire_series(vin)
-    names = {"fl": "Front left", "fr": "Front right", "rl": "Rear left", "rr": "Rear right"}
-    # one scale for the four, so a soft tire reads as lower than the others
-    every = [v for pts in tires.values() for _, v in pts]
-    lo, hi = (math.floor(min(every)) - 1, math.ceil(max(every)) + 1) if every else (None, None)
-    tire_charts = {w: line_chart(pts, unit=" psi", tz=TZ, label=names[w], width=360, height=120, y_min=lo, y_max=hi) for w, pts in tires.items() if pts} if any(tires.values()) else {}
     firsts = {k: s[0][0] for k, s in (("level", level), ("range", rng), ("full", full), ("temp", temp)) if s}
-    return {"car": live_vehicle(vin), "chart": chart, "full": full_chart, "tires": tire_charts, "firsts": firsts, "points": len(level)}
+    life = lifetime_block(vin, **(view or {}))
+    car = live_vehicle(vin)
+    return {
+        "car": car,
+        "health": health_block(car, HEALTH.series.get(vin) or [], now),
+        "chart": chart,
+        "full": None if life else full_chart,
+        "life": life,
+        "firsts": firsts,
+        "points": len(level),
+    }
+
+
+def health_block(car: dict, series: list, now: datetime) -> dict | None:
+    """The car's own battery-health number (connector 0.4.0): the figure now, and a day a point
+    once it has moved (healthlog.worth_charting). From memory, no query; None for a car that has
+    never said one."""
+    current = car.get("battery_health")
+    if current is None and series:
+        current = series[-1][1]
+    if current is None:
+        return None
+    pts = [(datetime.combine(d, dtime(0), TZ), v) for d, v in series]  # the day it was logged; today's is never ahead of now
+    chart = chartdata.series_chart(pts[0][0], now, {"key": "health", "label": "Health", "unit": "", "series": pts, "scale": "steady"}, [], TZ) if healthlog.worth_charting(series) else None
+    return {"now": current, "chart": chart, "days": len(series)}
+
+
+def lifetime_rows(vin: str) -> list[tuple]:
+    """(end, odometer, range at 100 %, level) a charge, from the charge facts: one indexed
+    query of a row a charge, however many years the car has."""
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT c.session_end_date AS at, f.odometer, f.full_range, f.full_level FROM charging_sessions c JOIN cc_charge_facts f ON f.session_id = c.id"
+            " WHERE c.vin = %s AND f.full_range > 0 AND f.odometer > 0" + charged_sql() + " ORDER BY c.session_end_date",
+            (vin,),
+        ).fetchall()
+    return [(r["at"], r["odometer"], r["full_range"], r["full_level"]) for r in rows]
+
+
+def lifetime_block(vin: str, by: str = "odo", loss: str = "best", start: float | None = None) -> dict | None:
+    """The battery's lifetime report (lifetime.py) and its chart, or None before three
+    charges qualify. `loss` is the row the headline follows; `start` a starting range in
+    display units."""
+    u = units_mod.ACTIVE
+    start_mi = u.to_stored_distance(start) if start else None
+    rep = lifetime.report(lifetime_rows(vin), start_mi)
+    if rep is None:
+        return None
+    versions = [(r["version"], r["seen_at"]) for r in software_history(vin)]
+    loss = loss if loss in ("best", "first") or (loss == "start" and rep["losses"]["start"]) else "best"
+    return {**rep, "chart": lifetime.chart(rep, u, TZ, by, versions), "by": by, "loss": loss, "start": start}
 
 
 @site.get("/battery", response_class=HTMLResponse)
-def battery_page(request: Request):
+def battery_page(request: Request, by: str = "odo", loss: str = "best", start: str | None = None):
     car = pick(request)
     cars = all_vehicles() if car.get("garage") else [{"vin": car["vin"], "name": car["name"]}]
-    blocks = [battery_block(v) for v in cars]
+    # the lifetime report's view: along the odometer or the calendar, the loss the headline
+    # follows (from its best, the first charges, or a starting range the owner typed)
+    view = {"by": by if by in ("odo", "date") else "odo", "loss": loss, "start": _num(start)}
+    blocks = [battery_block(v, view) for v in cars]
     packs = {c["vin"]: c["pack"] for c in capacities()}  # the same pack, and the same words for where it came from, as Cars and sources
-    return page(request, "battery.html", car=car, blocks=blocks, packs=packs, active="battery")
+    return page(request, "battery.html", car=car, blocks=blocks, packs=packs, view=view, active="battery")
 
 
 def level_at(vin: str, when: datetime) -> float | None:
@@ -3566,11 +4649,34 @@ SAMPLE_ROWS = 400
 NO_READING_C = -39.5  # the -40 sentinel with room for rounding
 
 
+def drive_edit_offers(conn, trip: dict) -> dict:
+    """What the drive page can offer to change: merging with the drive after it when the stop was
+    short (and it is not this drive's own other half), Undo for the newest change that made this
+    drive what it is, and any change waiting for drives the history no longer has (driveedits)."""
+    nxt, why = driveedits.merge_partner(conn, trip, moved_sql())
+    edits = driveedits.edits_for(conn, trip["id"])
+    offer = None
+    if nxt and not why and not any(e["kind"] == "split" and e["a_id"] == trip["id"] and e["b_id"] == nxt["id"] for e in edits):
+        offer = {
+            "start": nxt["start_date"],
+            "gap": nxt["start_date"] - trip["destination_date"],
+            "miles": (nxt["destination_odometer"] - nxt["start_odometer"]) if nxt["destination_odometer"] is not None and nxt["start_odometer"] is not None else None,
+        }
+    last = None
+    if edits:
+        last = {**edits[0], "made_here": edits[0]["kind"] == "split" and edits[0]["b_id"] == trip["id"], "loses": driveedits.undo_loses(conn, driveedits.edits_for_full(conn, trip["id"]))}
+    return {"merge_offer": offer, "last_edit": last, "waiting": driveedits.waiting_for(conn, trip)}
+
+
 @site.get("/drives/{trip_id}", response_class=HTMLResponse)
 def drive_detail(request: Request, trip_id: int):
     trip = drive(None, trip_id)
     if trip is None:
         raise HTTPException(404, "No such drive.")
+    with db() as conn:
+        keeper = driveedits.absorbed_by(conn, trip_id)
+    if keeper is not None:  # taken in by a merge: it is part of that drive now
+        return RedirectResponse(f"{request.scope.get('root_path', '')}/drives/{keeper}" + (f"?{request.url.query}" if request.url.query else ""), status_code=303)
     car = live_vehicle(trip["vin"])
     with db() as conn:
         pos = conn.execute(
@@ -3590,13 +4696,26 @@ def drive_detail(request: Request, trip_id: int):
     )
     levels = series_between(car["vin"], "drive_levels", "level", trip["start_date"], end, True)
     with db() as conn:
-        track = conn.execute(
-            "SELECT at, latitude, longitude, elevation, speed, level, odometer, power_kw FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s ORDER BY at", (car["vin"], trip["start_date"], end)
+        # every reading of the drive; the ones left out by hand stay in the table below and out of everything else
+        every_fix = conn.execute(
+            "SELECT p.at, p.latitude, p.longitude, p.elevation, p.speed, p.level, p.odometer, p.power_kw, "
+            "EXISTS (SELECT 1 FROM cc_drive_excluded x WHERE x.vin = p.vin AND x.at = p.at) AS excluded "
+            "FROM cc_positions p WHERE p.vin = %s AND p.at BETWEEN %s AND %s ORDER BY p.at",
+            (car["vin"], trip["start_date"], end),
         ).fetchall()
+        track = [r for r in every_fix if not r["excluded"]]
+        left = {r["at"] for r in every_fix if r["excluded"]}
+        levels = [(t, v) for t, v in levels if t not in left]
         readings = anchored([[r["latitude"], r["longitude"]] for r in track], *parked_ends(conn, car["vin"], trip["start_date"], end))
         matched = routematch.matched_line(conn, car["vin"], trip["start_date"], trip["destination_date"], "full")
     route = routematch.choose(readings, matched)
+    track, stats["ground"] = terrain_mod.ground_track(track, TERRAIN)
     elev, stats["climb_ft"], stats["descent_ft"] = elevation_profile(track)
+    if stats["ground"] and trip.get("ground_climb_m") is not None:
+        # the figures the backfill stored, so this page, Records and every list say the same
+        stats["climb_ft"], stats["descent_ft"] = trip["ground_climb_m"] * 3.28084, (trip["ground_descent_m"] or 0) * 3.28084
+    if elev:
+        stats["elev_lo"], stats["elev_hi"] = min(v for _t, v in elev), max(v for _t, v in elev)
     speeds = [(r["at"], r["speed"]) for r in track if r.get("speed") is not None]
     # Power is the car's own reading, negative while regenerating, so no y_min: the axis
     # has to cross zero or the braking half of the drive is cropped off the bottom.
@@ -3619,7 +4738,7 @@ def drive_detail(request: Request, trip_id: int):
     with db() as conn:
         covered = conn.execute(
             """SELECT COUNT(*) AS n FROM (SELECT DISTINCT ROUND(latitude::numeric, 3), ROUND(longitude::numeric, 3)
-                                          FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s) c""",
+                                          FROM cc_positions p WHERE p.vin = %s AND p.at BETWEEN %s AND %s""" + driveedits.left_out() + """) c""",
             (car["vin"], trip["start_date"], end),
         ).fetchone()["n"]
     if covered:
@@ -3627,21 +4746,27 @@ def drive_detail(request: Request, trip_id: int):
         stats["cells_new"] = new_ground(car["vin"], trip["start_date"], end)
     rated_runs = runs_between(car["vin"], "drive_ranges", "l.range", trip["start_date"], end, True)
     outside_runs = runs_between(car["vin"], "outside_temperatures", "l.outside_temperature", trip["start_date"], end, False)
-    readings = drive_samples(
-        track,
+    table = drive_samples(
+        every_fix,
         rated=rated_runs,
         outside=outside_runs,
         inside=runs_between(car["vin"], "cc_inside_temperatures", "l.inside_f", trip["start_date"], end, False),
     )
+    flagged = driveedits.suspects(every_fix)
+    for row, fix in zip(table, every_fix):
+        row["excluded"], row["suspect"] = fix["excluded"], fix["at"] in flagged
+    readings = [r for r in table if not r["excluded"]]
     # Cabin temperature at either end of the drive, off the readings already lined up
     # for the table below rather than another pair of lookups.
     cabin = [r["inside"] for r in readings if r.get("inside") is not None]
     if cabin:
         stats["inside_start"], stats["inside_end"] = cabin[0], cabin[-1]
+        stats["inside_lo"], stats["inside_hi"] = min(cabin), max(cabin)
     outside = [r["outside"] for r in readings if r.get("outside") is not None and r["outside"] > chartdata.NO_READING]
     if outside:
         stats["outside_start"], stats["outside_end"] = outside[0], outside[-1]
-    samples, every = thinned(readings, SAMPLE_ROWS)
+    samples, every = thinned(table, SAMPLE_ROWS)
+    samples = driveedits.with_flagged(samples, table, left | flagged)  # a row that could be fixed is never one of the skipped
     cur = current_settings().get("currency", "$")
     navigated = tesla_nav.for_trip([r for r in nav_rows() if r["vin"] == trip["vin"]], trip["start_date"], trip["destination_date"])
     event = {
@@ -3651,13 +4776,34 @@ def drive_detail(request: Request, trip_id: int):
         "title": f"{trip['from']} → {trip['to']}",
         "figs": daypage.day_figs(daypage.as_drive(trip), units_mod.ACTIVE, cur),
     }
-    chart = chartdata.drive_chart(trip["start_date"], end, levels, speeds, elev, watts, chartdata.run_series(rated_runs), chartdata.run_series(outside_runs), event, units_mod.ACTIVE, TZ)
+    chart = chartdata.drive_chart(trip["start_date"], end, levels, speeds, elev, watts, chartdata.run_series(rated_runs), chartdata.run_series(outside_runs), event, units_mod.ACTIVE, TZ, on=["speed"])
+    # the route with a time and speed at every point, for the speed colours, the marker the chart
+    # moves and the replay; the bands are the same steps on every drive
+    steps = driveview.BANDS[units_mod.ACTIVE.labels["speed"]]
+    with db() as conn:
+        near = neighbours(conn, "drive", car["vin"], trip_id, places(), moved_sql(), charged_sql())
+        # the tire pressures that held as it left: one row off (vin, first_date)
+        tires = conn.execute(
+            "SELECT fl, fr, rl, rr FROM cc_tires WHERE vin = %s AND first_date <= %s AND last_date >= %s ORDER BY first_date DESC LIMIT 1",
+            (car["vin"], trip["start_date"], trip["start_date"] - timedelta(hours=1)),  # a reading from the hour before it left, or none
+        ).fetchone()
+        offers = drive_edit_offers(conn, trip)
     return page(
         request,
         "drive.html",
+        timed=driveview.timed_route(route, track, units_mod.ACTIVE.speed) or [[la, lo, None, None] for la, lo in route],
+        steps=steps,
+        shares=driveview.speed_shares(track, steps, units_mod.ACTIVE.speed),
+        near=near,
+        tires=tires,
         samples=samples,
         every=every,
-        fixes=len(track),
+        fixes=len(every_fix),
+        left_out=len(left),
+        cut_ats=[round(r["at"].timestamp(), 3) for r in every_fix if not r["excluded"] and trip["start_date"] < r["at"] < end],
+        suspects=len(flagged),
+        **offers,
+        said=driveedits.MSG.get(request.query_params.get("said", ""), ""),
         car=car,
         trip=trip,
         hidden=is_hidden("drive", trip["id"]),
@@ -3672,6 +4818,90 @@ def drive_detail(request: Request, trip_id: int):
         navigated=tesla_nav.clean_name(navigated["dest_name"]) if navigated else None,
         tags=tag_names(),
         active="drives",
+    )
+
+
+@site.get("/parked/{ref}", response_class=HTMLResponse)
+def parked_detail(request: Request, ref: int):
+    """A parked stretch: the time between one drive or charge and the next, ten minutes or
+    more, named by the epoch second it began. Any second inside the stretch finds it (a Day
+    row cut at midnight links to its own start) and is sent on to the stretch's own start."""
+    car = single(request)
+    vin = car["vin"]
+    at = parkedview.moment(ref)
+    with db() as conn:
+        span = stretch_at(conn, vin, at, moved_sql(), charged_sql()) if at else None
+    if span is None:
+        raise HTTPException(404, "The car was not parked then.")
+    start, end, after = span
+    if int(start.timestamp()) != ref:
+        return to_site(request, f"/parked/{int(start.timestamp())}?vin={vin}")
+    now_utc = datetime.now(timezone.utc)
+    until = end or now_utc
+    look = start - timedelta(hours=6)  # the readings that held when the car parked
+    levels = series_between(vin, "drive_levels", "level", look, until, True)
+    ranges = series_between(vin, "drive_ranges", "range", look, until, True)
+    inside = series_between(vin, "cc_inside_temperatures", "inside_f", look, until, False)
+    outside = series_between(vin, "outside_temperatures", "outside_temperature", look, until, False)
+    states = state_rows(vin, "states", "state", start, until)
+    charging = state_rows(vin, "charging_states", "state", start, until)
+    car_on = car_on_rows(vin, start, until)
+    with db() as conn:
+        modes = [
+            (m["first_date"], m["last_date"], (bool(m["sentry"]), bool(m["climate"])))
+            for m in conn.execute(
+                "SELECT first_date, last_date, sentry, climate FROM cc_modes WHERE vin = %s AND last_date >= %s AND first_date < %s ORDER BY first_date", (vin, start, until)
+            ).fetchall()
+        ]
+        near = neighbours(conn, "parked", vin, ref, places(), moved_sql(), charged_sql())
+    _cap, k = vehicle_energy().get(vin, (None, None))
+    k = rated_mile_kwh(rated_mile_years(), vin, start, k, TZ)
+    make = car_identities([car])[vin]["make"]
+    guard = identity.guard_name(make)
+    figs = parkedview.figures(start, until, levels, ranges, inside, outside, states, modes, k, home_rates().get(vin, (None, False))[0], car_on)
+    here = place_for(after.get("lat"), after.get("lon"), places())
+    u = units_mod.ACTIVE
+    clip = lambda series: parkedview.window(series, start, until)  # the next event's first reading is its own
+    chart = chartdata.payload(
+        start,
+        until,
+        {
+            "key": "level",
+            "label": "Battery",
+            "unit": "%",
+            **dict(zip(("lo", "hi"), chartdata.snug_level_scale([v for _t, v in clip(levels)] or [50.0]))),
+            "points": chartdata.thin(clip(levels), start, until),
+        },
+        chartdata.extras(clip(ranges), clip(outside), start, until, u)
+        + [x for x in [chartdata._line("inside", "Cabin", u.labels["temp"], [(t, u.temperature(v)) for t, v in clip(inside)], start, until, lambda v: chartdata.nice(v, zero=False))] if x],
+        chartdata.lane(ribbon_segments(states, charging, start, until, car_on)),
+        [],
+        ticks=chartdata.ticks(start, until, TZ),
+        bands=parkedview.mode_bands(modes, start, until, guard),
+        tz=TZ,
+    )
+    rates = next(iter(parked_rates([{**car, "make": make}])), None)  # what an hour parked usually costs this car
+    rows = parkedview.readings(start, until, levels, ranges, inside, outside, states)
+    samples, every = thinned(rows, SAMPLE_ROWS)
+    return page(
+        request,
+        "parked.html",
+        car=car,
+        start=start,
+        end=end,
+        figs=figs,
+        where=here["name"] if here else None,
+        where_ref={"name": here["name"], "lat": after.get("lat"), "lon": after.get("lon"), "new": False} if here else None,
+        lat=after.get("lat"),
+        lon=after.get("lon"),
+        chart=chart,
+        near=near,
+        guard=guard,
+        rates=rates,
+        samples=samples,
+        every=every,
+        readings=len(rows),
+        active="sleep",
     )
 
 
@@ -3746,18 +4976,38 @@ def charge_detail(request: Request, session_id: int):
     rated_runs = runs_between(car["vin"], "drive_ranges", "l.range", start, window_end, True)
     cur = current_settings().get("currency", "$")
     event = {"a": start.timestamp(), "b": window_end.timestamp(), "kind": "charge", "title": session["where"], "figs": daypage.day_figs(daypage.as_charge(session), units_mod.ACTIVE, cur)}
+    cap, k = vehicle_energy().get(car["vin"], (None, None))
+    k = rated_mile_kwh(rated_mile_years(), car["vin"], start, k, TZ)
+    outside_runs = runs_between(car["vin"], "outside_temperatures", "l.outside_temperature", start, window_end, False)
     chart = chartdata.charge_chart(
         start,
         window_end,
         run_points(kws, start, window_end),
         chartdata.run_series(level_runs),
         chartdata.run_series(rated_runs),
-        [(f, v) for f, _l, v, _a in electrics if v is not None],
-        [(f, a) for f, _l, _v, a in electrics if a is not None],
+        # runs, clipped to the charge: a value held since an earlier session starts before this one
+        run_points([(f, lst, v) for f, lst, v, _a in electrics], start, window_end),
+        run_points([(f, lst, a) for f, lst, _v, a in electrics], start, window_end),
         event,
         units_mod.ACTIVE,
         TZ,
+        outside=chartdata.run_series(outside_runs),
+        # range going in an hour: the power over this car's kWh per rated mile
+        rate=[(t, kw / k) for t, kw in run_points(kws, start, window_end) if kw is not None] if k else [],
+        on=["level"],
     )
+    with db() as conn:
+        near = neighbours(conn, "charge", car["vin"], session_id, places(), moved_sql(), charged_sql())
+        # What this charge bought: from its end to the next charge's start (or now), the
+        # battery the next one began on when it says
+        paid = None
+        if end:
+            nxt = near["next"]
+            paid = between_charges(conn, car["vin"], end, session["end_level"], nxt["start"] if nxt else datetime.now(timezone.utc), k)
+            nxt_level = conn.execute("SELECT start_level FROM charging_sessions WHERE id = %s", (nxt["id"],)).fetchone()["start_level"] if nxt else None
+            if nxt_level is not None and session["end_level"] is not None:
+                paid["battery_used"] = session["end_level"] - nxt_level
+            paid = dict(bought(paid, session.get("cost"), stats.get("kwh"), cap), until=nxt, end_level=session["end_level"], next_level=nxt_level)
     readings = charge_samples(
         start,
         window_end,
@@ -3777,6 +5027,8 @@ def charge_detail(request: Request, session_id: int):
         "charge.html",
         car=car,
         session=session,
+        near=near,
+        paid=paid,
         bill=bill,
         hidden=is_hidden("charge", session["id"]),
         stats=stats,
@@ -3788,10 +5040,13 @@ def charge_detail(request: Request, session_id: int):
     )
 
 
-@site.exception_handler(HTTPException)
-async def http_error(request: Request, exc: HTTPException):
+# Starlette's own, so an address no route matches gets the page too, not {"detail": "Not Found"}
+@site.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException):
     if request.headers.get("accept", "").startswith("application/json") or site_path(request).startswith("/api/"):
-        return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+        return JSONResponse({"error": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+    if request.scope.get("root_path", "").endswith("/static"):  # raised inside the static mount
+        return PlainTextResponse(exc.detail, status_code=exc.status_code, headers=exc.headers)
     try:
         car = pick(request)
     except HTTPException:
@@ -3814,7 +5069,16 @@ async def http_error(request: Request, exc: HTTPException):
             "auth_on": AUTH["enabled"],
         },
         status_code=exc.status_code,
+        headers=exc.headers,
     )
+
+
+@site.exception_handler(RequestValidationError)
+async def invalid_request(request: Request, exc: RequestValidationError):
+    """A request missing or mangling a parameter: the site's page for a browser, FastAPI's own list for the API."""
+    if request.headers.get("accept", "").startswith("application/json") or site_path(request).startswith("/api/"):
+        return JSONResponse({"detail": jsonable_encoder(exc.errors())}, status_code=422)
+    return await http_error(request, StarletteHTTPException(422, "That address needs more than it was given."))
 
 
 def _place_view(p: dict, cells: dict, cur: str) -> dict:
@@ -3833,13 +5097,23 @@ def places_page(request: Request, merge: int | None = None):
     has drawn, and the map starts after the arrival. `merge`: open with that place picking
     the places to take in (a place's own page links here)."""
     car = pick(request)  # the switcher says All cars when it is every car
+    asked = request.query_params.get("vin")
+    vin = None if car.get("garage") else places_scope(asked or car.get("vin"))
     every = places_detail()
+    if vin:
+        stays = place_stays()
+        every = [p for p in every if placespage.visits(p, stays, vin)]
     found = sum(1 for p in every if p["auto"])
-    return page(request, "places.html", car=car, named=len(every) - found, found=found, merge=merge, active="places")
+    return page(request, "places.html", car=car, named=len(every) - found, found=found, merge=merge, active="places", index_vin=vin)
+
+
+def places_scope(vin: str | None) -> str | None:
+    """The car the Places page is about: the VIN of a car the garage knows, else None (every car)."""
+    return vin if vin and any(v["vin"] == vin for v in all_vehicles()) else None
 
 
 @site.get("/places/index.json")
-def places_index():
+def places_index(request: Request):
     """Every place for the Places page's list and map, in the page's order (placespage.index_rows),
     with the paths of the icons they show. Read from the cached stays and navigation names."""
     every, cells = places_detail(), geocells()
@@ -3849,9 +5123,134 @@ def places_index():
         place_nav(),
         lambda p: placespage.city_of(with_street([p], cells)[0]),
         lambda p: placeicons.resolve_icon(p["name"], p.get("icon")),
+        places_scope(request.query_params.get("vin")),
     )
     icons = {k: placeicons.PLACE_ICONS[k] for k in sorted({r.get("ic") for r in rows} - {None})}
     return JSONResponse({"places": rows, "icons": icons}, headers={"Cache-Control": "no-store"})
+
+
+ROUTE_SPANS = (("all", "All time", None), ("year", "12 months", 365), ("90d", "90 days", 90))
+
+
+def route_table(vin: str | None, days: int | None) -> dict:
+    """Top routes and destinations (toproutes) for a car or every car over the last `days`
+    (all time when None): the drives the Stats page reads, each end placed the way the lists
+    place it. Kept ten minutes, and dropped when a place changes (forget_places)."""
+
+    def load():
+        since = datetime.now(timezone.utc) - timedelta(days=days) if days else None
+        known = places()
+        ds = drives_light(vin, since)
+        for d in ds:
+            d["start_place"] = place_for(d["start_position_latitude"], d["start_position_longitude"], known)
+            d["end_place"] = place_for(d["destination_position_latitude"], d["destination_position_longitude"], known)
+        return {"routes": toproutes.routes(ds, auto_tag_rules(), TZ), "destinations": toproutes.destinations(ds), "drives": len(ds)}
+
+    return cached(f"top_routes:{vin}:{days}", 600, load)
+
+
+@site.get("/places/routes", response_class=HTMLResponse)
+def places_routes(request: Request, span: str = "all"):
+    """Where the cars go: the routes driven most (both ways as one) and the places arrived at
+    most, beside the Places map as its own tab."""
+    car = pick(request)
+    key = span if span in {k for k, _, _ in ROUTE_SPANS} else "all"
+    days = next(d for k, _, d in ROUTE_SPANS if k == key)
+    t = route_table(None if car.get("garage") else car["vin"], days)
+    return page(request, "routes.html", car=car, spans=ROUTE_SPANS, span=key, **t, active="places")
+
+
+ROUTE_DRIVES = 100  # the newest drives a route's page lists; the Drives list holds the rest
+ROUTE_LINES = 25  # the newest drives its map draws together
+
+
+def route_of(request: Request, key: str, span: str) -> tuple[dict, str, dict]:
+    """The route the list names `key` (toproutes.route_key), the span it was read over and the
+    car scope's query: the same table the Routes list reads, so the page and the list agree."""
+    car = pick(request)
+    span = span if span in {k for k, _, _ in ROUTE_SPANS} else "all"
+    days = next(d for k, _, d in ROUTE_SPANS if k == span)
+    t = route_table(None if car.get("garage") else car["vin"], days)
+    r = next((x for x in t["routes"] if x["key"] == key), None)
+    if r is None:
+        raise HTTPException(404, "No such route.")
+    return r, span, car
+
+
+def route_end(p: dict, cells: dict) -> dict:
+    """One end of a route as the page shows it: the place's name, or none while it is a found
+    place, with the street or town it is on and what the naming card needs to open on it."""
+    v = _place_view(p, cells, "")
+    street = v.get("user_address") or (short_address(v["address"]) if v.get("address") else None) or v.get("street") or (v["name"] if v["auto"] else "")
+    return {
+        "id": v["id"],
+        "name": v["name"],
+        "unnamed": bool(v["auto"]),
+        "street": street,
+        "city": v["city"],
+        "lat": v["latitude"],
+        "lon": v["longitude"],
+        "ref": placespage.ref(v["name"], v["latitude"], v["longitude"], v),
+    }
+
+
+def drives_by_id(ids: list[int]) -> list[dict]:
+    """The drives with these ids, newest first, finished the way every list finishes them."""
+    if not ids:
+        return []
+    with db() as conn:
+        rows = conn.execute(TRIP_SELECT + " WHERE t.id = ANY(%s)" + moved_sql() + " ORDER BY t.start_date DESC LIMIT %s", (ids, ROUTE_DRIVES)).fetchall()
+    known, cells, energy, by_year = places(), geocells(), vehicle_energy(), rated_mile_years()
+    return [_finish_drive(r, known, cells, energy, by_year) for r in rows]
+
+
+@site.get("/places/routes/{key}/lines")
+def route_lines(request: Request, key: str, span: str = "all"):
+    """The newest drives of a route as lines for its map, asked by the page after it has drawn.
+    A drive matched to the roads draws that line, else its own readings; kept ten minutes."""
+    r, span, car = route_of(request, key, span)
+
+    def load():
+        with db() as conn:
+            trips = conn.execute(
+                "SELECT vin, start_date, destination_date FROM trips WHERE id = ANY(%s) AND destination_date IS NOT NULL ORDER BY start_date DESC LIMIT %s", (r["ids"], ROUTE_LINES)
+            ).fetchall()
+            out = []
+            for t in trips:
+                line = routematch.matched_line(conn, t["vin"], t["start_date"], t["destination_date"], "simple")
+                if not line:
+                    rows = conn.execute(
+                        "SELECT latitude, longitude FROM cc_positions p WHERE vin = %s AND at BETWEEN %s AND %s " + driveedits.left_out() + " ORDER BY at",
+                        (t["vin"], t["start_date"], t["destination_date"]),
+                    ).fetchall()
+                    pts = [[round(x["latitude"], 4), round(x["longitude"], 4)] for x in rows]
+                    line = pts[::3] + pts[-1:] if len(pts) > 3 else pts
+                if len(line) >= 2:
+                    out.append(compact_line(line))
+        return out
+
+    ends = [[p["latitude"], p["longitude"]] for p in (r["a"], r["b"])]
+    return JSONResponse({"lines": cached(f"route_lines:{car['vin']}:{span}:{key}", 600, load), "ends": ends}, headers={"Cache-Control": "no-store"})
+
+
+@site.get("/places/routes/{key}", response_class=HTMLResponse)
+def place_route(request: Request, key: str, span: str = "all"):
+    """One route of the Routes list: its two ends as places (an unnamed one says so, with its
+    street, and opens the naming card), a map of its drives drawn together, the figures the
+    list row has and its drives, newest first. The same row the list reads (route_table)."""
+    r, span, car = route_of(request, key, span)
+    cells = geocells()
+    return page(
+        request,
+        "route.html",
+        car=car,
+        r=r,
+        span=span,
+        ends=[route_end(r["a"], cells)] + ([] if r["loop"] else [route_end(r["b"], cells)]),
+        drives=drives_by_id(r["ids"]),
+        maps_on=_maps_on(),
+        active="places",
+    )
 
 
 @site.get("/places/card", response_class=HTMLResponse)
@@ -3977,9 +5376,11 @@ def place_traces(p: dict) -> list:
         trips = conn.execute(
             """SELECT vin, start_date, destination_date,
                       destination_position_latitude BETWEEN %s AND %s AND destination_position_longitude BETWEEN %s AND %s AS arrived
-               FROM trips WHERE destination_date IS NOT NULL AND (
+               FROM trips t WHERE destination_date IS NOT NULL AND (
                    destination_position_latitude BETWEEN %s AND %s AND destination_position_longitude BETWEEN %s AND %s
-                   OR start_position_latitude BETWEEN %s AND %s AND start_position_longitude BETWEEN %s AND %s)
+                   OR start_position_latitude BETWEEN %s AND %s AND start_position_longitude BETWEEN %s AND %s)"""
+            + driveedits.ABSORBED
+            + """
                ORDER BY start_date DESC LIMIT %s""",
             (*box, *box, *box, AROUND_TRIPS),
         ).fetchall()
@@ -3989,7 +5390,7 @@ def place_traces(p: dict) -> list:
                 runs.append([(la, lo) for la, lo in line])  # the whole drive on the roads; traces_near cuts it to the place
                 continue
             a, b = (t["destination_date"] - near, t["destination_date"]) if t["arrived"] else (t["start_date"], t["start_date"] + near)
-            rows = conn.execute("SELECT latitude, longitude FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s ORDER BY at", (t["vin"], a, b)).fetchall()
+            rows = conn.execute("SELECT latitude, longitude FROM cc_positions p WHERE vin = %s AND at BETWEEN %s AND %s " + driveedits.left_out() + " ORDER BY at", (t["vin"], a, b)).fetchall()
             runs.append([(row["latitude"], row["longitude"]) for row in rows])
     return placespage.traces_near(lat, lon, runs)
 
@@ -4177,6 +5578,19 @@ async def places_use_name(request: Request, place_id: int, pick: int = Form(0), 
     return to_site(request, target)
 
 
+def public_place_name(lat: float, lon: float) -> dict | None:
+    """The naming card's name from OpenStreetMap's public lookup, only when Settings › Maps
+    allows it and the local maps add-on gave nothing. A failed or empty lookup is None."""
+    try:
+        with httpx.Client() as client:
+            body = discover_reverse_body(lat, lon, client)
+    except Exception:  # noqa: BLE001 - a lookup that fails is just no suggestion
+        return None
+    address = body.get("address") or {}
+    name = name_from(address, body.get("name"), body.get("display_name"))
+    return None if not name or name == "Unnamed" else {"name": name, "address": address, "display_name": body.get("display_name")}
+
+
 @site.get("/places/candidates")
 def places_candidates(lat: float, lon: float, place: int | None = None):
     """The naming card's own lookup: never cached, called only when a user opens it. A maps
@@ -4186,6 +5600,8 @@ def places_candidates(lat: float, lon: float, place: int | None = None):
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise HTTPException(400, "Not a coordinate.")
     raw = MAPS.candidates(lat, lon)
+    public_ok = bool(current_settings().get("public_geocoder"))
+    found = public_place_name(lat, lon) if raw is None and public_ok else None
     every = places_detail()
     # A place already here brings the address it is known by: the owner's own, and the one
     # stored or cached for the spot, which stands in when maps has none.
@@ -4199,9 +5615,10 @@ def places_candidates(lat: float, lon: float, place: int | None = None):
         nav = tesla_nav.point_suggestion(lat, lon, nav_rows(), car_names(), max(float(here.get("radius_m") or 0), tesla_nav.ARRIVED_M))
     return {
         "nav": nav,
-        "candidates": (raw or {}).get("candidates") or [],
-        "address": (raw or {}).get("address"),
-        "available": raw is not None,
+        "candidates": (raw or {}).get("candidates") or ([{"name": found["name"], "kind": "", "sub": "OpenStreetMap"}] if found else []),
+        "address": (raw or {}).get("address") or (found or {}).get("address"),
+        "available": raw is not None or public_ok,
+        "configured": _maps_on(),  # a source is set up but did not answer: not the same as off
         "user_address": here.get("user_address"),
         "place_address": here.get("address") or rough_label(lat, lon, geocells()),
         "place": place_payload(here["id"]) if here else None,
@@ -4277,14 +5694,17 @@ def software_rows(vin: str) -> list[dict]:
         out = []
         for i, r in enumerate(rows):
             nxt = rows[i + 1]["seen_at"] if i + 1 < len(rows) else None
-            odo = conn.execute("SELECT odometer FROM cc_positions WHERE vin = %s AND at >= %s AND odometer IS NOT NULL ORDER BY at LIMIT 1", (vin, r["seen_at"])).fetchone()
+            odo = conn.execute(
+                "SELECT odometer FROM cc_positions WHERE vin = %s AND at >= %s AND at < %s + interval '3 days' AND odometer IS NOT NULL ORDER BY at LIMIT 1",
+                (vin, r["seen_at"], r["seen_at"]),
+            ).fetchone()
             out.append(
                 {
                     "id": r["id"],
                     "version": r["version"],
                     "seen_at": r["seen_at"],
                     "until": nxt,
-                    "days": ((nxt or datetime.now(timezone.utc)) - r["seen_at"]).days,
+                    **softwarepage.ran(r["seen_at"], nxt, datetime.now(timezone.utc), TZ),
                     "odometer": odo["odometer"] if odo else None,
                     "by_hand": r["import_id"] == BY_HAND,
                 }
@@ -4316,11 +5736,39 @@ def software_delete(request: Request, row_id: int, vin: str = Form("")):
     return RedirectResponse(f"{root}/software" + (f"?vin={vin}" if vin else ""), status_code=303)
 
 
+def drive_temps(vin: str) -> list[tuple]:
+    """(start, outside °F) of every drive that has a real temperature (not the sensor's -40), from the trip facts."""
+    with db() as conn:
+        rows = conn.execute("SELECT t.start_date, f.temp_f FROM trips t JOIN cc_trip_facts f ON f.trip_id = t.id WHERE t.vin = %s AND f.temp_f > %s", (vin, NO_READING_C)).fetchall()
+    return [(r["start_date"], r["temp_f"]) for r in rows]
+
+
+def software_block(v: dict, live: dict | None = None) -> dict:
+    """A car's versions, each with the range at 100 % and the outside temperature it ran
+    in (softwarepage), how often updates come, and the last twelve months as a strip; with
+    `live`, the car's reading, the update it says is waiting."""
+    rows = software_rows(v["vin"])
+    if rows:
+        rows = softwarepage.per_version(rows, lifetime.clean(lifetime_rows(v["vin"])), drive_temps(v["vin"]))
+    now = datetime.now(timezone.utc)
+    return {
+        "vin": v["vin"],
+        "name": v["name"],
+        "rows": rows,
+        "cadence": softwarepage.cadence(rows, now),
+        "timeline": softwarepage.timeline(rows, now, TZ),
+        "min_level": lifetime.MIN_LEVEL,
+        "waiting": softwarepage.waiting(live),
+    }
+
+
 @site.get("/software", response_class=HTMLResponse)
 def software_page(request: Request):
     car = pick(request)
     cars = all_vehicles() if car.get("garage") else [{"vin": car["vin"], "name": car["name"]}]
-    blocks = [{"vin": v["vin"], "name": v["name"], "rows": software_rows(v["vin"])} for v in cars]
+    # the waiting update from the car already read for this page (one car), or from the connector's
+    # tree that listing the garage just fetched (every car): no second call to the connector
+    blocks = [software_block(v, car if not car.get("garage") else live_reading(v["vin"])) for v in cars]
     return page(
         request,
         "software.html",
@@ -4352,6 +5800,74 @@ def drive_hide(request: Request, trip_id: int, vin: str = Form("")):
 def drive_unhide(request: Request, trip_id: int, vin: str = Form("")):
     set_hidden("drive", trip_id, False)
     return to_site(request, f"/drives/{trip_id}" + (f"?vin={vin}" if vin else ""))
+
+
+# Drives fixed by hand (driveedits): merge with the next, split at a reading, leave a reading
+# out, Undo. Each is a POST on the drive, answers 404 for one that is not there, and lands back
+# on the drive with a line saying why when it was refused.
+DRIVE_EDIT_CACHES = ("today", "place_arrivals", "place_stays", "place_nav", "car_efficiency", "energy_today")
+
+
+def drive_edited(request: Request, trip_id: int, vin: str, conn, said: str | None, to: int | None = None):
+    """Finish an edit: facts for the changed drives worked out again now (a few rows), the
+    cached totals forgotten, and the page the person was on."""
+    car = driveedits.vin_of(conn, to or trip_id) or driveedits.vin_of(conn, trip_id)
+    if car:
+        fill_trip_facts(conn, car)
+    conn.commit()
+    for key in [k for k in _cache if k in DRIVE_EDIT_CACHES or k.startswith(("record_thumb:", "top_routes:", "tires:"))]:
+        _cache.pop(key, None)
+    _driveprint_cache.clear()
+    code = driveedits.CODES.get(said or "", "")  # the page is told a short code, never words
+    return to_site(request, f"/drives/{to or trip_id}" + (f"?vin={vin}" if vin else "") + (("&" if vin else "?") + "said=" + code if code else ""))
+
+
+def drive_for_edit(conn, trip_id: int) -> None:
+    if driveedits.vin_of(conn, trip_id) is None:
+        raise HTTPException(404, "No such drive.")
+
+
+@site.post("/drives/{trip_id}/merge")
+def drive_merge(request: Request, trip_id: int, partner: str = Form(""), vin: str = Form("")):
+    with db() as conn:
+        drive_for_edit(conn, trip_id)
+        said = driveedits.merge(conn, trip_id, moved_sql(), driveedits.parse_at(partner))
+        return drive_edited(request, trip_id, vin, conn, said)
+
+
+@site.post("/drives/{trip_id}/split")
+def drive_split(request: Request, trip_id: int, at: str = Form(""), vin: str = Form("")):
+    when = driveedits.parse_at(at)
+    with db() as conn:
+        drive_for_edit(conn, trip_id)
+        said = driveedits.MSG["pickcut"] if when is None else driveedits.split(conn, trip_id, when)
+        return drive_edited(request, trip_id, vin, conn, said)
+
+
+@site.post("/drives/{trip_id}/undo")
+def drive_undo(request: Request, trip_id: int, edit: int = Form(0), vin: str = Form("")):
+    with db() as conn:
+        drive_for_edit(conn, trip_id)
+        said, keeper = driveedits.undo(conn, edit, trip_id)
+        return drive_edited(request, trip_id, vin, conn, said, to=keeper if keeper and not said else None)
+
+
+@site.post("/drives/{trip_id}/exclude")
+def drive_exclude(request: Request, trip_id: int, at: str = Form(""), vin: str = Form("")):
+    when = driveedits.parse_at(at)
+    with db() as conn:
+        drive_for_edit(conn, trip_id)
+        said = driveedits.MSG["pick"] if when is None else driveedits.leave_out(conn, trip_id, when)
+        return drive_edited(request, trip_id, vin, conn, said)
+
+
+@site.post("/drives/{trip_id}/include")
+def drive_include(request: Request, trip_id: int, at: str = Form(""), vin: str = Form("")):
+    when = driveedits.parse_at(at)
+    with db() as conn:
+        drive_for_edit(conn, trip_id)
+        said = driveedits.MSG["pick"] if when is None else driveedits.take_back(conn, trip_id, when)
+        return drive_edited(request, trip_id, vin, conn, said)
 
 
 @site.post("/charges/{session_id}/hide")
@@ -4494,7 +6010,8 @@ def tags_page(request: Request, tag: str | None = None, month: str | None = None
                     routes.append({"c": colors.get(d["vin"], 0), "pts": compact_line(matched)})
                     continue
                 pts = conn.execute(
-                    "SELECT latitude, longitude FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s ORDER BY at", (d["vin"], d["start_date"], d["destination_date"] or d["start_date"])
+                    "SELECT latitude, longitude FROM cc_positions p WHERE vin = %s AND at BETWEEN %s AND %s " + driveedits.left_out() + " ORDER BY at",
+                    (d["vin"], d["start_date"], d["destination_date"] or d["start_date"]),
                 ).fetchall()
                 if len(pts) >= 2:
                     ends = parked_ends(conn, d["vin"], d["start_date"], d["destination_date"] or d["start_date"])
@@ -4532,7 +6049,17 @@ def service_page(request: Request):
         it["status"] = None if it["done"] else due_status(it, today, odos.get(it["vin"]))
     vins = [v["vin"] for v in (all_vehicles() if car.get("garage") else [car])]
     return page(
-        request, "service.html", tread=tread_log(vins), tire_sets=tire_set_rows(vins), tread_today=datetime.now(TZ).date().isoformat(), car=car, items=items, odos=odos, today=today, active="service"
+        request,
+        "service.html",
+        tire_blocks=[tire_block(v) for v in (all_vehicles() if car.get("garage") else [car])],
+        tread=tread_log(vins),
+        tire_sets=tire_set_rows(vins),
+        tread_today=datetime.now(TZ).date().isoformat(),
+        car=car,
+        items=items,
+        odos=odos,
+        today=today,
+        active="service",
     )
 
 
@@ -4542,7 +6069,7 @@ def tire_set_rows(vins: list[str]) -> list[dict]:
     with db() as conn:
         rows = conn.execute("SELECT t.*, v.name AS car_name FROM cc_tire_sets t JOIN vehicles v ON v.vin = t.vin WHERE t.vin = ANY(%s) ORDER BY t.fitted_on DESC, t.id DESC", (vins,)).fetchall()
     out = []
-    for r in rows:
+    for r in with_shown(rows):
         r = dict(r)
         since = datetime(r["fitted_on"].year, r["fitted_on"].month, r["fitted_on"].day, tzinfo=TZ)
         until = (datetime(r["removed_on"].year, r["removed_on"].month, r["removed_on"].day, tzinfo=TZ) + timedelta(days=1)) if r["removed_on"] else None
@@ -4581,7 +6108,8 @@ def tire_set_delete(request: Request, set_id: int, vin: str = Form("")):
 def tread_log(vins: list[str]) -> list[dict]:
     """Every tread measurement for these cars, newest first, depths in millimetres."""
     with db() as conn:
-        return conn.execute("SELECT t.*, v.name AS car_name FROM cc_tread t JOIN vehicles v ON v.vin = t.vin WHERE t.vin = ANY(%s) ORDER BY t.measured_on DESC, t.id DESC", (vins,)).fetchall()
+        rows = conn.execute("SELECT t.*, v.name AS car_name FROM cc_tread t JOIN vehicles v ON v.vin = t.vin WHERE t.vin = ANY(%s) ORDER BY t.measured_on DESC, t.id DESC", (vins,)).fetchall()
+    return with_shown(rows)
 
 
 @site.post("/service/tread")
@@ -4744,44 +6272,6 @@ def service_delete(request: Request, item_id: int, vin: str = Form("")):
     return RedirectResponse(f"{request.scope.get('root_path', '')}/service" + (f"?vin={vin}" if vin else ""), status_code=303)
 
 
-COMMON_ZONES = (
-    "America/Los_Angeles",
-    "America/Denver",
-    "America/Chicago",
-    "America/New_York",
-    "America/Phoenix",
-    "America/Anchorage",
-    "Pacific/Honolulu",
-    "America/Toronto",
-    "America/Vancouver",
-    "America/Mexico_City",
-    "America/Sao_Paulo",
-    "Europe/London",
-    "Europe/Dublin",
-    "Europe/Paris",
-    "Europe/Berlin",
-    "Europe/Amsterdam",
-    "Europe/Madrid",
-    "Europe/Rome",
-    "Europe/Zurich",
-    "Europe/Oslo",
-    "Europe/Stockholm",
-    "Europe/Warsaw",
-    "Europe/Athens",
-    "Asia/Dubai",
-    "Asia/Kolkata",
-    "Asia/Singapore",
-    "Asia/Hong_Kong",
-    "Asia/Tokyo",
-    "Asia/Seoul",
-    "Asia/Shanghai",
-    "Australia/Sydney",
-    "Australia/Melbourne",
-    "Australia/Perth",
-    "Pacific/Auckland",
-)
-
-
 def _iso(value: str | None) -> datetime | None:
     """The add-on reports times as ISO text over HTTP; the page wants a real datetime so it
     can read through the site's own `local`/`when` filters instead of showing raw ISO."""
@@ -4796,6 +6286,8 @@ def settings_render(request: Request, section: str, **extra) -> HTMLResponse:
     st = current_settings()
     saved = extra.pop("saved", None)
     ctx = dict(car=pick(request), st=st, conv=settingsform.converted(st), section=section, label=settingsform.LABELS[section], active=f"settings-{section}", saved=bool(saved), said=saved)
+    if section == "energy":  # the Powerwall is the Tesla account's: it lives under Cars and sources
+        ctx.update(active="settings-cars", back=("/settings/cars", "Cars and sources"))
     if section == "cars":
         ctx.update(capacities=capacities(), data_checks=data_checks())
         made = {c["vin"]: c["make"] for c in ctx["capacities"]}
@@ -4826,46 +6318,77 @@ def settings_render(request: Request, section: str, **extra) -> HTMLResponse:
                 }
                 for r in rows
             ],
+            env_problems=sources.env_token_problems(os.environ),
             env_sources=[{**s, "car": names.get(s["vin"], s["vin"] or "a car"), "status": status_of(s["kind"], s["vin"]), "used": s["kind"] not in eff["moved"]} for s in from_env],
             moved=eff["moved"],
             vault_ready=VAULT.ready,
             vault_problem=VAULT.problem,
             kinds=sources.KINDS,
             cc_catalogue=connectors.CATALOGUE,
+            cc_groups=connectors.GROUPS,
             # the token file's row: no Lucid account in the app, and a car on the connector no other brand's account claims
             token_file=not any(r["kind"] == "lucid" for r in rows) and any(source_of(v) == "live" and not cc_claimed(rows, made.get(v["vin"])) for v in all_vehicles()),
         )
-        ctx.update(cars_context(ctx))
+        ctx.update(
+            cars_context(ctx),
+            renamed=st.get("car_names") or {},
+            imp={**IMPORTS.view(), "typed": IMPORTS.take_typed(), "saved_mate": any(r["kind"] == "teslamate" and r["plain"] is not None for r in rows)},
+        )
         try:
             ctx["pw_card"] = energypage.cars_card(energy_config(), tesla_energy_scope())
         except Exception as err:  # noqa: BLE001 - the page does not wait on the Powerwall's line
             LOG.warning("energy card: %s", type(err).__name__)
+    elif section == "money" and extra.get("step"):
+        ctx.update(plan=st.get("rate_plan"), finder=urdb_settings(), label="Find my plan", back=("/settings/money" + _vin_q(request), "Money"), bill_keys=billread.query_keys())
     elif section == "money":
-        ctx.update(planview.money_context(st.get("rate_plan")), rates=rates_settings(), finder=urdb_settings())
+        ctx.update(planview.money_context(st.get("rate_plan")), rates=rates_settings(), finder=urdb_settings(), plan_check=plan_check_shown(st.get("rate_plan")))
     elif section == "alerts":
-        ctx.update(channels=recorder.channels(), routes=notify_mod.routes_from(st), alert_groups=notify_mod.GROUPS)
+        vehicles = all_vehicles()
+        makes, live = car_makes(vehicles, car_identities(vehicles))
+        ha = ha_view(request.query_params.get("ha_error"))
+        hidden = notify_mod.hidden_kinds(makes, commandable=live, ha=ha["linked"] or ha["env"], connector=live)
+        ctx.update(channels=recorder.channels(), routes=notify_mod.routes_from(st), alert_groups=notify_mod.visible_groups(hidden), recent=recent_alerts(), ha=ha, chan=channels_view())
     elif section == "look":
-        ctx.update(zones=COMMON_ZONES, tz_key=TZ.key, tz_default=os.environ.get("TZ", "America/Los_Angeles"))
+        ctx.update(zone_groups=zonelist.with_current(st.get("timezone") or TZ.key), tz_key=TZ.key, tz_default=os.environ.get("TZ", "America/Los_Angeles"))
     elif section == "maps":
         status = MAPS.status()
         regions = [
             {**r, "label": region_name(r), "why": region_reason(r.get("reason")), "mb": round((r.get("bytes") or 0) / 1e6), "added_dt": _iso(r.get("added")), "refreshed_dt": _iso(r.get("refreshed"))}
             for r in (status or {}).get("regions", [])
         ]
-        ctx.update(status=status, maps_on=maps_available(status), regions=regions, wait_until_dt=_iso((status or {}).get("wait_until")))
+        ctx.update(
+            status=status,
+            maps_on=maps_available(status),
+            regions=regions,
+            wait_until_dt=_iso((status or {}).get("wait_until")),
+            esri=esri_settings(),
+            esri_error=extra.get("esri_error"),
+            esri_sign_up=esrikey.SIGN_UP,
+        )
+        need = {n for n in (state_get("terrain_need") or "").split(",") if n}
+        try:
+            fails = json.loads(state_get("terrain_fail") or "{}")
+        except ValueError:
+            fails = {}
+        ctx["terrain"] = terrain_mod.status(TERRAIN, need, bool(st.get("terrain")), region_of, name_of, fails, state_get("terrain_disk") if st.get("terrain") else None) if TERRAIN.folder else None
     elif section == "energy":
         ctx.update(energy_context())
     elif section == "data":
-        ctx.update(data_checks=data_checks())
+        ctx.update(
+            data_checks=data_checks(), raw_readings=has_raw_readings(ctx["car"]), ha=ha_view(request.query_params.get("ha_error"), brief=True), ha_typed=request.query_params.get("ha_url", "")[:200]
+        )
+    elif section == "commands":
+        ctx.update(commands_context())
     elif section == "access":
         ctx.update(
             tokens=token_list(),
             token_vehicles=all_vehicles(),
             api_log=api_log(),
+            mcp_log=mcp_log(),
+            public_url=PUBLIC_URL,
             admin_anywhere=AUTH["admin_anywhere"],
             auth_enabled=AUTH["enabled"],
             has_password=bool(AUTH["password"]),
-            secret_in_env=bool(os.environ.get("CC_SECRET")),
             password_in_env=bool(os.environ.get("CC_PASSWORD")),
             signin_next=signin_return(request.query_params.get("next")),
             cf_team=CF["team"],
@@ -4873,7 +6396,7 @@ def settings_render(request: Request, section: str, **extra) -> HTMLResponse:
             cf_env=CF["env_team"] or CF["env_aud"],
             cf_offer=cf_candidate(request),
             cf_user=proxyauth.identity(request.state.cf) if getattr(request.state, "cf", None) else None,
-            cf_can_set=bool(auth.valid_session(AUTH["secret"], session_of(request)) and not CF["env_team"]),
+            cf_can_set=bool(session_ok(session_of(request)) and not CF["env_team"]),
             signin_need_code=True,  # turning sign-in on always asks for the code
             cf_emails=bool(EMAILS),
             cf_need_code=True,
@@ -4881,7 +6404,7 @@ def settings_render(request: Request, section: str, **extra) -> HTMLResponse:
             remembered_apps=remembered_apps(),
         )
     ctx.update(extra)
-    return page(request, f"settings_{section}.html", **ctx)
+    return page(request, "settings_money_plan.html" if section == "money" and extra.get("step") else f"settings_{section}.html", **ctx)
 
 
 def source_status(kind: str, vin: str | None, config: dict | None = None):
@@ -4979,18 +6502,44 @@ def _vin_q(request: Request, sep: str = "?") -> str:
 @site.get("/settings", response_class=HTMLResponse)
 def settings_home(request: Request):
     """The Settings landing: every section as a row, with a glance at what it holds."""
-    groups = settingsform.index(current_settings(), len(all_vehicles()), recorder.channels(), AUTH["enabled"], energypage.glance(energy_config()))
+    vehicles = all_vehicles()
+    makes, live = car_makes(vehicles, car_identities(vehicles))
+    cfg = energy_config()
+    hide = settingsform.hidden_rows(current_settings(), tesla=tesla_usable(vehicles, makes), commandable=live, energy_on=bool((cfg.get("cloud") or {}).get("enabled")))
+    groups = settingsform.index(current_settings(), len(vehicles), recorder.channels(), AUTH["enabled"], energypage.glance(cfg), hide)
     return page(request, "settings_index.html", car=pick(request), active="settings", groups=groups)
+
+
+# Settings URLs a person can land on that name a page by another word: the address a form posted to, a name from before the
+# sections were split. Each lands on the page that shows what that address did.
+SETTINGS_ELSEWHERE = {
+    "sources": "/settings/cars",
+    "import": "/settings/cars#import",
+    "tesla": "/settings/sources/tesla",
+    "channels": "/settings/alerts",
+    "tokens": "/settings/access",
+    "signin": "/settings/access",
+    "password": "/settings/access",
+}
+
+
+def settings_elsewhere(request: Request, section: str):
+    """A redirect to the Settings page `section` stands for, or None when it names nothing."""
+    where = SETTINGS_ELSEWHERE.get(section) or (f"/settings/{section}" if section in settingsform.LABELS else None)
+    return to_site(request, where) if where else None
 
 
 @site.get("/settings/{section}", response_class=HTMLResponse)
 def settings_page(request: Request, section: str, saved: str | None = None):
     if section not in settingsform.LABELS:
+        gone = settings_elsewhere(request, section)
+        if gone:
+            return gone
         raise HTTPException(404, "No such settings page.")
     return settings_render(request, section, saved=saved)
 
 
-def store_token(label: str, kind: str, vin: str | None, share_place: bool = False) -> str:
+def store_token(label: str, kind: str, vin: str | None, share_place: bool = False, coords: bool = False) -> str:
     """A new token, kept as its hash and last four, and live at once. The raw token is the
     caller's to show once; it goes in no log and no URL."""
     raw = auth.mint_token()
@@ -4998,6 +6547,8 @@ def store_token(label: str, kind: str, vin: str | None, share_place: bool = Fals
         conn.execute("INSERT INTO cc_api_tokens (hash, label, vin, kind, last4) VALUES (%s, %s, %s, %s, %s)", (auth.token_hash(raw), label, vin, kind, raw[-4:]))
         if share_place and kind == "status":
             conn.execute("UPDATE cc_api_tokens SET share_place = true WHERE hash = %s", (auth.token_hash(raw),))
+        if coords and kind == "mcp":
+            conn.execute("UPDATE cc_api_tokens SET coords = true WHERE hash = %s", (auth.token_hash(raw),))
         conn.commit()
     reload_tokens()
     return raw
@@ -5012,8 +6563,9 @@ async def token_mint(request: Request):
     vin = (form.get("vin") or "").strip() or None
     if kind == "admin" or (vin and vin not in {v["vin"] for v in await asyncio.to_thread(all_vehicles)}):
         vin = None  # an admin token drives the whole install, so it is never one car's
-    raw = await asyncio.to_thread(store_token, label, kind, vin)
-    return settings_render(request, "access", minted=raw, minted_label=label, minted_kind=kind)
+    coords = kind == "mcp" and form.get("coords") == "on"
+    raw = await asyncio.to_thread(store_token, label, kind, vin, False, coords)
+    return settings_render(request, "access", minted=raw, minted_label=label, minted_kind=kind, minted_coords=coords)
 
 
 @site.post("/settings/tokens/anywhere")
@@ -5078,14 +6630,14 @@ def token_list() -> list[dict]:
             if t.get("used"):
                 conn.execute("UPDATE cc_api_tokens SET last_used_at = GREATEST(COALESCE(last_used_at, %s), %s) WHERE hash = %s", (t["used"], t["used"], h))
         conn.commit()
-        rows = conn.execute("SELECT hash, label, vin, kind, last4, share_place, created_at, last_used_at FROM cc_api_tokens ORDER BY created_at DESC").fetchall()
+        rows = conn.execute("SELECT hash, label, vin, kind, last4, share_place, coords, created_at, last_used_at FROM cc_api_tokens ORDER BY created_at DESC").fetchall()
     return [{**r, "kind": auth.kind_of(r["kind"]), "car": names.get(r["vin"], r["vin"]) if r["vin"] else "every car"} for r in rows]
 
 
 def api_log(limit: int = 50) -> list[dict]:
     """The newest admin calls, for Settings beside the tokens."""
     with db() as conn:
-        return conn.execute("SELECT at, label, last4, method, path, status, client_ip FROM cc_api_log ORDER BY at DESC, id DESC LIMIT %s", (limit,)).fetchall()
+        return conn.execute("SELECT at, label, last4, method, path, status, client_ip FROM cc_api_log WHERE method <> 'MCP' ORDER BY at DESC, id DESC LIMIT %s", (limit,)).fetchall()
 
 
 def signin_return(target: str | None) -> str | None:
@@ -5098,12 +6650,13 @@ def signin_return(target: str | None) -> str | None:
 
 async def switch_alert(request: Request, what: str) -> None:
     """An alert on every channel that a sign-in switch was flipped, from the address the socket shows."""
-    await asyncio.to_thread(recorder.notify, f"Sign-in was turned {what} from {sign_in_key(request)} at {datetime.now(TZ).strftime('%b %-d, %-I:%M %p')}", "login")
+    await asyncio.to_thread(recorder.notify, f"Sign-in was {what} from {devices.where(seen_from(request)) or 'an unknown address'} at {clockfmt.text(datetime.now(TZ), '%b %-d, %-I:%M %p')}", "login")
 
 
 def rotate_secret(conn) -> None:
-    """A new signing key, so sessions from before an earlier turn-off do not come back to life. A key set in
-    .env (CC_SECRET) cannot be rotated from here."""
+    """Every session ends, so sessions from before an earlier turn-off, or a password change, do not come back to
+    life: the next session generation, and a new signing key unless .env pins it (CC_SECRET)."""
+    end_sessions(conn)
     if not os.environ.get("CC_SECRET"):
         auth.store_set(conn, "secret", auth.new_secret())
 
@@ -5112,7 +6665,7 @@ def setup_code_gate(request: Request, code: str | None) -> HTMLResponse | None:
     """The setup code, checked with the sign-in throttle: None when it is right, else the page that says so.
     The attempt is counted before it is checked and forgiven after, with nothing awaited in between."""
     key, now = sign_in_key(request), time.time()
-    held = FAILURES.wait(key, now)
+    held = FAILURES.wait(key, now, known_device(request))
     if held > 0:
         r = settings_render(request, "access", signin_error=f"Too many tries. Wait {int(held) + 1} seconds.")
         r.status_code = 429
@@ -5158,8 +6711,8 @@ async def signin_on(request: Request):
     await asyncio.to_thread(save)
     await asyncio.to_thread(load_auth)
     r = RedirectResponse(f"{root}{signin_return(form.get('next')) or '/settings/access?saved=signin'}", status_code=303)
-    set_session(r, request, auth.new_session(AUTH["secret"]))
-    await switch_alert(request, "on")
+    set_session(r, request, new_session())
+    await switch_alert(request, "turned on")
     return r
 
 
@@ -5171,7 +6724,7 @@ async def signin_off(request: Request):
         return RedirectResponse(f"{root}/settings/access", status_code=303)
     form = await request.form()
     key, now = sign_in_key(request), time.time()
-    held = FAILURES.wait(key, now)
+    held = FAILURES.wait(key, now, known_device(request))
     if held > 0:
         r = settings_render(request, "access", signin_error=f"Too many tries. Wait {int(held) + 1} seconds.")
         r.status_code = 429
@@ -5191,8 +6744,25 @@ async def signin_off(request: Request):
 
     await asyncio.to_thread(save)
     AUTH["enabled"] = False
-    await switch_alert(request, "off")
+    await switch_alert(request, "turned off")
     return RedirectResponse(f"{root}/settings/access?saved=signin-off", status_code=303)
+
+
+@site.post("/settings/signin/everywhere")
+async def signin_everywhere(request: Request):
+    """Every other browser and device signed out: the next session generation, and a fresh session for this one."""
+    root = request.scope.get("root_path", "")
+    if not AUTH["enabled"]:
+        return RedirectResponse(f"{root}/settings/access", status_code=303)
+
+    def save() -> None:
+        with db() as conn:
+            end_sessions(conn)
+
+    await asyncio.to_thread(save)
+    r = RedirectResponse(f"{root}/settings/access?saved=everywhere", status_code=303)
+    set_session(r, request, new_session())
+    return r
 
 
 def cf_header(request: Request) -> str | None:
@@ -5235,7 +6805,7 @@ async def signin_cloudflare(request: Request):
         r = settings_render(request, "access", signin_error="That Cloudflare identity may not pin the application: list your e-mail in CC_ACCESS_EMAILS in .env.")
         r.status_code = 403
         return r
-    if not (EMAILS or auth.valid_session(AUTH["secret"], session_of(request))):
+    if not (EMAILS or session_ok(session_of(request))):
         refused = setup_code_gate(request, form.get("code"))
         if refused:
             return refused
@@ -5255,7 +6825,7 @@ async def signin_cloudflare(request: Request):
         await asyncio.to_thread(load_auth)
     who = f"{proxyauth.identity(claims)} (application …{aud[-6:]})"
     LOG.info("Cloudflare Access pinned for %s by %s", CF["team"], who)
-    await asyncio.to_thread(recorder.notify, f"Sign-in through Cloudflare Access ({CF['team']}) was pinned by {who} at {datetime.now(TZ).strftime('%b %-d, %-I:%M %p')}", "login")
+    await asyncio.to_thread(recorder.notify, f"Sign-in through Cloudflare Access ({CF['team']}) was pinned by {who} at {clockfmt.text(datetime.now(TZ), '%b %-d, %-I:%M %p')}", "login")
     return RedirectResponse(f"{root}{signin_return(form.get('next')) or '/settings/access?saved=cloudflare'}", status_code=303)
 
 
@@ -5264,7 +6834,7 @@ async def signin_cloudflare_set(request: Request):
     """Name the team (and, if known, the application) by hand. Only for someone signed in with the password:
     this is what decides whose tokens the site will believe."""
     root = request.scope.get("root_path", "")
-    if not auth.valid_session(AUTH["secret"], session_of(request)):
+    if not session_ok(session_of(request)):
         return refusal(request, 403, "Sign in with the password to change this.", "Cloudflare Access cannot be pointed somewhere else by itself.")
     if CF["env_team"]:
         r = settings_render(request, "access", signin_error="Cloudflare Access is set in .env (CF_ACCESS_TEAM); change it there and restart.")
@@ -5301,7 +6871,7 @@ async def signin_cloudflare_off(request: Request):
         return RedirectResponse(f"{root}/settings/access", status_code=303)
     if AUTH["password"]:
         # With a password, only the password undoes it: Cloudflare getting you in is not leave to leave Cloudflare.
-        if not auth.valid_session(AUTH["secret"], session_of(request)):
+        if not session_ok(session_of(request)):
             return refusal(request, 403, "Sign in with the password to do that.", "Stopping Cloudflare Access needs the password.")
     elif not (getattr(request.state, "cf", None) or {}).get("email"):
         return refusal(request, 403, "Sign in as a person to do that.", "A service token cannot stop Cloudflare Access.")
@@ -5313,7 +6883,7 @@ async def signin_cloudflare_off(request: Request):
 
     await asyncio.to_thread(save)
     await asyncio.to_thread(load_auth)
-    await switch_alert(request, "off for Cloudflare Access")
+    await switch_alert(request, "turned off for Cloudflare Access")
     return RedirectResponse(f"{root}/settings/access?saved=cloudflare-off", status_code=303)
 
 
@@ -5331,7 +6901,7 @@ async def password_change(request: Request):
         return r
     form = await request.form()
     key, now = sign_in_key(request), time.time()
-    held = FAILURES.wait(key, now)
+    held = FAILURES.wait(key, now, known_device(request))
     if held > 0:
         r = settings_render(request, "access", pw_error=f"Too many tries. Wait {int(held) + 1} seconds.")
         r.status_code = 429
@@ -5350,14 +6920,13 @@ async def password_change(request: Request):
     FAILURES.clear(key)
     with db() as conn:
         auth.store_set(conn, "password", auth.hash_password(form.get("password")))
-        if not os.environ.get("CC_SECRET"):
-            auth.store_set(conn, "secret", auth.new_secret())
+        rotate_secret(conn)
     load_auth()
     r = RedirectResponse(f"{root}/settings/access?saved=password", status_code=303)
-    set_session(r, request, auth.new_session(AUTH["secret"]))
+    set_session(r, request, new_session())
     await asyncio.to_thread(
         recorder.notify,
-        f"Car Command's password was changed from {auth.client_ip(request.headers, request.client.host if request.client else None)} at {datetime.now(TZ).strftime('%b %-d, %-I:%M %p')}",
+        f"Car Command's password was changed from {devices.where(seen_from(request)) or 'an unknown address'} at {clockfmt.text(datetime.now(TZ), '%b %-d, %-I:%M %p')}",
         "login",
     )
     return r
@@ -5398,43 +6967,56 @@ async def source_add(request: Request):
     kind = form.get("kind")
     if kind not in sources.KINDS:
         raise HTTPException(404, "No such kind of source.")
+    # the form to reopen with the reason in it (none when a brand was not even picked: the notice stays on top)
+    pane = (f"cc-{form.get('connector')}" if connectors.get(form.get("connector")) else None) if kind == "carconnectivity" else f"add-{kind}"
+
+    # what was typed comes back with the reason, all but the secrets (each brand's fields say which)
+    brand = connectors.get(form.get("connector")) if kind == "carconnectivity" else None
+    secret = {f.key for f in brand.fields if f.secret} if brand else set()
+    typed = {k: str(v)[:200] for k, v in form.items() if k not in secret and k not in ("csrf_token", "kind", "connector", "password", "token", "secret", "url")}
+
+    def refuse(code: int, why: str) -> HTMLResponse:
+        return sources_page(request, code, source_error=why, source_pane=pane, source_typed=typed)
+
     if kind == "tesla":
         # a Tesla account comes only through Tesla's own sign-in, on its page
         return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/sources/tesla", status_code=303)
     if not VAULT.ready:
-        return sources_page(request, 409, source_error=f"Nothing secret can be saved yet: {VAULT.problem}. Run make secret-key on the host, then restart the site.")
+        return refuse(409, f"Nothing secret can be saved yet: {VAULT.problem}. Run make secret-key on the host, then restart the site.")
+    if kind in ("lucid", "carconnectivity") and not await asyncio.to_thread(connector_answers):
+        # Saved anyway, the account would sit on "Signing in…" until someone removed it.
+        return refuse(409, NEEDS_CONNECTOR)
     if kind == "lucid":
         # The connector container signs in (it carries the Lucid library) and keeps only the
         # token Lucid gives back; until then the e-mail and password wait here, sealed.
         email, password = (form.get("email") or "").strip(), form.get("password") or ""
         if not email or not password:
-            return sources_page(request, 400, source_error="The Lucid account's e-mail and password, both.")
+            return refuse(400, "The Lucid account's e-mail and password, both.")
         with db() as conn:
             sources.add(conn, VAULT, "lucid", None, "Lucid", {"pending": True}, json.dumps({"email": email, "password": password}))
             sources.bump(conn)
             conn.commit()
-        return sources_page(request, added={"kind": "Lucid", "pending": True})
+        return to_site(request, "/settings/cars#accounts")
     if kind == "carconnectivity":
         # The connector container installs the brand's plugin when its image lacks it, writes
         # the block into its config and restarts; the sealed sign-in waits here until then.
         entry = connectors.get(form.get("connector"))
         if entry is None:
-            return sources_page(request, 400, source_error="Pick a brand from the list.")
+            return refuse(400, "Pick a brand from the list.")
         values, problem = connectors.values(entry, form)
         if problem:
-            return sources_page(request, 400, source_error=problem)
+            return refuse(400, problem)
         with db() as conn:
             sources.add_connector(conn, VAULT, entry.key, entry.name, connectors.row_config(entry), values)
             sources.bump(conn)
             conn.commit()
-        wait = f"Adding {entry.name}: CarConnectivity installs its plugin if it needs to, then restarts. That can take a minute or two; this page shows how it went."
-        return sources_page(request, added={"kind": f"{entry.name} (CarConnectivity)", "pending": True, "wait": wait})
+        return to_site(request, "/settings/cars#accounts")
     secret = (form.get("token") if kind == "teslafi" else form.get("url")) or ""
     secret = secret.strip()
     # Off the event loop: a check can wait 20 s on TeslaFi or 10 s on a TeslaMate host, and every page would wait with it.
     checked = await asyncio.to_thread(sources.check_teslafi, secret, teslafi.fetch) if kind == "teslafi" else await asyncio.to_thread(sources.check_teslamate, secret, _teslamate_connect)
     if not checked["ok"]:
-        return sources_page(request, 400, source_error=checked["error"])
+        return refuse(400, checked["error"])
     with db() as conn:
         if kind == "teslafi":
             sources.add(conn, VAULT, "teslafi", checked["vin"], checked["name"], {}, secret)
@@ -5445,6 +7027,25 @@ async def source_add(request: Request):
     return sources_page(request, added={"kind": sources.KINDS[kind], "last4": sources.last4(secret), **checked})
 
 
+# ---- Import history from the browser: TeslaFi exports or a TeslaMate database, one job at a time (importjob.py).
+def _name_places() -> int:
+    """Cluster the stops of the history just loaded into places, by the geocoder Settings › Maps allows."""
+    import discover
+
+    with db_plain() as conn:
+        return discover.discover(conn, 3, False, url=discover.resolve_url(conn))
+
+
+def _saved_teslamate_url() -> str | None:
+    with db() as conn:
+        rows = sources.load(conn, VAULT)
+    return next((r["plain"] for r in rows if r["kind"] == "teslamate" and r["plain"]), None)
+
+
+IMPORTS = importjob.Store(None, loader=importjob.load_teslafi_file(db_plain), mate=importjob.load_teslamate_car(db_plain, _teslamate_connect), after=_name_places)
+site.include_router(importroutes.build(IMPORTS, to_site, _teslamate_connect, _saved_teslamate_url))
+
+
 # ---- Connect Tesla: the app's keys come from .env; the account (tokens, sealed) is a source of kind tesla.
 TESLA_DOMAIN = os.environ.get("TESLA_DOMAIN", "").strip()
 TESLA_REDIRECT = os.environ.get("TESLA_REDIRECT_URI", "").strip() or (f"https://{TESLA_DOMAIN}/settings/sources/tesla/callback" if TESLA_DOMAIN else "")
@@ -5453,9 +7054,44 @@ TESLA_STATE_MAX_S = 600
 TESLA_LOCK = threading.Lock()  # one refresh at a time: Tesla's refresh tokens work once
 
 
+_TESLA_ENTERED: dict = {"loaded": False, "values": {}, "retry": 0.0}  # what the owner entered on Connect Tesla, read once and kept here
+
+
+def tesla_entered(load: bool = True) -> dict:
+    """The values entered on Connect Tesla (sealed in cc_state), read once, then kept in memory: nothing on a page load reads them.
+    With `load` off only what is already kept answers."""
+    c = _TESLA_ENTERED
+    if not c["loaded"] and load and VAULT.ready and time.time() >= c["retry"]:
+        try:
+            c.update(values=teslaapp.unpack(VAULT, state_get(teslaapp.KEY)), loaded=True)
+        except Exception as err:  # noqa: BLE001 - the database is not there yet: ask again in half a minute
+            LOG.warning("tesla app: %s", type(err).__name__)
+            c["retry"] = time.time() + 30
+    return c["values"]
+
+
+def tesla_env() -> dict:
+    return {"client_id": os.environ.get("TESLA_CLIENT_ID", ""), "client_secret": os.environ.get("TESLA_CLIENT_SECRET", ""), "domain": TESLA_DOMAIN}
+
+
+def tesla_cfg(load: bool = True) -> dict:
+    """The app's Client ID, secret and domain: .env first, field by field, then what was entered on the page."""
+    return teslaapp.merge(tesla_env(), tesla_entered(load))
+
+
+def tesla_domain() -> str:
+    return tesla_cfg()["domain"]
+
+
+def tesla_redirect() -> str:
+    """Where Tesla sends the browser back: TESLA_REDIRECT_URI, else this site's own public address under the domain."""
+    domain = tesla_domain()
+    return TESLA_REDIRECT or (teslapage.site_hints(PUBLIC_URL, "", domain)["redirect"] if domain else "")
+
+
 def tesla_app() -> tesla_fleet.Fleet | None:
-    cid, secret = os.environ.get("TESLA_CLIENT_ID", "").strip(), os.environ.get("TESLA_CLIENT_SECRET", "").strip()
-    return tesla_fleet.Fleet(cid, secret) if cid and secret else None
+    cfg = tesla_cfg()
+    return tesla_fleet.Fleet(cfg["client_id"], cfg["client_secret"]) if cfg["client_id"] and cfg["client_secret"] else None
 
 
 def tesla_account(conn) -> dict | None:
@@ -5528,6 +7164,7 @@ class TeslaAsk:
 
     def __call__(self, key: str, ttl: float, fn):
         hit, now = TESLA_CACHE.get(key), time.time()
+        ttl = fleet_usage.slowed(ttl)
         if self.held:
             if hit is None:
                 raise TeslaNotHeld(key)
@@ -5575,7 +7212,7 @@ def tesla_key_domain() -> str:
     stream needs its own address registered, so once a stream address is set it is the
     app's domain for the key, its registration and the pairing links; the site's domain
     stays the sign-in redirect."""
-    return TESLA_STREAM_HOST if tesla_net.valid_host(TESLA_STREAM_HOST) else TESLA_DOMAIN
+    return TESLA_STREAM_HOST if tesla_net.valid_host(TESLA_STREAM_HOST) else tesla_domain()
 
 
 def tesla_public_check(pem: str, host: str | None = None) -> str | None:
@@ -5601,7 +7238,7 @@ def tesla_facts(ask: TeslaAsk | None = None) -> dict:
     ask = ask or TeslaAsk()
     f = {"app_ok": False, "app_error": None, "key": False, "public_ok": False, "public_error": None, "registered": False, "register_error": None, "account": False, "account_error": None, "cars": []}
     fleet = tesla_app()
-    if not fleet or not TESLA_DOMAIN:
+    if not fleet or not tesla_domain():
         return f
     try:
         ask("partner", 300, fleet.partner_token)
@@ -5753,11 +7390,16 @@ def tesla_render(request: Request, status_code: int = 200, facts: dict | None = 
         steps=steps,
         facts=facts,
         links=links,
-        tesla_domain=TESLA_DOMAIN,
+        tesla_domain=tesla_domain(),
+        app_cfg=tesla_cfg(),
+        vault_ready=VAULT.ready,
+        site=teslapage.site_hints(PUBLIC_URL, request.scope.get("root_path", ""), tesla_domain(), TESLA_REDIRECT),
         key_domain=tesla_key_domain(),
-        tesla_redirect=TESLA_REDIRECT,
+        tesla_redirect=tesla_redirect(),
         tesla_scopes=tesla_fleet.SCOPES.split(),
         energy_scope=tesla_energy_scope(),
+        cmd_scope=tesla_command_scope(),
+        cmd_proxy=bool(TESLA_PROXY_URL),
         stream=teslapage.stream_cars(facts) if facts else [],
         stream_host=TESLA_STREAM_HOST,
         stream_port=tesla_net.PORT,
@@ -5772,6 +7414,599 @@ def _qr(text: str) -> str:
     import segno
 
     return segno.make(text, error="m").svg_inline(scale=4, dark="#111", light="#fff", border=2)
+
+
+# ---- Car commands: Settings › Commands, the Now card's row, POST /api/cars/{vin}/command.
+# One path for every command, whoever asks (the site, a control token, the charging hold):
+# run_command checks it (commands.refusal), counts it (commands.Limiter), sends it (Tesla's
+# signing proxy, or the connector's REST plugin), logs it (cc_command_log) and says tier 2
+# and 3 commands on the alert channels. Nothing here runs on a page's path but command_view,
+# which reads only memory: settings, the connector's last tree, the token's kept scopes.
+TESLA_PROXY_URL = os.environ.get("TESLA_PROXY_URL", "").strip()
+TESLA_PROXY_DIR = os.environ.get("TESLA_PROXY_DIR", "").strip()
+TESLA_PROXY_CERT = os.environ.get("TESLA_PROXY_CERT", "").strip() or (str(Path(TESLA_PROXY_DIR) / tesla_proxy.CERT) if TESLA_PROXY_DIR else "")
+COMMAND_LIMIT = commands_mod.Limiter()
+STEP_UPS: dict[str, float] = {}  # who (the session or Access identity) -> when the password was entered again
+COMMAND_PATH = re.compile(r"^/api/cars/([A-Za-z0-9]{1,32})/command$")
+CHARGE_KEYS = (
+    "charge_start",
+    "charge_stop",
+    "charge_limit",
+    "charge_amps",
+    "sched_charge",
+    "sched_charge_off",
+)
+COMMAND_LOG_PRUNED = {"at": 0.0}
+
+
+FLEET_STOP = threading.Event()
+
+
+def load_fleet_meter() -> None:
+    """The month's Fleet API counts from disk, before anything that makes a call starts."""
+    try:
+        with db() as conn:
+            fleet_usage.METER.load(conn)
+    except Exception as err:  # noqa: BLE001 - counting starts from zero; the site still runs
+        LOG.warning("tesla api use: could not load (%s)", type(err).__name__)
+
+
+def write_fleet_meter() -> None:
+    """Write what was counted and send the alerts due; nothing is opened when nothing is waiting."""
+    if fleet_usage.METER.idle():
+        return
+    try:
+        with db() as conn:
+            fleet_usage.METER.tick(conn, lambda text: recorder.notify(text, "tesla_api"))
+    except Exception as err:  # noqa: BLE001 - the meter keeps the batch; the next tick writes it
+        LOG.warning("tesla api use: %s", type(err).__name__)
+
+
+def start_fleet_meter() -> None:
+    def run():
+        while not FLEET_STOP.wait(5):
+            write_fleet_meter()
+
+    threading.Thread(target=run, daemon=True, name="fleet-meter").start()
+
+
+def tesla_signer() -> tesla_cmd.Proxy | None:
+    return tesla_cmd.Proxy(TESLA_PROXY_URL, TESLA_PROXY_CERT or None) if TESLA_PROXY_URL else None
+
+
+def tesla_command_scope() -> dict | None:
+    """What the signed-in Tesla token may command, read from the token itself (no call to
+    Tesla) and kept a minute, for the Now card: {"all", "charging"}; None with no account.
+    """
+
+    def load():
+        with db() as conn:
+            row = tesla_account(conn)
+        if not row or not row["plain"]:
+            return None
+        try:
+            granted = tesla_fleet.granted_scopes(json.loads(row["plain"]).get("access_token"))
+        except ValueError:
+            return None
+        allowed = tesla_fleet.COMMAND_SCOPE in granted
+        return {
+            "all": allowed,
+            "charging": allowed or tesla_fleet.BILLING_SCOPE in granted,
+        }
+
+    return cached("tesla_command_scope", 60, load)
+
+
+def command_signed() -> bool:
+    """Commands need a sign-in in front of the site: the password, or Cloudflare Access."""
+    return bool(AUTH["enabled"] and AUTH["password"]) or cf_on()
+
+
+def command_way(car: dict) -> str | None:
+    return commands_mod.route(
+        car.get("make"),
+        car.get("source") == "connector",
+        bool(TESLA_PROXY_URL),
+        car.get("vin") == demo.VIN,
+    )
+
+
+def command_offered(car: dict, way: str | None) -> set | None:
+    """The connector's commands for this car, from the tree it last sent; None for a Tesla."""
+    if way != "connector":
+        return None
+    held = _cache.get("garage_tree")
+    return commands_mod.cc_offered(((held[1] if held else {}) or {}).get(car["vin"]))
+
+
+def _pick_temp(car: dict, key: str) -> float | None:
+    """A temperature from the car, or from its feed's newest row when the car is not live."""
+    v = car.get(key)
+    return v if v is not None else ((car.get("meters") or {}).get(key))
+
+
+def command_view(car: dict) -> dict | None:
+    """The Now card's command row: what the car may be sent and its state now, from memory
+    only. None while commands are off or the car is not one car."""
+    st = current_settings()
+    if not st.get("commands_on") or not car.get("vin") or car.get("garage") or car.get("empty"):
+        return None
+    way = command_way(car)
+    view = {
+        "vin": car["vin"],
+        "way": way,
+        "reason": None,
+        "signin": False,
+        "tier": commands_mod.tier_of(st.get("command_tiers"), car["vin"]),
+    }
+    if way is None:
+        view["reason"] = commands_mod.no_way(car.get("make"))
+        return view
+    if not command_signed():
+        view["reason"] = "Commands need the site's sign-in or Cloudflare Access."
+        return view
+    scope = tesla_command_scope() if way == "tesla" else None
+    if way == "tesla" and not (scope or {}).get("charging"):
+        view["signin"] = True
+    offered = command_offered(car, way)
+    if offered is not None and not offered:
+        view["reason"] = "This car's connector takes no commands. See docs/commands.md."
+        return view
+    ok, absent = [], commands_mod.not_fitted(car.get("make"), car_identities([car]).get(car["vin"]))
+    for c in commands_mod.CATALOGUE.values():
+        if c.tier > view["tier"] or (c.makes is not None and car.get("make") not in c.makes) or c.key in absent:
+            continue
+        if way == "connector" and (c.key not in commands_mod.CC_PATHS or c.key not in offered):
+            continue
+        if way == "tesla" and not (scope or {}).get("charging" if c.key in CHARGE_KEYS else "all"):
+            continue
+        ok.append(c)
+    climate = str(car.get("climate") or "").lower()
+    view.update(
+        allowed={c.key for c in ok},
+        more=[
+            c
+            for c in ok
+            if c.key
+            not in (
+                "charge_start",
+                "charge_stop",
+                "charge_limit",
+                "climate_on",
+                "climate_off",
+                "lock",
+            )
+        ],
+        charging=car.get("status") == "Charging",
+        plugged=car.get("plugged"),
+        climate=None if not climate else climate not in ("off", "unknown", "invalid"),
+        locked=car.get("locked"),
+        limit=car.get("charge_target"),
+        # what the tiles say beside what they do
+        soc=car.get("soc"),
+        kw=car.get("charging_power_kw") or None,
+        inside_f=_pick_temp(car, "inside_f"),
+        outside_f=_pick_temp(car, "outside_f"),
+        partial=way == "tesla" and not (scope or {}).get("all"),
+    )
+    return view
+
+
+def stepped_up(request: Request) -> bool:
+    """The password entered again, or a Cloudflare Access sign-in, in the last five minutes."""
+    cf = getattr(request.state, "cf", None)
+    if cf and isinstance(cf.get("iat"), (int, float)) and time.time() - cf["iat"] <= commands_mod.STEP_UP_S:
+        return True
+    who = csrf_subject(session_of(request), cf)
+    at = STEP_UPS.get(who or "")
+    return at is not None and time.monotonic() - at <= commands_mod.STEP_UP_S
+
+
+def connector_command(cmd: commands_mod.Command, vin: str, arg) -> tuple[bool, str | None]:
+    """A command through the connector's REST plugin; the brand's token stays in the connector."""
+    method, path, body = commands_mod.cc_request(cmd, vin, arg)
+    try:
+        r = httpx.request(
+            method,
+            f"{REST_URL}/{path}",
+            headers={"Authorization": f"Basic {REST_AUTH}"},
+            json=body,
+            timeout=60,
+        )
+    except httpx.HTTPError as err:
+        return False, f"The connector isn't answering ({type(err).__name__})."
+    if r.status_code >= 300:
+        try:
+            refused = commands_mod.cc_refusal(r.json())
+        except ValueError:
+            refused = None
+        if refused:
+            return False, refused
+    if r.status_code in (400, 403, 404):
+        return False, f"This car's connector doesn't offer {cmd.label.lower()}."
+    if r.status_code >= 300:
+        return False, "The car didn't take the command. Try again shortly."
+    return True, None
+
+
+def send_command(way: str, cmd: commands_mod.Command, vin: str, arg) -> tuple[bool, str | None]:
+    if way == "connector":
+        return connector_command(cmd, vin, arg)
+    signer, got = tesla_signer(), tesla_access()
+    if not signer:
+        return False, commands_mod.no_way("Tesla")
+    if not got:
+        return False, "Tesla needs a new sign-in. Connect Tesla › Sign in again."
+    granted = tesla_fleet.granted_scopes(got[0])
+    need = (tesla_fleet.COMMAND_SCOPE, tesla_fleet.BILLING_SCOPE) if cmd.key in CHARGE_KEYS else (tesla_fleet.COMMAND_SCOPE,)
+    if granted and not granted & set(need):
+        return False, "Sign in again to allow commands."
+    try:
+        r = signer.send(got[0], vin, cmd.key, arg)
+    except tesla_cmd.Unavailable as err:
+        return False, str(err)
+    return r.ok, r.detail
+
+
+def commands_turn_on() -> str:
+    """Where to turn commands on, in words: Settings › Commands, or what that page needs first while its row is hidden."""
+    vehicles = all_vehicles()
+    makes, live = car_makes(vehicles, car_identities(vehicles))
+    hidden = settingsform.hidden_rows(current_settings(), tesla=tesla_usable(vehicles, makes), commandable=live)
+    return commands_mod.NO_ROW if "commands" in hidden else commands_mod.TURN_ON
+
+
+def run_command(vin: str, key: str, raw_arg, source: str, ip: str | None, *, stepped: bool = False) -> tuple[int, dict]:
+    """Check, count, send, log and say one command: (HTTP status, {"ok", "said", "step_up"?})."""
+    try:
+        cmd, arg = commands_mod.parse(key, raw_arg)
+    except ValueError as err:
+        off = "" if current_settings().get("commands_on") else f" Commands are also off. {commands_turn_on()}"
+        return 400, {"ok": False, "said": f"{err}{off}"}
+    if vin not in {v["vin"] for v in all_vehicles()}:
+        return 404, {"ok": False, "said": "No such car."}
+    car = live_vehicle(vin)
+    st, way = current_settings(), command_way(car)
+    refused = commands_mod.refusal(
+        cmd,
+        car.get("make"),
+        way,
+        enabled=bool(st.get("commands_on")),
+        signed=source == "hold" or command_signed(),
+        allowed_tier=commands_mod.tier_of(st.get("command_tiers"), vin),
+        stepped_up=stepped,
+        offered=command_offered(car, way),
+        turn_on=commands_turn_on() if not st.get("commands_on") else commands_mod.TURN_ON,
+    )
+    sent_arg = arg
+    if refused is None and cmd.key == "homelink":
+        # the car opens its door only near it, so it is sent where the car is (to Tesla, nowhere else)
+        if car.get("lat") is None or car.get("lon") is None:
+            refused = "Car Command doesn't know where the car is."
+        sent_arg = (car.get("lat"), car.get("lon"))
+    if refused is None:
+        refused = COMMAND_LIMIT.admit(vin, cmd.tier)
+        status = 429 if refused else 200
+    else:
+        status = 409 if cmd.tier >= 3 and refused.startswith("Enter the password") else 403
+    t0 = time.monotonic()
+    if refused:
+        ok, detail = False, refused
+    else:
+        with fleet_usage.by_hand():
+            ok, detail = send_command(way, cmd, vin, sent_arg)
+        status = 200 if ok else 502
+        if way == "tesla" and ok and (over := fleet_usage.METER.warning()):
+            detail = f"{detail} {over}" if detail else over
+    ms = int((time.monotonic() - t0) * 1000)
+    try:
+        with db() as conn:
+            commands_mod.log(
+                conn,
+                vin,
+                cmd.key,
+                arg,
+                cmd.tier,
+                source,
+                ip,
+                ok,
+                detail,
+                ms if not refused else None,
+            )
+            if time.time() - COMMAND_LOG_PRUNED["at"] > 86400:
+                COMMAND_LOG_PRUNED["at"] = time.time()
+                commands_mod.prune(conn)
+            conn.commit()
+    except Exception as err:  # noqa: BLE001 - the command went (or not) either way; the log line says so
+        LOG.warning("command log: %s", type(err).__name__)
+    if ok and EXPECTED.note(vin, cmd.key, arg, car, datetime.now(timezone.utc)):
+        for k in [k for k in _cache if k.startswith("live-cards:")]:
+            _cache.pop(k, None)  # the next look draws the card with it
+    if cmd.tier >= 2 and not refused:
+        recorder.notify(
+            f"{car.get('name') or vin}: {cmd.label}{'' if arg is None else f' {arg:g}'} {'sent' if ok else 'failed'} from {source}" + ("" if ok else f". {detail}"),
+            "command",
+        )
+    at = clockfmt.text(datetime.now(TZ), "%-I:%M %p")
+    out = {"ok": ok, "said": commands_mod.said(cmd, arg, ok, detail, at)}
+    if status == 409:
+        out["step_up"] = True
+    return status, out
+
+
+def command_source(request: Request) -> str:
+    token = getattr(request.state, "token", None)
+    if token:
+        return f"api {token.get('label')}…{token.get('last4')}"
+    cf = getattr(request.state, "cf", None)
+    return f"site ({proxyauth.identity(cf)})" if cf else "site"
+
+
+async def command_args(request: Request) -> tuple[str, object]:
+    """The command and its argument from a JSON body or a form."""
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        body = body if isinstance(body, dict) else {}
+    else:
+        body = dict(await request.form())
+    return str(body.get("command") or ""), body.get("value")
+
+
+@site.post("/cars/{vin}/command")
+async def car_command(request: Request, vin: str):
+    """A command from the site: a tap on the Now card, confirmed, with the page's CSRF token."""
+    key, value = await command_args(request)
+    ip = seen_from(request)
+    status, out = await asyncio.to_thread(
+        run_command,
+        vin,
+        key,
+        value,
+        command_source(request),
+        ip,
+        stepped=stepped_up(request),
+    )
+    if out.get("ok"):
+        # the card as it is now, so the tap's page shows it before the stream comes round
+        out["card"] = (await asyncio.to_thread(draw_live_cards, vin, request.scope.get("root_path", ""))).get(vin, {}).get("html")
+    return JSONResponse(out, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@site.post("/api/cars/{vin}/command")
+async def api_car_command(request: Request, vin: str):
+    """A command from an app: a control token (or a signed-in session with its CSRF token).
+    Tier 3 is never sent this way: it needs the password again, which a token cannot give.
+    """
+    token = getattr(request.state, "token", None)
+    if token is not None and not auth.token_allows(token.get("vin"), vin):
+        return JSONResponse({"ok": False, "said": "This token is for another car."}, status_code=403)
+    key, value = await command_args(request)
+    ip = seen_from(request)
+    stepped = token is None and stepped_up(request)
+    status, out = await asyncio.to_thread(run_command, vin, key, value, command_source(request), ip, stepped=stepped)
+    return JSONResponse(out, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@site.post("/commands/step-up")
+async def command_step_up(request: Request, password: str = Form("")):
+    """The password again, for the next five minutes of tier 3 commands from this browser."""
+    key, now = sign_in_key(request), time.time()
+    held = FAILURES.wait(key, now)
+    if held > 0:
+        return JSONResponse(
+            {"ok": False, "said": f"Too many tries. Wait {int(held) + 1} seconds."},
+            status_code=429,
+        )
+    who = csrf_subject(session_of(request), getattr(request.state, "cf", None))
+    if not AUTH["password"] or not who:
+        return JSONResponse(
+            {
+                "ok": False,
+                "said": "This site has no password to enter. Sign in through Cloudflare Access again.",
+            },
+            status_code=409,
+        )
+    if not auth.verify_password(AUTH["password"], password):
+        FAILURES.record(key, now)
+        return JSONResponse({"ok": False, "said": "That password is not right."}, status_code=401)
+    FAILURES.clear(key)
+    for gone in [w for w, at in STEP_UPS.items() if time.monotonic() - at > commands_mod.STEP_UP_S]:
+        STEP_UPS.pop(gone, None)
+    STEP_UPS[who] = time.monotonic()
+    return JSONResponse(
+        {"ok": True, "said": "Good for five minutes."},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+# ---- The command check: one Lucid command at a time from a page, someone at the car saying what it did.
+
+
+def check_tree(vin: str) -> dict | None:
+    """The car's tree as the connector holds it now: a fresh read, so the page shows what a command did."""
+    try:
+        r = httpx.get(f"{REST_URL}/garage/{vin}", headers={"Authorization": f"Basic {REST_AUTH}"}, timeout=20)
+        return r.json() if r.status_code < 300 else None
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+def check_kept(vin: str) -> dict:
+    try:
+        return json.loads(state_get(f"command_check:{vin}") or "{}")
+    except ValueError:
+        return {}
+
+
+def check_car(vin: str) -> dict | None:
+    return next((v for v in all_vehicles() if v["vin"] == vin and v.get("live")), None)
+
+
+@site.get("/check/{vin}", response_class=HTMLResponse)
+def command_check_page(request: Request, vin: str):
+    car = check_car(vin)
+    if car is None:
+        raise HTTPException(404)
+    now = commandcheck.readings(check_tree(vin))
+    return page(request, "commandcheck.html", car=pick(request), check_car=car, steps=commandcheck.STEPS, now=now, kept=check_kept(vin), left_out=commandcheck.LEFT_OUT)
+
+
+@site.get("/check/{vin}/read")
+def command_check_read(vin: str):
+    if check_car(vin) is None:
+        raise HTTPException(404)
+    return JSONResponse(commandcheck.readings(check_tree(vin)), headers={"Cache-Control": "no-store"})
+
+
+@site.post("/check/{vin}/send")
+async def command_check_send(request: Request, vin: str):
+    """One step tried or put back. Refused while the car moves; logged with every other command."""
+    body = await request.json()
+    step = commandcheck.BY_KEY.get(str(body.get("step")))
+    which = str(body.get("which"))
+    if check_car(vin) is None or step is None or which not in ("do", "undo"):
+        raise HTTPException(404)
+    tree = await asyncio.to_thread(check_tree, vin)
+    if tree is None:
+        return JSONResponse({"ok": False, "said": "The connector isn't answering."}, status_code=503)
+    if commandcheck.moving(tree):
+        return JSONResponse({"ok": False, "said": "The car is moving. Parked only."}, status_code=409)
+    kept = check_kept(vin)
+    row = kept.get(step.key) or {}
+    if which == "do":
+        row["before"] = commandcheck.read(tree, step.read)
+    if which == "undo" and step.settle and row.get("sent_do"):
+        left = step.settle - (datetime.now(timezone.utc) - datetime.fromisoformat(row["sent_do"])).total_seconds()
+        if left > 0:
+            return JSONResponse({"ok": False, "said": f"Still moving. Put back in {int(left) + 1} s."}, status_code=409)
+    try:
+        value = commandcheck.value_for(step, which, row.get("before"))
+    except ValueError as err:
+        return JSONResponse({"ok": False, "said": str(err).capitalize() + "."}, status_code=409)
+    t0 = time.monotonic()
+    try:
+        r = await asyncio.to_thread(httpx.request, step.method, f"{REST_URL}/garage/{vin}/{step.path}", headers={"Authorization": f"Basic {REST_AUTH}"}, json={"value": value}, timeout=90)
+        ok, detail = r.status_code < 300, None if r.status_code < 300 else f"HTTP {r.status_code}: {r.text[:200]}"
+    except httpx.HTTPError as err:
+        ok, detail = False, f"The connector isn't answering ({type(err).__name__})."
+    ms = int((time.monotonic() - t0) * 1000)
+    row["sent_" + which] = datetime.now(timezone.utc).isoformat()
+    kept[step.key] = row
+    state_set(f"command_check:{vin}", json.dumps(kept))
+    with db() as conn:
+        arg = value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        commands_mod.log(conn, vin, f"check {step.key} {which} {value}"[:40], arg, 1, command_source(request), seen_from(request), ok, detail, ms)
+        conn.commit()
+    return JSONResponse({"ok": ok, "said": f"Sent {value!s}." if ok else detail, "value": value}, headers={"Cache-Control": "no-store"})
+
+
+@site.post("/check/{vin}/verdict")
+async def command_check_verdict(request: Request, vin: str):
+    body = await request.json()
+    step, verdict = commandcheck.BY_KEY.get(str(body.get("step"))), str(body.get("verdict"))
+    if check_car(vin) is None or step is None or verdict not in commandcheck.VERDICTS + ("",):
+        raise HTTPException(404)
+    kept = check_kept(vin)
+    row = kept.get(step.key) or {}
+    if verdict:  # "" saves the note alone
+        row["verdict"] = verdict
+    row["note"] = str(body.get("note") or "")[:300]
+    kept[step.key] = row
+    state_set(f"command_check:{vin}", json.dumps(kept))
+    return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+
+@site.get("/cars/{vin}/commands", response_class=HTMLResponse)
+def car_command_log(request: Request, vin: str):
+    """The car's command log, drawn when the Now card's Log is opened (never on the page's load)."""
+    with db() as conn:
+        rows = commands_mod.recent(conn, vin, 20)
+    return templates.TemplateResponse(request, "_command_log.html", {"rows": rows, "tz": TZ})
+
+
+def commands_context() -> dict:
+    """Settings › Commands: each car, the way its commands go and what it may be sent, and
+    its charging hold. From memory and settings; nothing asked of a car or of Tesla."""
+    st = current_settings()
+    rules = st.get("charge_hold") or {}
+    cars = []
+    vehicles = all_vehicles()
+    idents = car_identities(vehicles)
+    for v in vehicles:
+        car = {"vin": v["vin"], "make": (idents.get(v["vin"]) or {}).get("make"), "source": "connector" if v.get("live") else None}
+        way = command_way(car)
+        rule = charge_hold.rule_for(rules, v["vin"])
+        cars.append(
+            {
+                "vin": v["vin"],
+                "name": v["name"],
+                "make": car.get("make"),
+                "way": way,
+                "reason": None if way else commands_mod.no_way(car.get("make")),
+                "tier": commands_mod.tier_of(st.get("command_tiers"), v["vin"]),
+                "hold": rule,
+                "hold_rule": rule or dict(charge_hold.DEFAULTS),
+                "hold_last": hold_worker.last.get(v["vin"]),
+            }
+        )
+    scope = tesla_command_scope() if any(c["way"] == "tesla" for c in cars) else None
+    return {
+        "cmd_cars": cars,
+        "cmd_signed": command_signed(),
+        "cmd_proxy": bool(TESLA_PROXY_URL),
+        "cmd_scope": scope,
+        "cmd_tiers": commands_mod.TIERS,
+        "fleet": fleet_usage.METER.view({v["vin"]: v["name"] for v in vehicles}),
+        "fleet_rates": fleet_usage.METER.rates,
+    }
+
+
+def hold_car(vin: str) -> dict | None:
+    """The car as /api/now has it, for the charging hold; None when it cannot be read."""
+    try:
+        return live_vehicle(vin)
+    except Exception as err:  # noqa: BLE001 - the next minute asks again
+        LOG.warning("charge hold: %s", type(err).__name__)
+        return None
+
+
+def hold_send(vin: str, key: str) -> tuple[bool, str | None]:
+    status, out = run_command(vin, key, None, "hold", None)
+    return out["ok"], out["said"]
+
+
+hold_worker = charge_hold.Worker(
+    rules=lambda: current_settings().get("charge_hold"),
+    enabled=lambda: bool(current_settings().get("commands_on")),
+    car=hold_car,
+    send=hold_send,
+    notify=lambda text, kind: recorder.notify(text, kind),
+    get=lambda key: state_get(key),
+    set=lambda key, value: state_set(key, value),
+    now=lambda: datetime.now(TZ),
+)
+
+
+def keep_proxy_files() -> None:
+    """Compose: the signing proxy's key and certificate kept in TESLA_PROXY_DIR, written when
+    the app's key first exists or changes. A minute's check in the background, never on a page.
+    """
+    if not TESLA_PROXY_DIR:
+        return
+
+    def loop():
+        while True:
+            try:
+                if tesla_proxy.keep_for_proxy(Path(TESLA_PROXY_DIR), tesla_keys.stored(state_get, VAULT)):
+                    LOG.info("tesla proxy: key and certificate written for the proxy")
+            except Exception as err:  # noqa: BLE001 - tried again in a minute
+                LOG.warning("tesla proxy files: %s", type(err).__name__)
+            time.sleep(60)
+
+    threading.Thread(target=loop, daemon=True, name="tesla-proxy-files").start()
 
 
 @site.get("/settings/sources/tesla", response_class=HTMLResponse)
@@ -5804,8 +8039,8 @@ async def tesla_register_do() -> tuple[int, str | None]:
     (status, why not): 409 when a step before this one is missing, 400 when the domain or
     Tesla said no, 200 and None when Tesla took it. The page and the admin API both call this."""
     fleet = tesla_app()
-    if not fleet or not TESLA_DOMAIN:
-        return 409, "Add the app's keys and domain to .env first (step 1)."
+    if not fleet or not tesla_domain():
+        return 409, "Enter the app's Client ID, secret and domain in step 1 first."
     if not VAULT.ready:
         return 409, f"Nothing secret can be kept yet: {VAULT.problem}."
     pem = tesla_keys.ensure(state_get, state_set, VAULT)
@@ -5818,6 +8053,21 @@ async def tesla_register_do() -> tuple[int, str | None]:
             problem = err.public
     TESLA_CACHE.clear()
     return (400, problem) if problem else (200, None)
+
+
+@site.post("/settings/sources/tesla/app")
+async def tesla_app_save(request: Request):
+    """Step 1: the app's Client ID, secret and domain, sealed like a source's token and used from the next request on, with no restart."""
+    if not VAULT.ready:
+        return tesla_render(request, 409, tesla_error=f"Nothing secret can be kept yet: {VAULT.problem}.")
+    form = await request.form()
+    values, problem = teslaapp.read_form(form, tesla_entered(), tesla_env())
+    if problem:
+        return tesla_render(request, 400, tesla_error=problem)
+    state_set(teslaapp.KEY, teslaapp.pack(VAULT, values))
+    _TESLA_ENTERED.update(values=values, loaded=True)
+    TESLA_CACHE.clear()  # what Tesla said about the old app is not an answer about this one
+    return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/sources/tesla?fresh=1", status_code=303)
 
 
 @site.post("/settings/sources/tesla/register")
@@ -5884,7 +8134,7 @@ def tesla_stream_send(vin: str) -> str | None:
     if not fleet or not access:
         return "Tesla needs a new sign-in (step 3)."
     if not tesla_net.valid_host(TESLA_STREAM_HOST):
-        return "Set TESLA_STREAM_HOST in stack/.env first."
+        return "Set TESLA_STREAM_HOST first (docs/tesla-stream.md)."
     pem = tesla_keys.stored(state_get, VAULT)
     if not pem:
         return "The app has no key yet (step 2)."
@@ -6135,11 +8385,11 @@ def tesla_start(request: Request, energy: int = 0):
     """Out to Tesla's sign-in; the state that must come back is kept here for ten minutes. `energy`
     (from the Energy page only) asks for the Powerwall scope beside the vehicle ones."""
     fleet = tesla_app()
-    if not fleet or not TESLA_REDIRECT:
-        return tesla_render(request, 409, tesla_error="Add the app's keys and domain to .env first (step 1).")
+    if not fleet or not tesla_redirect():
+        return tesla_render(request, 409, tesla_error="Enter the app's Client ID, secret and domain in step 1 first.")
     state = secrets.token_urlsafe(24)
     state_set(TESLA_STATE_KEY, f"{state} {int(time.time())}" + (" e" if energy else ""))  # "e": back to the Powerwall step afterwards
-    return RedirectResponse(fleet.authorize_url(TESLA_REDIRECT, state, energy=bool(energy) or energy_scope_wanted()), status_code=303)
+    return RedirectResponse(fleet.authorize_url(tesla_redirect(), state, energy=bool(energy) or energy_scope_wanted()), status_code=303)
 
 
 @site.get("/settings/sources/tesla/callback")
@@ -6158,9 +8408,9 @@ async def tesla_callback(request: Request, code: str = "", state: str = "", erro
         return tesla_render(request, 400, tesla_error="The Tesla sign-in was cancelled." if error in ("access_denied", "") else f"Tesla said: {error[:80]}")
     fleet = tesla_app()
     if not fleet:
-        return tesla_render(request, 409, tesla_error="Add the app's keys and domain to .env first (step 1).")
+        return tesla_render(request, 409, tesla_error="Enter the app's Client ID, secret and domain in step 1 first.")
     try:
-        tokens = await asyncio.to_thread(fleet.exchange, code, TESLA_REDIRECT)
+        tokens = await asyncio.to_thread(fleet.exchange, code, tesla_redirect())
     except tesla_fleet.TeslaError as err:
         return tesla_render(request, 400, tesla_error=err.public)
     try:
@@ -6174,6 +8424,7 @@ async def tesla_callback(request: Request, code: str = "", state: str = "", erro
         sources.add(conn, VAULT, "tesla", None, "Tesla", {"base": base, **({"stream": streaming} if streaming else {})}, json.dumps(tokens))
         conn.commit()
     TESLA_CACHE.clear()  # the cars and keys asked of the account before belong to it, not to this one
+    _cache.pop("tesla_command_scope", None)
     if len(kept) == 3 and kept[2] == "e":
         # signed in from the Powerwall step: take the account's site if it has one, and land on the step again
         await asyncio.to_thread(energy_adopt_after_sign_in, fleet, tokens["access_token"], base)
@@ -6340,10 +8591,722 @@ async def maps_service(request: Request):
     return _maps_redirect(request)
 
 
+def esri_settings() -> dict:
+    """What Settings › Maps shows of the satellite key: whether one is kept and its last four."""
+    try:
+        with db() as conn:
+            hint = esrikey.key_hint(conn)
+    except Exception as err:  # noqa: BLE001 - no table yet: no key
+        LOG.warning("esri key: %s", type(err).__name__)
+        hint = None
+    return {"hint": hint, "ready": bool(hint)}
+
+
+HA_STATE_KEY = "ha_oauth_state"  # "<state> <unix time> <ha url>", spent on the way back
+HA_STATE_MAX_S = 600
+GARAGE_OPEN_KEY = "garage_open"  # {"vin", "place", "mode"}: which car opens the door at which home, and off, watch or open
+GARAGE_LOG_KEY = "garage_open_log"  # the last arrivals, newest first, for Settings to show what it did or would have done
+GARAGE_LOG_KEEP = 30
+GARAGE_MODEL_KEY = "garage_model"  # the learned approach model (garageopen)
+APPROACH = garageopen.Approach()
+GARAGE_TIMERS: dict[str, threading.Timer] = {}  # per car: the door's start, between fixes
+GARAGE_DOOR_SEEN: dict[str, str | None] = {}  # per car: the door's state at its last tick, to see the owner open it
+GARAGE_RECENT: dict[str, dict] = {}  # per car: the last trip's predicted start and camera sighting, until the owner's opening is timed
+
+
+def load_ha_link() -> None:
+    try:
+        with db() as conn:
+            kept, refresh = garagedoor.opened(conn, VAULT)
+        garagedoor.LINK.use(kept, refresh)
+    except Exception as err:  # noqa: BLE001 - no table or no sealing key: the door is simply not read
+        LOG.warning("home assistant link: %s", type(err).__name__)
+        garagedoor.LINK.use(None, None)
+
+
+def site_origin(request: Request) -> str:
+    """This site as the browser reached it: Home Assistant names the app by this address, and
+    sends the browser back under it."""
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    return f"{proto}://{request.headers.get('host') or request.url.netloc}{request.scope.get('root_path', '')}"
+
+
+def ha_view(error: str | None = None, brief: bool = False) -> dict:
+    """Home Assistant as Settings shows it: linked or not (Data links it; `brief` stops there),
+    then for Alerts which door, the doors to pick from."""
+    link = garagedoor.LINK
+    view = {"linked": link.ready(), "url": link.url, "entity": link.entity, "env": bool(os.environ.get("HA_URL") and os.environ.get("HA_TOKEN")), "problem": error or link.problem, "doors": []}
+    if brief:
+        return view
+    if link.ready():
+        try:
+            view["doors"] = cached("ha_doors", 60, lambda: garagedoor.doors(garagedoor.get_json("/api/states")))
+        except Exception as err:  # noqa: BLE001 - HA away: the row says so, the page still draws
+            view["problem"] = view["problem"] or (str(err) if isinstance(err, garagedoor.LinkError) else f"Home Assistant did not answer ({type(err).__name__}).")
+        door = garagedoor.READER.read()
+        view["door"] = door
+    view.update(
+        arrival=garage_open_config(),
+        close=garage_close_mode(),
+        cars=[{"vin": v["vin"], "name": v.get("name") or v["vin"]} for v in all_vehicles()],
+        homes=[{"id": h["id"], "name": h.get("name")} for h in home_places()],
+        log=[{**e, "when": datetime.fromisoformat(e["at"]).astimezone(TZ).strftime(clockfmt.adapt("%b %-d") + " %H:%M:%S")} for e in garage_log()[:12] if e.get("at")],
+        model=APPROACH.model or {},
+        aims=AIMS,
+        camera=bool(DRIVEWAY_URL),
+    )
+    return view
+
+
+@site.post("/settings/alerts/ha/start")
+async def ha_start(request: Request):
+    """Out to Home Assistant's own sign-in. This site's address is the client id: nothing to register."""
+    form = await request.form()
+    try:
+        ha = garagedoor.ha_url(str(form.get("url") or ""))
+        await asyncio.to_thread(garagedoor.reach, ha)  # an address that does not answer is said here, not by the browser's own error page
+    except garagedoor.LinkError as err:
+        # the address goes back with the error, so a typo is fixed rather than typed again
+        return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/data?{urlencode({'ha_error': str(err), 'ha_url': str(form.get('url') or '')[:200]})}#ha", status_code=303)
+    state = secrets.token_urlsafe(24)
+    state_set(HA_STATE_KEY, f"{state} {int(time.time())} {ha}")
+    origin = site_origin(request)
+    out = garagedoor.authorize_url(ha, origin + "/", origin + "/settings/alerts/ha/callback", state)
+    # Not a redirect: the site's form-action 'self' covers a form's redirects too, and the browser
+    # would quietly stay put. A page that moves on by itself is a navigation, which it allows.
+    page = f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={html_escape(out)}"><title>Home Assistant</title><p><a href="{html_escape(out)}">Continue to Home Assistant</a></p>'
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
+
+@site.get("/settings/alerts/ha/callback")
+async def ha_callback(request: Request, code: str = "", state: str = ""):
+    """Back from Home Assistant: the state must be ours, once, within ten minutes."""
+    back = f"{request.scope.get('root_path', '')}/settings/data"
+    kept = (state_get(HA_STATE_KEY) or "").split()
+    if kept:
+        state_set(HA_STATE_KEY, "")
+    try:
+        fresh = len(kept) == 3 and bool(state) and secrets.compare_digest(kept[0], state) and time.time() - int(kept[1]) < HA_STATE_MAX_S
+    except ValueError:
+        fresh = False
+    if not fresh or not code:
+        return RedirectResponse(f"{back}?{urlencode({'ha_error': 'That sign-in link is spent or too old. Connect again.'})}#ha", status_code=303)
+    ha, origin = kept[2], site_origin(request)
+    try:
+        if not VAULT.ready:
+            raise garagedoor.LinkError(f"The sign-in cannot be kept: {VAULT.problem}.")
+        body = await asyncio.to_thread(garagedoor.token_call, garagedoor._post, ha, {"grant_type": "authorization_code", "code": code, "client_id": origin + "/"})
+        if not body.get("refresh_token"):
+            raise garagedoor.LinkError("Home Assistant sent no refresh token.")
+        states = await asyncio.to_thread(garagedoor.get_json, "/api/states", ha, body["access_token"])
+        found = garagedoor.doors(states)
+        entity = next((d["id"] for d in found), None)  # the first garage door; the row lets the owner pick another
+        with db() as conn:
+            kept_link = garagedoor.save(conn, VAULT, ha, origin + "/", body["refresh_token"], entity)
+            conn.commit()
+    except garagedoor.LinkError as err:
+        return RedirectResponse(f"{back}?{urlencode({'ha_error': str(err)})}#ha", status_code=303)
+    except Exception as err:  # noqa: BLE001
+        return RedirectResponse(f"{back}?{urlencode({'ha_error': f'Home Assistant did not answer ({type(err).__name__}).'})}#ha", status_code=303)
+    garagedoor.LINK.use(kept_link, body["refresh_token"])
+    garagedoor.READER.at = -1e9  # read the new door now, not at the end of the old tick
+    _cache.pop("ha_doors", None)
+    return RedirectResponse(f"{back}?saved=Home+Assistant+linked#ha", status_code=303)
+
+
+@site.post("/settings/alerts/ha/door")
+async def ha_door(request: Request):
+    form = await request.form()
+    entity = str(form.get("entity") or "")
+    with db() as conn:
+        kept, refresh = garagedoor.opened(conn, VAULT)
+        if not kept or not entity.startswith("cover."):
+            raise HTTPException(400, "Link Home Assistant first, then pick a cover.")
+        kept = garagedoor.save(conn, VAULT, kept["url"], kept["client"], refresh, entity)
+        conn.commit()
+    garagedoor.LINK.use(kept, refresh)
+    garagedoor.READER.at = -1e9
+    return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/alerts?saved=Door+saved#ha", status_code=303)
+
+
+@site.post("/settings/alerts/ha/arrival")
+async def ha_arrival(request: Request):
+    """Which car opens the door as it comes home, at which home, and off, watch or open."""
+    form = await request.form()
+    mode = str(form.get("mode") or "off")
+    vin = str(form.get("vin") or "")
+    if mode not in garageopen.MODES or (vin and vin not in {v["vin"] for v in all_vehicles()}):
+        raise HTTPException(400, "No such car or mode.")
+    if mode == "open" and not garagedoor.configured():
+        return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/alerts?{urlencode({'ha_error': 'Connect Home Assistant first: it opens the door.'})}#ha", status_code=303)
+    try:
+        aim = int(form.get("aim") or garageopen.AIM_S)
+    except ValueError:
+        aim = int(garageopen.AIM_S)
+    place = str(form.get("place") or "") or None
+    moved = place != garage_open_config()["place"]
+    state_set(GARAGE_OPEN_KEY, json.dumps({"mode": mode, "vin": vin or None, "place": place, "aim": aim if aim in AIMS else int(garageopen.AIM_S)}))
+    _cache.pop("garage_open_cfg", None)
+    if moved or (mode != "off" and not APPROACH.model):
+        await asyncio.to_thread(learn_garage_model)  # another home, or the first time on: learn now
+    return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/alerts?saved=Saved#ha", status_code=303)
+
+
+def load_alert_channels() -> None:
+    """The channels added in Settings, opened for the recorder; none when the key is missing or the table is not there yet."""
+    try:
+        with db() as conn:
+            recorder.stored = alertchans.load(conn, VAULT) if VAULT.ready else {}
+    except Exception as err:  # noqa: BLE001
+        LOG.warning("alert channels: %s", type(err).__name__)
+
+
+def settle_channel_routes() -> None:
+    """At start: a channel set in .env that never had its alerts chosen starts with the short default set, as one added in the app
+    does. Saved routing is only ever added to, never changed (notify.settle_routes)."""
+    try:
+        got = notify_mod.settle_routes(current_settings(), recorder.channels())
+        if got is None:
+            return
+        routes, routed = got
+        with db() as conn:
+            if routes is not None:
+                settings_mod.save(conn, "alert_routes", routes)
+            settings_mod.save(conn, "alert_routed", routed)
+        _cache.pop("settings", None)
+    except Exception as err:  # noqa: BLE001 - routing stays as it was; alerts still go by what is saved
+        LOG.warning("alert routing: %s", type(err).__name__)
+
+
+def channels_view() -> dict:
+    """What Settings › Alerts draws for channels: where each set-up one comes from, and the kinds still to add."""
+    env, have = recorder.env_confs(), recorder.channels()
+    try:
+        with db() as conn:
+            hints = alertchans.hints(conn)
+    except Exception as err:  # noqa: BLE001 - no table yet: none kept
+        LOG.warning("alert channels: %s", type(err).__name__)
+        hints = {}
+    return {
+        "where": {c: "env" if c in env else "app" for c in have},
+        "hints": hints,
+        "addable": [k for k in notify_mod.CHANNELS if k not in have],
+        "fields": alertchans.FIELDS,
+        "vault_ready": VAULT.ready,
+        "vault_problem": VAULT.problem,
+    }
+
+
+def channel_page(request: Request, kind: str, ok: bool, text: str, status: int = 200, form=None):
+    """The answer to a channel add or test: JSON for the page's own script (the result sits beside
+    the button, the form untouched), else the page again with what was typed put back."""
+    if "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"ok": ok, "text": text}, status_code=status)
+    typed = {k: v for k, v in (form or {}).items() if k.startswith(kind + "_")}
+    r = settings_render(request, "alerts", chan_note={"kind": kind, "ok": ok, "text": text}, chan_vals=typed)
+    r.status_code = status
+    return r
+
+
+@site.post("/settings/alerts/channel/{kind}/add")
+async def channel_add(request: Request, kind: str):
+    if kind not in alertchans.FIELDS:
+        raise HTTPException(404, "No such channel.")
+    form = await request.form()
+    if kind in recorder.channels():
+        return channel_page(request, kind, False, "Already set up.", 409)
+    try:
+        conf = alertchans.check(kind, form)
+        routes = notify_mod.routes_with_channel(notify_mod.routes_from(current_settings()), recorder.channels(), kind)
+        with db() as conn:
+            alertchans.save(conn, VAULT, kind, conf)
+            settings_mod.save(conn, "alert_routes", routes)  # the new channel starts with a short set, not every alert
+            settings_mod.save(conn, "alert_routed", sorted(set(current_settings().get("alert_routed") or []) | set(recorder.channels()) | {kind}))
+            conn.commit()
+        settings_changed()
+    except alertchans.ChannelError as err:
+        return channel_page(request, kind, False, str(err), 400, form)
+    except sources.NoKey as err:
+        return channel_page(request, kind, False, f"{err}: run make secret-key on the host, then restart the site.", 400, form)
+    load_alert_channels()
+    return to_site(request, f"/settings/alerts?saved=1#chan-{kind}")
+
+
+@site.post("/settings/alerts/channel/{kind}/test")
+async def channel_test(request: Request, kind: str):
+    """Send one message down a channel: the fields typed into its form, else the channel as it is set up."""
+    if kind not in alertchans.FIELDS:
+        raise HTTPException(404, "No such channel.")
+    form = await request.form()
+    try:
+        typed = any(form.get(f"{kind}_{f[0]}") for f in alertchans.FIELDS[kind])
+        conf = alertchans.check(kind, form) if typed else recorder.confs().get(kind)
+        if conf is None:
+            raise alertchans.ChannelError("Not set up.")
+    except alertchans.ChannelError as err:
+        return channel_page(request, kind, False, str(err), 400, form)
+    ok = await asyncio.to_thread(recorder.send, kind, "Car Command test: this channel works.", "test", conf)
+    return channel_page(request, kind, ok, "Sent." if ok else "Nothing arrived: check the address and keys.", 200 if ok else 502, form)
+
+
+@site.post("/settings/alerts/channel/{kind}/remove")
+async def channel_remove(request: Request, kind: str):
+    if kind not in alertchans.FIELDS:
+        raise HTTPException(404, "No such channel.")
+    if kind in recorder.env_confs():
+        return channel_page(request, kind, False, "Set in .env: remove it there.", 409)
+    with db() as conn:
+        alertchans.forget(conn, kind)
+        conn.commit()
+    load_alert_channels()
+    return to_site(request, "/settings/alerts?saved=1")
+
+
+@site.post("/settings/alerts/ha/forget")
+async def ha_forget(request: Request):
+    """Unlink: the refresh token is revoked in Home Assistant too, when it answers."""
+    with db() as conn:
+        kept, refresh = garagedoor.opened(conn, VAULT)
+        garagedoor.forget(conn)
+        conn.commit()
+    garagedoor.LINK.use(None, None)
+    garagedoor.READER.at = -1e9
+    if kept and refresh:
+        try:
+            await asyncio.to_thread(garagedoor._post, f"{kept['url']}/auth/revoke", data={"token": refresh}, timeout=5)
+        except Exception as err:  # noqa: BLE001 - forgotten here either way; HA lists it until removed there
+            LOG.warning("home assistant revoke: %s", type(err).__name__)
+    return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/data?saved=Home+Assistant+unlinked#ha", status_code=303)
+
+
+@site.post("/settings/alerts/ha/close")
+async def ha_close(request: Request):
+    """Close the door behind the opener's car as it leaves: off, watch or close."""
+    form = await request.form()
+    mode = str(form.get("mode") or "off")
+    if mode not in garageclose.MODES:
+        raise HTTPException(400, "No such mode.")
+    if mode == "close" and not garagedoor.configured():
+        return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/alerts?{urlencode({'ha_error': 'Connect Home Assistant first: it closes the door.'})}#ha", status_code=303)
+    state_set(GARAGE_CLOSE_KEY, json.dumps({"mode": mode}))
+    _cache.pop("garage_close_mode", None)
+    return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/alerts?saved=Saved#ha", status_code=303)
+
+
+AIMS = (5, 8, 10, 13, 20)  # the choices for how long before the driveway the door is fully open
+
+
+def garage_open_config() -> dict:
+    try:
+        cfg = json.loads(state_get(GARAGE_OPEN_KEY) or "{}")
+    except ValueError:
+        cfg = {}
+    aim = cfg.get("aim") if cfg.get("aim") in AIMS else int(garageopen.AIM_S)
+    return {"mode": cfg.get("mode") if cfg.get("mode") in garageopen.MODES else "off", "vin": cfg.get("vin"), "place": cfg.get("place"), "aim": aim}
+
+
+def home_places() -> list[dict]:
+    """The places that are home, busiest first."""
+    return cached("home_places", 60, lambda: [dict(p) for p in place_rows() if is_home_place(p) and not p.get("merged_into")])
+
+
+def garage_home(cfg: dict) -> dict | None:
+    homes = home_places()
+    p = next((h for h in homes if str(h.get("id")) == str(cfg.get("place"))), homes[0] if homes else None)
+    return {"lat": p["latitude"], "lon": p["longitude"], "radius_m": p.get("radius_m") or 150, "name": p.get("name")} if p else None
+
+
+def garage_log() -> list[dict]:
+    try:
+        return json.loads(state_get(GARAGE_LOG_KEY) or "[]")
+    except ValueError:
+        return []
+
+
+def garage_note(entry: dict) -> None:
+    log = garage_log()
+    log.insert(0, {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in entry.items()})
+    state_set(GARAGE_LOG_KEY, json.dumps(log[:GARAGE_LOG_KEEP]))
+    garage_record([entry])
+
+
+GARAGE_EVENT_SQL = "INSERT INTO cc_garage_events (vin, at, kind, mode, detail) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (vin, at, kind) DO NOTHING"
+
+
+def garage_record(entries: list[dict]) -> None:
+    """Keep each entry for good in cc_garage_events (the cc_state list keeps 30); a failure here never stops the door."""
+    try:
+        vin = garage_open_config()["vin"]
+        rows = [r for r in (garagelog.row_of(e, e.get("vin") or vin) for e in entries) if r]
+        with db() as conn:
+            conn.cursor().executemany(GARAGE_EVENT_SQL, [(v, a, k, m, Jsonb(json.loads(json.dumps(d, default=str)))) for v, a, k, m, d in rows])
+            conn.commit()
+    except Exception as err:  # noqa: BLE001
+        LOG.warning("garage events: %s", type(err).__name__)
+
+
+def garage_events(vin: str | None, start: datetime, end: datetime) -> list[dict]:
+    """The door actions around a window (a margin either side for a drive at its edge): one query."""
+    pad = timedelta(minutes=15)
+    q = "SELECT vin, at, kind, detail FROM cc_garage_events WHERE at >= %s AND at < %s AND kind = ANY(%s)"
+    args: list = [start - pad, end + pad, garagelog.SHOWN_KINDS]
+    if vin:
+        q += " AND vin = %s"
+        args.append(vin)
+    try:
+        with db() as conn:
+            return [dict(r) for r in conn.execute(q, args).fetchall()]
+    except Exception as err:  # noqa: BLE001 - no table yet: the Timeline is the same without it
+        LOG.warning("garage events: %s", type(err).__name__)
+        return []
+
+
+def stream_tracks(since: datetime) -> list[list[dict]]:
+    """Each Tesla's streamed fixes (a second apart while driving), for learning how cars come home."""
+    out = []
+    with db() as conn:
+        for v in all_vehicles():
+            rows = conn.execute("SELECT record FROM cc_tesla_raw WHERE vin = %s AND kind = 'V' AND at >= %s ORDER BY at", (v["vin"], since)).fetchall()
+            track, mph, gear = [], 0, None
+            for t, _vin, f in tesla_stream.records([r["record"] for r in rows]):
+                mph, gear = f.get("VehicleSpeed", mph), f.get("Gear", gear)
+                loc = f.get("Location")
+                if isinstance(loc, (tuple, list)) and loc[0] is not None:
+                    track.append({"t": t, "lat": loc[0], "lon": loc[1], "mph": mph if isinstance(mph, (int, float)) else 0, "gear": str(gear)})
+            if track:
+                out.append(track)
+    return out
+
+
+def learn_garage_model() -> dict | None:
+    """The approach model (garageopen): directions and times from the streams' trips home, and the
+    places near home cars have stayed, from every car's drives. Kept in cc_state; relearned daily."""
+    home = garage_home(garage_open_config())
+    if not home:
+        return None
+    trips = [t for track in stream_tracks(datetime.now(timezone.utc) - tesla_live.KEEP) for t in garageopen.arrivals(track, home)]
+    with db() as conn:
+        ends = conn.execute("""SELECT t.destination_position_latitude AS lat, t.destination_position_longitude AS lon,
+                      EXTRACT(EPOCH FROM (n.start_date - t.destination_date)) / 60 AS stay_min
+               FROM trips t LEFT JOIN LATERAL (SELECT start_date FROM trips u WHERE u.vin = t.vin AND u.start_date > t.destination_date ORDER BY u.start_date LIMIT 1) n ON true
+               WHERE t.destination_position_latitude IS NOT NULL""").fetchall()
+    model = {
+        "home": {k: home[k] for k in ("lat", "lon", "radius_m")},
+        "roads": garageopen.learn(trips),
+        "directions": garageopen.directions(trips),
+        "stops": garageopen.stops([dict(e) for e in ends], home),
+        "trips": len(trips),
+        "learned": datetime.now(timezone.utc).isoformat(),
+    }
+    state_set(GARAGE_MODEL_KEY, json.dumps(model))
+    APPROACH.model = model
+    return model
+
+
+def load_garage_model() -> None:
+    try:
+        APPROACH.model = json.loads(state_get(GARAGE_MODEL_KEY) or "{}")
+    except Exception as err:  # noqa: BLE001 - no model yet: it is learned in the minute loop
+        LOG.warning("garage model: %s", type(err).__name__)
+
+
+def garage_model_due(now: datetime) -> bool:
+    """Learn when the opener is on and the model is missing or a day old."""
+    if garage_open_config()["mode"] == "off":
+        return False
+    learned = (APPROACH.model or {}).get("learned")
+    try:
+        return not learned or now - datetime.fromisoformat(learned) > timedelta(days=1)
+    except ValueError:
+        return True
+
+
+DRIVEWAY_URL = os.environ.get("DRIVEWAY_URL", "").rstrip("/")  # the driveway watcher (stack/driveway); empty: the timer alone
+
+
+def garage_start(vin: str, name: str, now: datetime, how: str) -> None:
+    """Start the door (or, watching, note that it would have): only a door that reads closed."""
+    mode = garage_open_config()["mode"]
+    entry = {"at": now, "kind": "start", "mode": mode, "how": how}
+    if mode != "open":
+        entry["did"] = "would start the door"
+    else:
+        door = garagedoor.READER.read()
+        if not door or door["state"] != "closed":
+            entry["did"] = f"left alone: the door reads {door['state'] if door else 'nothing'}"
+        else:
+            try:
+                garagedoor.open_cover()
+                garagedoor.READER.at = -1e9
+                entry["did"] = "started the door"
+                recorder.notify(f"Opening the garage for {name}.", "garage_open", vin)
+            except Exception as err:  # noqa: BLE001 - the owner opens it; never a crash in a timer
+                entry["did"] = f"failed: {type(err).__name__}"
+                recorder.notify(f"Could not open the garage for {name} ({type(err).__name__}).", "garage_open", vin)
+    garage_note(entry)
+
+
+def garage_fire(vin: str, name: str, now: datetime | None = None) -> None:
+    """The timer between fixes, when there is no camera to wait for."""
+    now = now or datetime.now(timezone.utc)
+    if APPROACH.due(vin, now):
+        garage_start(vin, name, now, "timer")
+
+
+def garage_watch_camera(vin: str, name: str, go: datetime, seconds: float, post=None, collect: bool = False) -> None:
+    """Ask the driveway watcher to look until the car shows or the window closes; the car it sees
+    moving into view, while this trip is still on, starts the door. Seeing nothing, or a watcher
+    that cannot look, opens nothing. `collect`: another car of the house coming home, watched only
+    so its frames are kept under its name, to tell the opener's car from others; it opens nothing."""
+    post = post or httpx.post
+    try:
+        answer = post(f"{DRIVEWAY_URL}/watch", json={"seconds": seconds, "car": name}, timeout=seconds + 45).json()
+    except Exception as err:  # noqa: BLE001
+        answer = {"seen": False, "why": f"{type(err).__name__}", "frames": 0}
+    now = datetime.now(timezone.utc)
+    garage_note({"at": now, "kind": "camera", **({"car": name, "collect": True} if collect else {}), **{k: answer.get(k) for k in ("seen", "why", "frames", "fps", "parked")}})
+    trip = APPROACH.trips.get(vin)
+    if collect:
+        if trip and trip.go == go:
+            trip.started = now  # seen or not, this trip is watched once
+        return
+    if not trip or trip.go != go or trip.started:
+        return  # called off, or a newer prediction took over
+    if answer.get("seen"):
+        trip.started = now
+        GARAGE_RECENT.setdefault(vin, {})["seen"] = now
+        garage_start(vin, name, now, "camera")
+    else:
+        trip.go = None  # seeing nothing, or a camera that could not look, opens nothing (skip when the camera is down); the next fix closer arms again
+
+
+def garage_fire_later(vin: str, name: str, go: datetime) -> None:
+    timer = threading.Timer(max(0.0, (go - datetime.now(timezone.utc)).total_seconds()), garage_fire, (vin, name))
+    timer.daemon = True
+    GARAGE_TIMERS[vin] = timer
+    timer.start()
+
+
+def garage_collect(vin: str, name: str, car: dict, now: datetime) -> None:
+    """Another car of the house coming home, with the camera there: the driveway is watched as it
+    would be for the opener's car, and a sighting keeps its frames under this car's name, never
+    starting the door (to train the camera to tell the opener's car from other cars turning in)."""
+    if not DRIVEWAY_URL:
+        return
+    for kind, info in APPROACH.step(vin, {"lat": car.get("lat"), "lon": car.get("lon"), "mph": car.get("speed_mph")}, now):
+        if kind == "schedule":
+            seconds = (info["go"] - now).total_seconds() + APPROACH.door + APPROACH.aim + 60
+            threading.Thread(target=garage_watch_camera, args=(vin, name, info["go"], min(240.0, seconds)), kwargs={"collect": True}, daemon=True).start()
+
+
+def garage_arrival(car: dict, now: datetime | None = None) -> None:
+    """Each tick of the connector's car: feed its fix to the approach model (garageopen), keep
+    the timer that starts the door, and, watching, time the owner's own opening against it."""
+    cfg = cached("garage_open_cfg", 30, garage_open_config)
+    vin = car.get("vin")
+    if cfg["mode"] == "off" or car.get("live") is False or not vin or not APPROACH.model:
+        return
+    now = now or datetime.now(timezone.utc)
+    name = car.get("name") or "The car"
+    APPROACH.aim, APPROACH.camera = float(cfg["aim"]), bool(DRIVEWAY_URL)
+    if vin != cfg["vin"]:
+        garage_collect(vin, name, car, now)
+        return
+    if cfg["mode"] == "open" and not garagedoor.configured():
+        return
+    for kind, info in APPROACH.step(vin, {"lat": car.get("lat"), "lon": car.get("lon"), "mph": car.get("speed_mph")}, now):
+        if kind == "schedule":
+            GARAGE_RECENT[vin] = {"go": info["go"]}  # kept past the arrival, for the owner's own opening to be timed against
+            old = GARAGE_TIMERS.pop(vin, None)
+            if old:
+                old.cancel()
+            if DRIVEWAY_URL:
+                # from now until well after the car should be in: the camera picks the moment
+                seconds = (info["go"] - now).total_seconds() + APPROACH.door + APPROACH.aim + 60
+                threading.Thread(target=garage_watch_camera, args=(vin, name, info["go"], min(240.0, seconds)), daemon=True).start()
+            else:
+                garage_fire_later(vin, name, info["go"])
+        elif kind == "cancel":
+            if old := GARAGE_TIMERS.pop(vin, None):
+                old.cancel()
+            if DRIVEWAY_URL:
+                threading.Thread(target=lambda: httpx.post(f"{DRIVEWAY_URL}/stop", timeout=5), daemon=True).start()
+        elif kind == "short" and cfg["mode"] == "open":
+            recorder.notify(f"The garage is opening for {name}, but {name} {info['why']} {info['d']} m from home.", "garage_open", vin)
+        garage_note({"at": now, "kind": kind, "mode": cfg["mode"], **info})
+    if not DRIVEWAY_URL:
+        garage_fire(vin, name, now)  # the tick as a second chance, if a timer was lost
+    door = garagedoor.READER.read()
+    was, GARAGE_DOOR_SEEN[vin] = GARAGE_DOOR_SEEN.get(vin), door and door["state"]
+    recent = GARAGE_RECENT.get(vin)
+    if cfg["mode"] == "watch" and was == "closed" and door and door["open"] and door["since"] and recent and abs((door["since"] - recent["go"]).total_seconds()) < 300:
+        # the owner opened it: how far off the model's guess and the camera's sighting were, the measure of both
+        GARAGE_RECENT.pop(vin, None)
+        entry = {"at": now, "kind": "you_opened", "mode": "watch", "off_s": round((recent["go"] - door["since"]).total_seconds())}
+        if recent.get("seen"):
+            entry["cam_s"] = round((recent["seen"] - door["since"]).total_seconds())
+        garage_note(entry)
+
+
+GARAGE_CLOSE_KEY = "garage_close"  # {"mode": off, watch or close}: close the door behind the opener's car as it leaves
+DEPARTURE = garageclose.Departure()
+DEPARTURE_TICK_S = 5
+
+
+def garage_close_mode() -> str:
+    try:
+        mode = json.loads(state_get(GARAGE_CLOSE_KEY) or "{}").get("mode")
+    except (ValueError, AttributeError):
+        mode = None
+    return mode if mode in garageclose.MODES else "off"
+
+
+def garage_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def garage_departure_tick(now: datetime | None = None) -> None:
+    """The door and the opener's car, every few seconds, from the readings the site already has:
+    the door opening, and the car's unlock, wake, ignition and gear, start the driveway camera
+    watching for the car going out; seen, the door closes only once the car says it moved (garageclose)."""
+    mode = cached("garage_close_mode", 30, garage_close_mode)
+    vin = cached("garage_open_cfg", 30, garage_open_config)["vin"]
+    if mode == "off" or not DRIVEWAY_URL or not vin or not garagedoor.configured():
+        return
+    car = shared_states(None, False).get(vin) or {}
+    door = garagedoor.READER.read()
+    now = now or garage_now()
+    name = car.get("name") or "The car"
+    events = DEPARTURE.step(door and door["state"], car.get("status"), car.get("at_home"), now, locked=car.get("locked"), doors_open=car.get("doors_open"), speed=car.get("speed_mph"))
+    for kind, info in events:
+        if kind == "watch":
+            threading.Thread(target=garage_watch_leaving, args=(vin, name, info["seconds"]), daemon=True).start()
+        elif kind == "stop":
+            threading.Thread(target=lambda: httpx.post(f"{DRIVEWAY_URL}/stop", timeout=5), daemon=True).start()
+        elif kind == "close":
+            # behind this car when it had shown life; any other pull-out closes it too, said plainly
+            DEPARTURE.did = garage_close(vin, name if info.get("car") else "a car", info["people"], now)
+        else:
+            garage_note({"at": now, "kind": "departure", "mode": mode, **info})
+
+
+def garage_watch_leaving(vin: str, name: str, seconds: float, post=None) -> None:
+    """The camera watching for a vehicle going out, as long as the car's signals ask (a watch that
+    times out asks again at once). What it saw is handed to the tick, which closes the door (or,
+    watching, notes it would) only when the car also reports moving."""
+    post = post or httpx.post
+    try:
+        while True:
+            try:
+                answer = post(f"{DRIVEWAY_URL}/watch", json={"seconds": seconds, "car": name, "leaving": True}, timeout=seconds + 45).json()
+            except Exception as err:  # noqa: BLE001 - a camera that cannot look closes nothing
+                answer = {"seen": False, "why": type(err).__name__, "frames": 0}
+            now = garage_now()
+            if answer.get("why") == "busy":
+                time.sleep(DEPARTURE_TICK_S)  # an arrival watch is running: the next tick asks again
+                return
+            garage_note({"at": now, "kind": "camera", "out": True, **{k: answer.get(k) for k in ("seen", "why", "frames", "fps", "parked", "people")}})
+            if answer.get("seen") and answer.get("leaving") and DEPARTURE.door != "closed":
+                DEPARTURE.sighted(now, int(answer.get("people") or 0))
+            seconds = DEPARTURE.wanted(now) if answer.get("why") == "timed out" else 0.0
+            if not seconds:
+                return
+    finally:
+        DEPARTURE.watching = False
+
+
+def garage_close(vin: str, name: str, people: int, now: datetime) -> str:
+    """Close the door behind the car: only a door that reads open, and never with someone in the
+    driveway (someone on the sidewalk does not stop it; the door's own sensor is the rest)."""
+    mode = garage_close_mode()
+    if people:
+        did = f"left open: {people} {'person' if people == 1 else 'people'} in the driveway"
+        if mode == "close":
+            recorder.notify(f"{name[:1].upper()}{name[1:]} left; the garage stays open: someone is in the driveway.", "garage_open", vin)
+    elif mode != "close":
+        did = "would close the door"
+    else:
+        garagedoor.READER.at = -1e9
+        door = garagedoor.READER.read()
+        if not door or door["state"] != "open":
+            did = f"left alone: the door reads {door['state'] if door else 'nothing'}"
+        else:
+            try:
+                garagedoor.close_cover()
+                garagedoor.READER.at = -1e9
+                did = "closed the door"
+                recorder.notify(f"Closing the garage behind {name}.", "garage_open", vin)
+            except Exception as err:  # noqa: BLE001 - the left-open alert is the backstop
+                did = f"failed: {type(err).__name__}"
+                recorder.notify(f"Could not close the garage behind {name} ({type(err).__name__}).", "garage_open", vin)
+    garage_note({"at": now, "kind": "close", "mode": mode, "did": did})
+    return did
+
+
+def garage_departure_loop() -> None:
+    while True:
+        try:
+            garage_departure_tick()
+        except Exception as err:  # noqa: BLE001 - one bad read is not the loop's end
+            LOG.warning("garage departure: %s", type(err).__name__)
+        time.sleep(DEPARTURE_TICK_S)
+
+
+def load_esri_key() -> None:
+    global ESRI_KEY
+    try:
+        with db() as conn:
+            ESRI_KEY = esrikey.load_key(conn, VAULT)
+    except Exception as err:  # noqa: BLE001 - no table yet, or no sealing key: no satellite
+        LOG.warning("esri key: %s", type(err).__name__)
+        ESRI_KEY = None
+
+
+@site.post("/settings/maps/esri-key")
+async def esri_key(request: Request):
+    """Keep, or forget, the ArcGIS API key the satellite tiles need. Sealed; only its last four are shown.
+    Forgetting it switches satellite off with it."""
+    form = await request.form()
+    if form.get("remove"):
+        with db() as conn:
+            esrikey.forget_key(conn)
+            settings_mod.save(conn, "satellite", False)
+            conn.commit()
+        load_esri_key()
+        settings_changed()
+        return _maps_redirect(request)
+    try:
+        key = esrikey.check_key(form.get("key") or "")
+        if not VAULT.ready:
+            raise esrikey.EsriKeyError(f"The key cannot be kept: {VAULT.problem}.")
+    except esrikey.EsriKeyError as err:
+        return settings_render(request, "maps", esri_error=str(err))
+    with db() as conn:
+        esrikey.save_key(conn, VAULT, key)
+        conn.commit()
+    load_esri_key()
+    settings_changed()
+    return _maps_redirect(request)
+
+
 @site.post("/settings/maps/retry")
 async def maps_retry(request: Request):
     MAPS.retry()
     return _maps_redirect(request)
+
+
+@site.post("/settings/maps/offer")
+async def maps_offer(request: Request):
+    """The one-time offer of map backgrounds and place names (mapsoffer.py): either answer is kept and it is not asked again."""
+    form = await request.form()
+    values = mapsoffer.answer(form.get("answer"))
+    if values is None:
+        raise HTTPException(400, "Answer on or no.")
+    with db() as conn:
+        for key, value in values.items():
+            settings_mod.save(conn, key, value)
+    settings_changed()
+    return to_site(request, str(form.get("back") or "/"))
 
 
 @site.post("/settings/{section}")
@@ -6381,7 +9344,29 @@ async def settings_save(request: Request, section: str):
         r = settings_render(request, "cars", look_error=refused)
         r.status_code = 409
         return r
+    if "application/json" in request.headers.get("accept", ""):  # a switch that saves itself (Alerts): no page to draw
+        return JSONResponse({"ok": True})
     return to_site(request, f"/settings/{section}?saved={'rates' if repricing else '1'}{_vin_q(request, '&')}")
+
+
+@site.post("/settings/cars/{vin}/name")
+async def car_rename(request: Request, vin: str):
+    """Show a car under a name of the owner's own; blank goes back to its source's. The source is never changed."""
+    car = next((v for v in all_vehicles() if v["vin"] == vin), None)
+    if car is None:
+        raise HTTPException(404, "No such car.")
+    form = await request.form()
+    names = {k: v for k, v in (current_settings().get("car_names") or {}).items() if k != vin}
+    # the field opens holding the name shown; saved unchanged, or as the source's own, it is no rename
+    if (name := carnames.clean(form.get("name"))) and name != (car.get("source_name") or car["name"]):
+        names[vin] = name
+    with db() as conn:
+        settings_mod.save(conn, "car_names", names)
+    SHOWN.clear()
+    for key in ("identity", "place_nav"):
+        _cache.pop(key, None)  # both hold car names
+    settings_changed()
+    return to_site(request, f"/settings/cars?saved=1{_vin_q(request, '&')}")
 
 
 def save_look(conn, form) -> str | None:
@@ -6437,6 +9422,8 @@ def set_home_plan(plan: dict | None) -> bool:
         if repricing:
             forget_home_prices(conn)
         conn.commit()
+    if repricing:
+        state_set(PLAN_CHECK_KEY, "{}")  # checked again against OpenEI within the minute
     settings_changed()
     return repricing
 
@@ -6509,15 +9496,16 @@ def urdb_search_items(client, f: dict, cache_only: bool = False):
     return items
 
 
-def urdb_listing(client, f: dict, cache_only: bool = False) -> dict:
-    """A search as the page lists it; with cache_only, only what is cached (else unlisted)."""
+def urdb_listing(client, f: dict, cache_only: bool = False, mine: dict | None = None) -> dict:
+    """A search as the page lists it, the plan like `mine` (the home plan unless given)
+    flagged; with cache_only, only what is cached (else unlisted)."""
     items = urdb_search_items(client, f, cache_only)
     if items is None:
         return dict(f)
     return {
         **f,
         "searched": True,
-        **urdb.listing(items, datetime.now(TZ).date(), f["contains"]),
+        **urdb.listing(items, datetime.now(TZ).date(), f["contains"], mine or current_settings().get("rate_plan")),
     }
 
 
@@ -6547,40 +9535,271 @@ def urdb_plan(client, label: str, f: dict) -> dict:
     return urdb.to_plan(urdb.versions_of(label, list(known.values())))
 
 
-@site.post("/settings/money/plan-search")
-async def urdb_search(request: Request):
-    """Find my plan's Search: the request is OpenEI's, with what was typed or picked."""
-    f = _finder_form(await request.form())
+PLAN_CHECK_KEY = "plan_hours_check"
+
+
+def check_plan_hours(client=None, today: date | None = None) -> dict | None:
+    """A typed-in home plan's hours against OpenEI's tariff of the same code, today's version of
+    each: a schedule typed in wrong prices every charge in those hours wrong, quietly (EV2A's
+    9pm–12am part-peak was off-peak here for years). Only with a key or relay; only the
+    utility's id and the tariff's id are sent. Kept in cc_state for Money; a new difference
+    is an alert once. None when there is nothing to compare."""
+    plan = current_settings().get("rate_plan")
+    if not cost.valid_plan(plan) or plan.get("source") != "manual":
+        return None
+    client = client or urdb_client()
+    if not client.ready:
+        return None
+    utility = urdb.utility_in(plan.get("utility") or plan.get("name") or "")
+    items = urdb.fetch(db, client, urdb.search_params(eia=utility["eia"])) if utility else None
+    today = today or datetime.now(TZ).date()
+    like = [r for r in urdb.listing(items, today, "", plan)["rows"] if r["like"]] if items else []
+    if len(like) != 1:
+        return None  # no tariff of that code, or more than one could be it
+    theirs = urdb.fetch(db, client, urdb.page_params(like[0]["label"]))
+    mine = cost.version_at(today, plan)
+    if not theirs or not mine:
+        return None
+    result = {"checked": today.isoformat(), "name": like[0]["shown"], "label": like[0]["label"], "differ": cost.hours_differ(mine, urdb.version_of(theirs[0]))}
+    was = json.loads(state_get(PLAN_CHECK_KEY) or "{}")
+    state_set(PLAN_CHECK_KEY, json.dumps(result))
+    if result["differ"] and result["differ"] != was.get("differ"):
+        recorder.notify(f"Your home plan's hours differ from OpenEI's {result['name']}: " + "; ".join(result["differ"]) + ". Check them in Settings › Money.", "data")
+    return result
+
+
+def plan_check_shown(plan: dict | None) -> dict | None:
+    """The last check, for Money, while the plan it checked is still the one in use and it found something."""
     try:
-        found = await asyncio.to_thread(lambda: urdb_listing(urdb_client(), f))
-    except urdb.URDBError as err:
-        found = {**f, "error": str(err)}
-    return settings_render(request, "money", find=found)
+        got = json.loads(state_get(PLAN_CHECK_KEY) or "{}")
+    except ValueError:
+        return None
+    return got if got.get("differ") and (plan or {}).get("source") == "manual" else None
 
 
-@site.post("/settings/money/plan-search/preview")
-async def urdb_preview(request: Request):
-    """A plan from the list, with every version of it, shown before it is used. The list
-    stays on the page from the day's cache, not a second search."""
+def plan_check_due() -> bool:
+    try:
+        return datetime.now(TZ).date().isoformat() != json.loads(state_get(PLAN_CHECK_KEY) or "{}").get("checked")
+    except ValueError:
+        return True
+
+
+def home_profile() -> dict:
+    """The last twelve months of home charging as kWh by weekday or weekend, month and local
+    hour (cost.profile_add), which prices against any plan in memory: Find my plan compares
+    each one it previews on it. One query for the year's charges, home by their own position
+    (not the priced facts, which a plan change clears for the recorder to redo), then each
+    car's power runs over the span of its own, the reads that price a charge; kept an hour."""
+
+    def load():
+        since = datetime.now(timezone.utc) - timedelta(days=365)
+        profile = [0.0] * 576
+        known = places()
+        with db() as conn:
+            rows = conn.execute(
+                """SELECT vin, session_start_date AS a, session_end_date AS b, session_position_latitude AS lat, session_position_longitude AS lon FROM charging_sessions
+                   WHERE session_start_date >= %s AND session_end_date IS NOT NULL ORDER BY vin, session_start_date""",
+                (since,),
+            ).fetchall()
+            rows = [r for r in rows if is_home(r["lat"], r["lon"], known)]
+            spans: dict[str, list] = {}
+            for r in rows:
+                spans.setdefault(r["vin"], []).append((r["a"], r["b"]))
+            electrics = bool(spans) and conn.execute("SELECT to_regclass('cc_charging_electrics') AS t").fetchone()["t"]
+            for vin, own in spans.items():
+                lo, hi = own[0][0], max(b for _, b in own)
+                powers = [(r["first_date"], r["last_date"], r["power"]) for r in conn.execute(_POWERS_SQL, (vin, lo, lo, hi)).fetchall()]
+                el = [(r["first_date"], r["last_date"], r["volts"], r["amps"]) for r in conn.execute(_ELECTRICS_SQL, (vin, lo, lo, hi)).fetchall()] if electrics else []
+                runs, i = with_measured_power(powers, el), 0
+                for a, b in own:  # both in time order: each charge reads only the runs it overlaps
+                    while i < len(runs) and runs[i][1] <= a:
+                        i += 1
+                    j = i
+                    while j < len(runs) and runs[j][0] < b:
+                        j += 1
+                    cost.profile_add(profile, runs[i:j], a, b, TZ)
+        first = min((own[0][0] for own in spans.values()), default=None)
+        return {"profile": profile, "kwh": sum(profile), "charges": len(rows), "first": first.astimezone(TZ).date() if first else None}
+
+    return cached("home_profile", 3600, load)
+
+
+# Bounded below on first_date too, so the (vin, first_date) index reads a year, not the car's
+# whole history: a run that began over a week before the year's first charge is not one of its.
+_POWERS_SQL = "SELECT first_date, last_date, power FROM charging_powers WHERE vin = %s AND first_date >= %s - interval '7 days' AND last_date >= %s AND first_date <= %s ORDER BY first_date"
+_ELECTRICS_SQL = (
+    "SELECT first_date, last_date, volts, amps FROM cc_charging_electrics WHERE vin = %s AND first_date >= %s - interval '7 days' AND last_date >= %s AND first_date <= %s ORDER BY first_date"
+)
+
+
+def plan_preview(plan: dict, bill: dict | None = None) -> dict:
+    """A plan from OpenEI as its preview shows it: the plan, its grid, the year of home
+    charging priced on it and on the plan in use (and, with a bill read, on the plan at the
+    bill's prices), and what using it replaces."""
+    st = current_settings()
+    mine = st.get("rate_plan") if cost.valid_plan(st.get("rate_plan")) else None
+    kept = st.get("manual_plan") if cost.valid_plan(st.get("manual_plan")) else None
+    try:
+        hp = home_profile()
+    except Exception as err:  # noqa: BLE001 - a preview without the comparison, not none
+        LOG.warning("home profile: %s", type(err).__name__)
+        hp = {"profile": [0.0] * 576, "kwh": 0.0, "charges": 0, "first": None}
+    today = datetime.now(TZ).date()
+    compare = planview.compare(plan, mine, hp, today)
+    billed_plan = None
+    if bill and bill.get("prices"):
+        try:
+            billed_plan = billread.apply(plan, bill, today, before=mine)
+        except billread.BillError:
+            billed_plan = None
+        if billed_plan and compare.get("kwh"):
+            compare["billed"] = cost.profile_cost(billed_plan, hp["profile"], today)
+    return {
+        **urdb.preview(plan),
+        "grid": planview.grid_view(plan),
+        "compare": compare,
+        "replaces": planview.replaces(mine, kept),
+        "bill": bill if billed_plan else None,
+        "billed_grid": planview.grid_view(billed_plan) if billed_plan else None,
+    }
+
+
+def home_where() -> tuple[str | None, str | None]:
+    """(state, ZIP code) of the home place, from what is stored here: the state from its
+    position, the ZIP code from its address (the owner's, the looked-up one, or the local
+    address cache's for its spot). Nothing is looked up anywhere."""
+    try:
+        home = next((p for p in place_rows() if is_home_place(p) and not p.get("merged_into")), None)
+        if not home:
+            return None, None
+        with db() as conn:
+            cell = conn.execute("SELECT address FROM cc_geocells WHERE lat3 = %s AND lon3 = %s", (round(home["latitude"], 3), round(home["longitude"], 3))).fetchone()
+    except Exception as err:  # noqa: BLE001 - no places or no address cache yet: nothing known
+        LOG.warning("home where: %s", type(err).__name__)
+        return None, None
+    region = region_of(home["latitude"], home["longitude"])
+    state = region[3:] if region and region.startswith("US-") else None
+    return state, (urdb.zip_of(home.get("user_address"), home.get("address"), (cell or {}).get("address")) if state else None)
+
+
+BILL_KEYS = billread.query_keys()  # a bill's reading, carried from step to step in the links
+
+
+def finder_link(request: Request, f: dict, **more) -> str:
+    """A step of Find my plan as a link: the utility picked or typed, plus `more`."""
+    keep = {"q": f.get("q"), "eia": f.get("eia"), **{k: request.query_params.get(k) for k in BILL_KEYS}, **more}
+    vin = request.query_params.get("vin")
+    return "/settings/money/plan?" + urlencode({k: v for k, v in {**keep, "vin": vin}.items() if v})
+
+
+@site.get("/settings/money/plan", response_class=HTMLResponse)
+async def plan_finder(request: Request, saved: str | None = None):
+    """Find my plan, one step at a time, each its own link: the OpenEI key when there is
+    none, the utility, its plans, then one plan beside yours. Only opening the plans of a
+    utility named or picked, or one plan, asks OpenEI; the day's cache answers again."""
+    p = request.query_params
+    f = _finder_form(p)
+    label = (p.get("label") or "").strip()
+    fz = urdb_settings()
+    extra: dict = {
+        "find": f,
+        "link": lambda **kw: finder_link(request, f, **kw),
+        "show_all": p.get("all") == "1",
+        "saved": saved,
+        "cca": (p.get("cca") or "").strip()[:60] if not p.get("bill") else None,
+    }
+    if not (fz["relay"] or fz["key_hint"]):
+        step = "key"
+    elif not (f["q"] or f["eia"]):
+        step = "utility"
+        state, zip_code = await asyncio.to_thread(home_where)
+        extra["likely"] = await asyncio.to_thread(urdb.in_state, state, 4, zip_code)
+        if extra["likely"]["sure"] and not f["q"]:  # one utility for the home's ZIP code: filled in, to change
+            u = extra["likely"]["rows"][0]
+            extra["find"] = {**f, "q": u["name"], "eia": str(u["eia"]), "guessed": True}
+    else:
+        step = "compare" if label else "plans"
+        bill = billread.from_query(p)
+        extra["bill"] = bill
+        mine = {"name": bill["schedule"], "source": "bill"} if bill and bill.get("schedule") else None
+
+        def work():
+            client = urdb_client()
+            found = urdb_listing(client, f, mine=mine)
+            if not label:
+                return found, None
+            plan = urdb_plan(client, label, f)
+            return found, plan_preview(plan, bill if billread.names(bill, plan["name"]) else None)
+
+        try:
+            found, shown = await asyncio.to_thread(work)
+            if bill and not label and p.get("go") == "1":
+                liked = [r for r in found.get("rows") or [] if r["like"]]
+                if len(liked) == 1:  # the plan the bill names: straight to it
+                    return to_site(request, finder_link(request, f, label=liked[0]["label"]))
+            extra.update(find=found, preview=shown)
+            extra["providers"] = billread.providers_for(f["eia"]) if f["eia"] else []
+            extra["utility_short"] = urdb.short_name(f["eia"], (found.get("utilities") or [f["name"]])[0] if (found.get("utilities") or f["name"]) else None)
+            if shown:
+                rows = found.get("rows") or []
+                extra["row"] = next((r for r in rows if shown["label"] in r["labels"] or label in r["labels"]), None)
+                extra["kin"] = urdb.kin_of(rows, label) if extra["row"] else []
+        except urdb.URDBError as err:
+            extra["find"] = {**f, "error": str(err)}
+    if step in ("plans", "compare"):  # a way back at every step: the step before, not out to Money
+        extra["back"] = (
+            finder_link(request, f) if step == "compare" or p.get("all") == "1" else "/settings/money/plan" + _vin_q(request),
+            "Plans" if step == "compare" or p.get("all") == "1" else "Utility",
+        )
+    return settings_render(request, "money", step=step, **extra)
+
+
+def _bill_refused(request: Request, said: str, status: int = 200) -> HTMLResponse:
+    r = settings_render(request, "money", step="utility", find={"q": "", "eia": "", "bill_error": said}, link=lambda **kw: finder_link(request, {}, **kw))
+    r.status_code = status
+    return r
+
+
+@site.post("/settings/money/plan/bill")
+async def plan_from_bill(request: Request):
+    """Read a bill's PDF and go to the plan it names: its utility, its rate schedule, and
+    its prices per kWh carried in the links. The upload is read as it arrives and refused
+    past the limit, read in a fenced child process (billread.parse), and dropped."""
+    limit = billread.MAX_BYTES + (256 << 10)  # the file, and the form around it
+    try:
+        if int(request.headers.get("content-length") or 0) > limit:
+            return _bill_refused(request, "That file is over 10 MB; a bill's PDF is far smaller.", 413)
+    except ValueError:
+        return _bill_refused(request, billread.UNREADABLE, 400)
+    body = await read_capped(request, limit)
+    if body is None:
+        return _bill_refused(request, "That file is over 10 MB; a bill's PDF is far smaller.", 413)
+    request._body = body  # the form is parsed from what was read, not from the stream again
     form = await request.form()
-    f = _finder_form(form)
-    found: dict = dict(f)
-
-    def work():
-        client = urdb_client()
-        plan = urdb_plan(client, form.get("label") or "", f)
-        return plan, (urdb_listing(client, f, cache_only=True) if f["q"] or f["eia"] else found)
-
+    up = form.get("bill")
     try:
-        plan, found = await asyncio.to_thread(work)
-    except urdb.URDBError as err:
-        return settings_render(request, "money", find={**found, "error": str(err)})
-    return settings_render(
-        request,
-        "money",
-        find=found,
-        preview={**urdb.preview(plan), "grid": planview.grid_view(plan)},
-    )
+        data = await up.read(billread.MAX_BYTES + 1) if hasattr(up, "read") else b""
+    finally:
+        if hasattr(up, "close"):
+            await up.close()
+        await form.close()
+    del body
+    try:
+        out = await asyncio.to_thread(billread.parse, data)
+        bill, utility = out["bill"], out.get("utility")
+        if not bill.get("schedule") and not bill.get("prices"):
+            raise billread.BillError("No rate schedule or prices per kWh found on that bill.")
+    except billread.BillBusy as err:
+        return _bill_refused(request, str(err), 429)
+    except billread.BillError as err:
+        return _bill_refused(request, str(err))
+    finally:
+        del data
+    q = {**billread.to_query(bill), "go": "1"}
+    if utility:
+        q.update(q=utility["name"], eia=str(utility["eia"]))
+    vin = request.query_params.get("vin")
+    return to_site(request, "/settings/money/plan?" + urlencode({**q, **({"vin": vin} if vin else {})}))
 
 
 @site.post("/settings/money/plan-search/use")
@@ -6588,10 +9807,15 @@ async def urdb_use(request: Request):
     """Use this plan: it becomes the home plan, and home charges are re-priced in the background."""
     form = await request.form()
     f = _finder_form(form)
+    bill = billread.from_query(form) if form.get("as") == "bill" else None
     try:
         plan = await asyncio.to_thread(lambda: urdb_plan(urdb_client(), form.get("label") or "", f))
-    except urdb.URDBError as err:
-        return settings_render(request, "money", find={**f, "error": str(err)})
+        if bill:
+            if not billread.names(bill, plan["name"]):
+                raise billread.BillError(f"Your bill is on {bill.get('schedule') or 'another plan'}, not {plan['name']}: its prices are not this plan's.")
+            plan = billread.apply(plan, bill, datetime.now(TZ).date(), before=current_settings().get("rate_plan"))
+    except (urdb.URDBError, billread.BillError) as err:
+        return settings_render(request, "money", step="compare", find={**f, "error": str(err)}, link=lambda **kw: finder_link(request, f, **kw))
     return _money_redirect(request, set_home_plan(plan))
 
 
@@ -6631,17 +9855,17 @@ async def urdb_key(request: Request):
         with db() as conn:
             urdb.forget_key(conn)
             conn.commit()
-        return _money_redirect(request, anchor="#find")
+        return to_site(request, f"/settings/money/plan{_vin_q(request)}")
     try:
         key = urdb.check_key(form.get("key") or "")
         if not VAULT.ready:
             raise urdb.URDBError(f"The key cannot be kept: {VAULT.problem}.")
     except urdb.URDBError as err:
-        return settings_render(request, "money", find={"key_error": str(err)})
+        return settings_render(request, "money", step="key", find={"key_error": str(err)})
     with db() as conn:
         urdb.save_key(conn, VAULT, key)
         conn.commit()
-    return _money_redirect(request, anchor="#find")
+    return to_site(request, f"/settings/money/plan?saved=key{_vin_q(request, '&')}")
 
 
 @site.get("/charging", response_class=HTMLResponse)
@@ -6650,8 +9874,25 @@ def charging_page(request: Request, days: int | None = None):
     car = pick(request)
     vin = None if car.get("garage") else car["vin"]
     since = (datetime.now(timezone.utc) - timedelta(days=days)) if days else None
-    summary = charging_summary(charges(vin, None, since))
-    return page(request, "charging.html", car=car, s=summary, days=days, active="charging")
+    rows = charges(vin, None, since)
+    summary = charging_summary(rows)
+    # each place's saving against petrol: the rows already read, the regional prices in
+    # memory and the car's efficiency as the background pass last worked it out (warm_efficiency);
+    # until it has, the column waits rather than this page scanning every drive
+    st = current_settings()
+    eff = cached_only("car_efficiency")
+    saved = place_savings(rows, TZ, eff, st.get("gas_mpg"), averages_mod.active(), st.get("gas_price")) if eff is not None else {}
+    for p in summary["places"]:
+        p["saving"] = saved.get(p["where"])
+    # the folded rows past twelve and the All row add their places' savings up, reasons kept
+    summary["saving_tail"] = saving_cell([p["saving"] for p in summary["places"][12:] if p["saving"]])
+    summary["saving_all"] = saving_cell([p["saving"] for p in summary["places"] if p["saving"]])
+    word = units_mod.ACTIVE.labels["distname"][:-1]  # "mile", "kilometre"
+    for cell in [p["saving"] for p in summary["places"]] + [summary["saving_tail"], summary["saving_all"]]:
+        if cell:
+            cell["note"] = saving_note(cell, word)  # why a Saved cell is partial or blank
+    summary["saved_ready"] = eff is not None
+    return page(request, "charging.html", car=car, s=summary, days=days, active="charging", rate_plan=cost.current_plan())
 
 
 def summarize_sql(vin: str | None, by: str, since: datetime | None, until: datetime | None = None, span: timedelta | None = None) -> list[dict]:
@@ -6694,11 +9935,14 @@ def summarize_sql(vin: str | None, by: str, since: datetime | None, until: datet
         ).fetchall()
         c = conn.execute(
             f"""
-            SELECT date_trunc('{trunc}', t.session_start_date AT TIME ZONE %s)::date AS period, COUNT(*) AS charges,
+            SELECT date_trunc('{trunc}', t.session_start_date AT TIME ZONE %s)::date AS period,
+                   COUNT(*) FILTER (WHERE COALESCE(f.kwh, t.real_charged) IS NULL OR COALESCE(f.kwh, t.real_charged) >= {stats_mod.TOPUP_KWH}) AS charges,
+                   COUNT(*) FILTER (WHERE COALESCE(f.kwh, t.real_charged) < {stats_mod.TOPUP_KWH}) AS topups,
                    COALESCE(SUM(f.kwh), 0) AS added_kwh, COALESCE(SUM(f.cost), 0) AS cost,
                    COUNT(f.cost) AS priced, COALESCE(SUM(f.cost) FILTER (WHERE f.cost_source = 'average'), 0) AS avg_cost
             FROM charging_sessions t LEFT JOIN cc_charge_facts f ON f.session_id = t.id
-            WHERE t.session_start_date IS NOT NULL{vw}{where_since.replace('start_date', 'session_start_date')} GROUP BY 1""",
+            -- a session still going has no energy yet (stats.charge_kind): it counts once it ends
+            WHERE t.session_start_date IS NOT NULL AND t.session_end_date IS NOT NULL{vw}{where_since.replace('start_date', 'session_start_date')} GROUP BY 1""",
             [TZ.key, *vargs, *args_since],
         ).fetchall()
     rows: dict = {}
@@ -6713,6 +9957,7 @@ def summarize_sql(vin: str | None, by: str, since: datetime | None, until: datet
             "drive_cost_estimate": bool(r["drive_cost_estimate"]) and float(r["drive_cost"]) > 0,
             "fsd_miles": float(r["fsd_miles"]),
             "charges": 0,
+            "topups": 0,
             "added_kwh": 0.0,
             "cost": 0.0,
             "priced": 0,
@@ -6730,13 +9975,14 @@ def summarize_sql(vin: str | None, by: str, since: datetime | None, until: datet
                 "drive_cost": 0.0,
                 "fsd_miles": 0.0,
                 "charges": 0,
+                "topups": 0,
                 "added_kwh": 0.0,
                 "cost": 0.0,
                 "priced": 0,
                 "avg_cost": 0.0,
             },
         )
-        row["charges"], row["added_kwh"], row["cost"] = r["charges"], float(r["added_kwh"]), float(r["cost"])
+        row["charges"], row["topups"], row["added_kwh"], row["cost"] = r["charges"], r["topups"], float(r["added_kwh"]), float(r["cost"])
         row["priced"], row["avg_cost"] = r["priced"], float(r["avg_cost"])
     out = []
     for r in sorted(rows.values(), key=lambda x: x["period"], reverse=True):
@@ -6746,32 +9992,43 @@ def summarize_sql(vin: str | None, by: str, since: datetime | None, until: datet
     return out
 
 
+def _efficiency_load() -> dict:
+    with db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT vin, yr, SUM(mi) AS miles, SUM(kwh) AS kwh FROM (
+              SELECT t.vin, EXTRACT(year FROM t.start_date AT TIME ZONE %s)::int AS yr, t.destination_odometer - t.start_odometer AS mi,
+                     CASE WHEN NULLIF(f.range_start, -999) IS NOT NULL AND NULLIF(f.range_end, -999) IS NOT NULL AND f.range_start >= f.range_end AND COALESCE(vy.kwh_per_rated_mi, vf.kwh_per_rated_mi) IS NOT NULL
+                          THEN (f.range_start - f.range_end) * COALESCE(vy.kwh_per_rated_mi, vf.kwh_per_rated_mi)
+                          WHEN f.level_start >= f.level_end AND dr.capacity IS NOT NULL THEN dr.capacity * (f.level_start - f.level_end) / 100 END AS kwh
+              FROM trips t
+              LEFT JOIN cc_trip_facts f ON f.trip_id = t.id
+              LEFT JOIN cc_vehicle_facts vf ON vf.vin = t.vin
+              LEFT JOIN cc_vehicle_year_facts vy ON vy.vin = t.vin AND vy.year = EXTRACT(year FROM t.start_date AT TIME ZONE %s)::int
+              LEFT JOIN drives dr ON dr.vin = t.vin
+              WHERE t.destination_date IS NOT NULL AND t.destination_odometer > t.start_odometer{moved_sql()}
+            ) d WHERE kwh > 0 GROUP BY vin, yr""",
+            [TZ.key, TZ.key],
+        ).fetchall()
+    return efficiency_by_year([(r["vin"], r["yr"], float(r["miles"] or 0), float(r["kwh"] or 0)) for r in rows])
+
+
 def car_efficiency() -> dict:
     """(vin, year) -> Wh a mile each car used that year, and (vin, None) -> all time: drive
     energy over miles, from drives whose energy is known, the same energy Stats adds up.
     Kept ten minutes; the comparison with a petrol car turns charged kWh into miles with it."""
+    return cached("car_efficiency", 600, _efficiency_load)
 
-    def load():
-        with db() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT vin, yr, SUM(mi) AS miles, SUM(kwh) AS kwh FROM (
-                  SELECT t.vin, EXTRACT(year FROM t.start_date AT TIME ZONE %s)::int AS yr, t.destination_odometer - t.start_odometer AS mi,
-                         CASE WHEN NULLIF(f.range_start, -999) IS NOT NULL AND NULLIF(f.range_end, -999) IS NOT NULL AND f.range_start >= f.range_end AND COALESCE(vy.kwh_per_rated_mi, vf.kwh_per_rated_mi) IS NOT NULL
-                              THEN (f.range_start - f.range_end) * COALESCE(vy.kwh_per_rated_mi, vf.kwh_per_rated_mi)
-                              WHEN f.level_start >= f.level_end AND dr.capacity IS NOT NULL THEN dr.capacity * (f.level_start - f.level_end) / 100 END AS kwh
-                  FROM trips t
-                  LEFT JOIN cc_trip_facts f ON f.trip_id = t.id
-                  LEFT JOIN cc_vehicle_facts vf ON vf.vin = t.vin
-                  LEFT JOIN cc_vehicle_year_facts vy ON vy.vin = t.vin AND vy.year = EXTRACT(year FROM t.start_date AT TIME ZONE %s)::int
-                  LEFT JOIN drives dr ON dr.vin = t.vin
-                  WHERE t.destination_date IS NOT NULL AND t.destination_odometer > t.start_odometer{moved_sql()}
-                ) d WHERE kwh > 0 GROUP BY vin, yr""",
-                [TZ.key, TZ.key],
-            ).fetchall()
-        return efficiency_by_year([(r["vin"], r["yr"], float(r["miles"] or 0), float(r["kwh"] or 0)) for r in rows])
 
-    return cached("car_efficiency", 600, load)
+def warm_efficiency(every: int = 300) -> None:
+    """Keep car_efficiency worked out in the background, well inside its ten minutes, so the
+    Charging page can read it without running it (cached_only) and Stats rarely waits on it."""
+    while True:
+        try:
+            _cache["car_efficiency"] = (datetime.now(timezone.utc), _efficiency_load())
+        except Exception as err:  # noqa: BLE001 - a page that needs it works it out, as before
+            LOG.warning("efficiency: %s", err)
+        time.sleep(every)
 
 
 def charge_groups(vin: str | None, since: datetime | None, until: datetime | None) -> list[dict]:
@@ -6801,6 +10058,88 @@ def parse_day(x: str | None):
         return None
 
 
+def efficiency_compare(car: dict, ds: list[dict], key: str | None, rng: dict, over: float, k: float | None) -> dict:
+    """What the efficiency tables can be compared with (effcompare.choices), and when one is
+    chosen the two sets binned on one scale: the period against another period, or the
+    period's drives on a tire set or with a tag against its other drives."""
+    with db() as conn:
+        tires = [r["name"] for r in conn.execute("SELECT name FROM cc_tire_sets WHERE vin = %s GROUP BY name ORDER BY MIN(fitted_on)", (car["vin"],)).fetchall()]
+    out = {"key": key or "", "choices": effcompare.choices(tires, tag_names(), rng["since"] is not None)}
+    if not key or key not in {c["key"] for c in out["choices"]}:
+        out["key"] = ""
+        return out
+    label = next(c["label"] for c in out["choices"] if c["key"] == key)
+    if key in ("prev", "yoy"):
+        other = statspage.versus(rng, key)
+        rest = ds
+        chosen = drives_light(car["vin"], other["since"], other["until"]) if other else []
+        names = (rng["label"], other["label"] if other else label)
+    else:
+        with db() as conn:
+            windows = (
+                [(r["fitted_on"], r["removed_on"]) for r in conn.execute("SELECT fitted_on, removed_on FROM cc_tire_sets WHERE vin = %s AND name = %s", (car["vin"], key[6:])).fetchall()]
+                if key.startswith("tires:")
+                else []
+            )
+        rest, chosen = effcompare.split(ds, key, windows, TZ)
+        names = ("Other drives", label)
+    a, b = efficiency_bins(rest, car["capacity_kwh"], k, over), efficiency_bins(chosen, car["capacity_kwh"], k, over)
+    temp = effcompare.pair(a["temp"], b["temp"])
+    fine = effchart.bands(units_mod.ACTIVE.metric)
+    out.update(
+        chart=effchart.chart([efficiency_bins(side, car["capacity_kwh"], k, over, [(lo, hi) for lo, hi, _ in fine])["temp"] for side in (rest, chosen)], fine),
+        names=names,
+        temp=temp,
+        speed=effcompare.speed_matched(rest, chosen, over, stats_mod.TEMP_BINS, stats_mod.SPEED_BINS),
+        matched=effcompare.matched(temp),
+        a=effcompare.overall(rest, over),
+        b=effcompare.overall(chosen, over),
+    )
+    return out
+
+
+def record_thumb(trip: dict) -> str:
+    """A drive's route drawn small, kept a day: a record can be years old, so its route is
+    one drive's own query, not the window's, and it does not change."""
+    return cached(f"record_thumb:{trip['id']}", 86400, lambda: route_thumbs([trip], trip["start_date"], trip["destination_date"] or trip["start_date"], 64, 36).get(trip["id"], ""))
+
+
+def record_board(rows: list[dict], vin: str | None, since: datetime | None, until: datetime | None, thumbs: bool = True) -> list[dict]:
+    """The period's records (records.board), each drive or charge once with every record it
+    set (records.fold): the drives the page already has, read again with their places and
+    costs (a handful of ids, one query) and their routes drawn small; the most powerful
+    charge and the one that added the most from the charge facts, one query each."""
+    where, args = _window("c.session_start_date", since, until)
+    vw, vargs = _vin_clause(vin)
+    top = {}
+    with db() as conn:
+        for key, col in (("kw", "f.peak_kw"), ("kwh", "COALESCE(f.kwh, c.real_charged)")):
+            top[key] = conn.execute(
+                f"SELECT c.id, {col} AS v FROM charging_sessions c JOIN cc_charge_facts f ON f.session_id = c.id WHERE {col} > 0"
+                + vw.replace("t.vin", "c.vin")
+                + where
+                + charged_sql()
+                + f" ORDER BY {col} DESC, c.session_start_date LIMIT 1",
+                [*vargs, *args],
+            ).fetchone()
+    picked = {k: (charge(None, r["id"]), r["v"]) if r else None for k, r in top.items()}
+    board = records_mod.board(rows, *(p if p and p[0] else None for p in (picked["kw"], picked["kwh"])))
+    ids = sorted({b["row"]["id"] for b in board if b["kind"] == "drive"})
+    done = {}
+    if ids:
+        with db() as conn:
+            full = conn.execute(TRIP_SELECT + " WHERE t.id = ANY(%s)" + moved_sql(), (ids,)).fetchall()
+        known, cells, energy, by_year = places(), geocells(), vehicle_energy(), rated_mile_years()
+        done = {r["id"]: _finish_drive(r, known, cells, energy, by_year) for r in full}
+    for b in board:
+        if b["kind"] == "drive" and b["row"]["id"] in done:
+            b["row"] = done[b["row"]["id"]]
+    groups = records_mod.fold(board)
+    for g in groups:
+        g["thumb"] = record_thumb(g["row"]) if thumbs and g["kind"] == "drive" else ""
+    return groups
+
+
 @site.get("/stats", response_class=HTMLResponse)
 def stats_page(
     request: Request,
@@ -6813,6 +10152,7 @@ def stats_page(
     month: str | None = None,
     period: str | None = None,
     year: str | None = None,
+    cmp: str | None = None,
 ):
     by = by if by in statspage.GRAINS else "week"
     over = over if over in statspage.OVER else 1.0
@@ -6836,6 +10176,7 @@ def stats_page(
         "vs": vs,
         "by": by,
         "over": str(int(over)),
+        "cmp": (cmp or "")[:80] or None,
         "vin": car["vin"] if len(all_vehicles()) > 1 else None,
     }
     ctl = statspage.controls(state, rng)
@@ -6887,7 +10228,7 @@ def stats_page(
     )
     # Month rows can be cut on the range's bounds only when both fall on a first of a month.
     whole = statspage.month_aligned(since) and statspage.month_aligned(until)
-    odometer = None
+    odometer, totals_unlogged = None, 0.0
     if car.get("garage"):
         # One month query per car serves both the bars and the "By car" totals when the
         # range is whole months; otherwise each car's range is its own small query.
@@ -6912,11 +10253,19 @@ def stats_page(
             per_car.append(t)
         order = [t["vin"] for t in per_car]
         bins = {"temp": [], "speed": []}
+        eff = None
+        records = record_board(drives_light(None, since, until), None, since, until)
     else:
         cap, k = vehicle_energy().get(car["vin"], (None, None))
-        ds = [d for d in drives_light(vin, since) if until is None or d["start_date"] < until]
+        ds = drives_light(vin, since, until)
         per_car = []
         bins = efficiency_bins(ds, car["capacity_kwh"], k, over)
+        eff = efficiency_compare(car, ds, state["cmp"], rng, over, k)
+        if not eff.get("chart"):
+            # the chart's finer bands, from the same drives: Python over the rows in hand, no query
+            fine = effchart.bands(units_mod.ACTIVE.metric)
+            eff["chart"] = effchart.chart([efficiency_bins(ds, car["capacity_kwh"], k, over, [(lo, hi) for lo, hi, _ in fine])["temp"]], fine)
+        totals_unlogged = statspage.unlogged_miles(ds)  # the drives in hand, no query
         odo = sorted((d["destination_date"], d["destination_odometer"]) for d in ds if d["destination_date"] and d["destination_odometer"])
         if len(odo) >= 2:
             odometer = chartdata.series_chart(
@@ -6932,6 +10281,7 @@ def stats_page(
                 [],
                 TZ,
             )
+        records = record_board(ds, car["vin"], since, until)
         reuse = by == "month" and until is None and (since is None or since <= start13)
         mrows = rows if reuse else summarize_sql(vin, "month", start13, None)
         car_months = {car["vin"]: statspage.by_month(mrows)}
@@ -6972,6 +10322,7 @@ def stats_page(
             "drive_h",
             "used_kwh",
             "charges",
+            "topups",
             "added_kwh",
             "cost",
             "fsd_miles",
@@ -6980,6 +10331,9 @@ def stats_page(
         )
     }
     totals["wh_per_mi"] = (totals["used_kwh"] * 1000 / totals["miles"]) if totals["miles"] > 1 and totals["used_kwh"] > 0 else None
+    totals["unlogged"] = totals_unlogged
+    if compare:
+        compare["change"] = {k2: statspage.change(k2, totals, compare["totals"]) for k2 in ("miles", "drives", "drive_h", "used_kwh", "wh_per_mi", "charges", "added_kwh", "cost")}
     st = current_settings()
     # The window's charges by region and month: what the estimates rest on, and each
     # charge's energy as petrol at its own region's price that month.
@@ -6992,6 +10346,9 @@ def stats_page(
         "stats.html",
         petrol=petrol,
         estimate=estimate,
+        records=records,
+        eff=eff,
+        eff_keep=parse_qsl(ctl["href"](cmp=None)) if ctl else [],
         sun=sun_by_month(car["vin"]),
         car=car,
         rows=rows,
@@ -7019,6 +10376,12 @@ def stats_page(
 FEED_COLUMNS = ["Date", "carState", "battery_level", "est_battery_range", "odometer", "speed", "charger_power", "charge_energy_added", "outside_temp", "inside_temp", "car_version"]
 
 
+def has_raw_readings(car: dict) -> bool:
+    """Whether a car has readings as they arrived (the TeslaFi feed's rows or the connector's tree);
+    one that only imports history, or follows TeslaMate or the Tesla stream, has none to open."""
+    return bool(car) and source_of(car) in ("feed", "live")
+
+
 def day_readings(car: dict, day: date) -> tuple[str, list[str], list[dict]]:
     """A day's raw readings for one car: the feed's rows as they came, or the connector
     tree's leaves each time it changed. Returns (source, columns, rows) with rows as flat dicts."""
@@ -7034,7 +10397,11 @@ def day_readings(car: dict, day: date) -> tuple[str, list[str], list[dict]]:
             cols = [c for c in FEED_COLUMNS if any(c in r for r in rows)]
             return source, cols, rows
         rows = []
-        for r in conn.execute("SELECT at, data FROM cc_raw WHERE vin = %s AND at >= %s AND at < %s ORDER BY at", (car["vin"], start, end)).fetchall():
+        try:
+            raw = conn.execute("SELECT at, data FROM cc_raw WHERE vin = %s AND at >= %s AND at < %s ORDER BY at", (car["vin"], start, end)).fetchall()
+        except psycopg.errors.UndefinedTable:  # only the connector creates cc_raw; an import-only install has none
+            return "history", ["at"], []
+        for r in raw:
             at, data = (r["at"], r["data"]) if isinstance(r, dict) else (r[0], r[1])
             flat = {"at": at}
             for path, val in raw_leaves(data):
@@ -7153,6 +10520,103 @@ def api_whoami(request: Request):
     return JSONResponse({"label": token["label"], "vin": token["vin"], "kind": token.get("kind", "read")} if token else {"label": "signed in", "vin": None, "kind": None})
 
 
+# ---- the MCP endpoint ---------------------------------------------------------------
+# Read-only Model Context Protocol over Streamable HTTP (mcpserver.py speaks it, mcptools.py holds the tools). The
+# guard has already checked the bearer: only an MCP token gets here, and its car and coordinate scope ride in it.
+
+MCP_BODY_LIMIT = 64 * 1024
+PUBLIC_URL = (
+    (os.environ.get("CC_PUBLIC_URL") or "").strip().rstrip("/")
+)  # the address the site is reached at from outside, e.g. https://host/carcommand; shown in the MCP snippets and trusted as an Origin
+
+
+def mcp_origins() -> set[str]:
+    """The host names a page may name as its Origin when it calls /mcp: the configured public address and the Tesla domain."""
+    names = {urlparse(PUBLIC_URL).hostname, (tesla_cfg(load=False)["domain"] or "").lower() or None}
+    return {n for n in names if n}
+
+
+def mcp_origin_ok(origin: str, configured: set[str]) -> bool:
+    """Whether a browser-sent Origin is this site's own: a configured name, this machine, a private address or a bare/.local
+    name. Not a defence by itself (a rebinding page passes a Host comparison, so it is not one): the bearer token is what a
+    page cannot send. This only turns browsers away, as the protocol asks."""
+    host = (urlparse(origin).hostname or "").lower()
+    return bool(host) and (host in configured or host == "localhost" or auth.home_address(host) or "." not in host or host.endswith(".local"))
+
+
+def mcp_data() -> mcptools.Data:
+    """The readers the tools use: the same functions the pages call, so an answer agrees with the site. The two that read a
+    car's whole history are kept ten minutes, as the routes are, so an assistant asking twice does not read it twice."""
+
+    def records(vin, since, until):
+        return cached(f"mcp_records:{vin}:{since}:{until}", 600, lambda: record_board(drives_light(vin, since, until), vin, since, until, thumbs=False))
+
+    def software(car):
+        return cached(f"mcp_software:{car['vin']}", 600, lambda: software_block(car))
+
+    return mcptools.Data(
+        cars=lambda: [{"vin": v["vin"], "name": v["name"]} for v in all_vehicles()],
+        status=live_vehicle,
+        drives=drives,
+        charges=charges,
+        drive=drive,
+        charge=charge,
+        summarize=summarize_sql,
+        lifetime=lambda vin: lifetime.report(lifetime_rows(vin)),
+        records=records,
+        routes=route_table,
+        software=software,
+        now=lambda: datetime.now(TZ),
+        tz=TZ,
+        currency=current_settings().get("currency") or "$",
+    )
+
+
+def mcp_log(limit: int = 20) -> list[dict]:
+    """The newest questions an assistant asked, for Settings: which tool, which token, when. Never the arguments."""
+    with db() as conn:
+        return conn.execute("SELECT at, label, last4, path AS tool FROM cc_api_log WHERE method = 'MCP' ORDER BY at DESC, id DESC LIMIT %s", (limit,)).fetchall()
+
+
+def mcp_called(message, token: dict, ip: str) -> None:
+    """One row a tool call into the call log (tool name, token, time; no arguments), after the answer has gone."""
+    if isinstance(message, dict) and message.get("method") == "tools/call" and isinstance(message.get("params"), dict):
+        name = message["params"].get("name")
+        audit(token, "MCP", str(name)[:60] if isinstance(name, str) else "?", 200, ip)
+
+
+@site.post("/mcp")
+async def mcp_post(request: Request):
+    origin = request.headers.get("origin")
+    if origin and not mcp_origin_ok(origin, mcp_origins()):
+        return JSONResponse({"error": "this endpoint is not for web pages"}, status_code=403)  # a browser names its page; an MCP client sends no Origin
+    body = await read_capped(request, MCP_BODY_LIMIT)
+    if body is None:
+        return JSONResponse({"error": "too large"}, status_code=413)
+    try:
+        message = json.loads(body)
+    except (ValueError, RecursionError):
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": mcpserver.PARSE_ERROR, "message": "not JSON"}}, status_code=400)
+    token = request.state.token
+
+    def answer():
+        data = mcp_data()
+        text = f"{mcptools.INSTRUCTIONS} Today is {data.now():%A %Y-%m-%d}, time zone {TZ.key}; currency {data.currency}."
+        scope = mcptools.Scope(token["vin"], bool(token.get("coords")))
+        return mcpserver.respond(message, request.headers, mcptools.build(data), scope, {"name": "car-command", "version": version.VERSION}, text)
+
+    status, reply = await asyncio.to_thread(answer)
+    if reply is not None and status == 200:
+        await asyncio.to_thread(mcp_called, message, token, seen_from(request))
+    return Response(status_code=status) if reply is None else JSONResponse(reply, status_code=status)
+
+
+@site.api_route("/mcp", methods=["GET", "DELETE"])
+def mcp_no_stream():
+    """No server-sent stream and no session to end: this server only answers each POST."""
+    return Response(status_code=405, headers={"Allow": "POST"})
+
+
 # ---- the admin API -----------------------------------------------------------------
 # Setup, driven by a script or an assistant with an admin token: the same actions as the
 # Settings buttons, through the same functions. The guard has already checked the token,
@@ -7190,7 +10654,7 @@ async def admin_tesla(fresh: str = ""):
     if fresh:
         TESLA_CACHE.clear()
     facts = await asyncio.to_thread(tesla_facts)
-    return adminapi.tesla(facts, teslapage.steps(facts), TESLA_DOMAIN, tesla_key_domain())
+    return adminapi.tesla(facts, teslapage.steps(facts), tesla_domain(), tesla_key_domain())
 
 
 @site.post("/api/admin/tesla/register")
@@ -7385,7 +10849,8 @@ HOURS_MAX_DAYS = 400  # a true-up year and a margin; one answer, not a dump of t
 @site.get("/api/energy/hours")
 def api_energy_hours(request: Request, since: str, until: str | None = None):
     """The house's kWh per clock hour for the local days [since, until) (until defaults to
-    tomorrow, so today so far is in): what a reader needs to price it by time of use.
+    tomorrow, so today so far is in), each with its period and all-in price per kWh under the
+    home plan (null without one): what a reader needs to price it by time of use.
     Same doors as /api/energy."""
     token = getattr(request.state, "token", None)
     if token and token.get("vin"):
@@ -7400,17 +10865,40 @@ def api_energy_hours(request: Request, since: str, until: str | None = None):
     lo, hi = (datetime.combine(d, dtime(), TZ) for d in (first, last))
     with db() as conn:
         rows = energy.hours(conn, lo, hi)
+    for r in rows:  # each hour's time-of-use period and price, for a reader to check its own against
+        r["period"], r["rate"] = cost.hour_rate(r["hour"].astimezone(TZ))
     return JSONResponse(jsonable({"since": first, "until": last, "tz": TZ.key, "hours": rows}))
 
 
+API_WINDOW_MAX = 5000  # rows: a windowed call is a range read, not a dump of the table
+
+
+def api_window(since: str | None, until: str | None) -> tuple[datetime | None, datetime | None] | JSONResponse:
+    """The local days [since, until) an API call asks for, or the 400 that names the parameter that is not a date."""
+    out = []
+    for name, value in (("since", since), ("until", until)):
+        try:
+            out.append(datetime.combine(date.fromisoformat(value), dtime(), TZ) if value else None)
+        except ValueError:
+            return JSONResponse({"error": f"{name} is a date, YYYY-MM-DD"}, status_code=400)
+    return out[0], out[1]
+
+
 @site.get("/api/drives")
-def api_drives(vin: str | None = None):
-    return JSONResponse(jsonable(drives(api_vin(vin))))
+def api_drives(vin: str | None = None, since: str | None = None, until: str | None = None):
+    window = api_window(since, until)
+    if isinstance(window, JSONResponse):
+        return window
+    return JSONResponse(jsonable(drives(api_vin(vin), API_WINDOW_MAX if any(window) else 50, *window)))
 
 
 @site.get("/api/charges")
-def api_charges(vin: str | None = None):
-    return JSONResponse(jsonable([{k: v for k, v in r.items() if k != "mix"} for r in charges(api_vin(vin))]))  # the bar is for the page; its figures are the src_ keys
+def api_charges(vin: str | None = None, since: str | None = None, until: str | None = None):
+    window = api_window(since, until)
+    if isinstance(window, JSONResponse):
+        return window
+    rows = charges(api_vin(vin), API_WINDOW_MAX if any(window) else 50, *window)
+    return JSONResponse(jsonable([{k: v for k, v in r.items() if k not in ("mix", "rate")} for r in rows]))  # the bar is for the page; its figures are the src_ keys
 
 
 def jsonable(value):
@@ -7441,9 +10929,12 @@ def jsonable(value):
 # The same site answers at / (the LAN port) and at /cc (behind the tunnel
 # through Traefik, which does not strip the prefix). Mounting sets
 # request.scope["root_path"] so every link and asset URL is right either way.
-def compose_daily_summary(car: dict, day) -> str:
-    """Yesterday for this car, from the same tables the pages use."""
+def compose_daily_summary(car: dict, day) -> str | None:
+    """Yesterday for this car, from the same tables the pages use. None for a car with no
+    live source (imported history only) and for a day with nothing to report."""
     vin = car["vin"]
+    if source_of(car) == "history":
+        return None
     start_local = datetime.combine(day, datetime.min.time(), tzinfo=TZ)
     end_local = start_local + timedelta(days=1)
     day_drives = [d for d in drives(vin, 500) if d["destination_date"] and start_local <= d["start_date"] < end_local]
@@ -7534,6 +11025,42 @@ def maps_tick(w) -> None:
         state_set("maps_version", str(v))
 
 
+def terrain_backfill() -> int:
+    """Ground figures for up to 100 drives a car (facts.fill_ground), off the recorder's thread.
+    A car that fails is logged and left; the others go on."""
+    n = 0
+    with db() as conn:
+        for v in conn.execute("SELECT vin FROM vehicles").fetchall():
+            try:
+                n += fill_ground(conn, v["vin"], TERRAIN, TERRAIN_WANTED, 100)
+                conn.commit()
+            except Exception as err:  # noqa: BLE001 - the pages stand on GPS heights without it
+                conn.rollback()
+                LOG.warning("terrain facts: %s", err)
+    return n
+
+
+def terrain_reset() -> int:
+    with db() as conn:
+        n = reset_ground(conn)
+        conn.commit()
+    return n
+
+
+class _State:
+    get, set, delete = staticmethod(state_get), staticmethod(state_set), staticmethod(state_delete)
+
+
+def terrain_worker() -> terrain_mod.Worker:
+    folder = TERRAIN.folder
+    free = (lambda: shutil.disk_usage(folder).free) if folder else None
+    return terrain_mod.Worker(TERRAIN, lambda: bool(current_settings().get("terrain")), endpoints_since_all, _State, terrain_backfill, terrain_reset, TERRAIN_WANTED, free_bytes=free)
+
+
+def endpoints_since_all() -> list[tuple[float, float, datetime]]:
+    return endpoints_since(None)
+
+
 def route_candidates(version: str, limit: int) -> list[dict]:
     """The newest finished drives with no route row for this maps build (routematch)."""
     with db() as conn:
@@ -7544,7 +11071,8 @@ def route_positions(trip: dict) -> tuple[list[tuple], list | None, list | None]:
     """A drive's own (at, lat, lon) readings and where the car was parked either side."""
     with db() as conn:
         rows = conn.execute(
-            "SELECT at, latitude, longitude FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s ORDER BY at", (trip["vin"], trip["start_date"], trip["destination_date"])
+            "SELECT at, latitude, longitude FROM cc_positions p WHERE vin = %s AND at BETWEEN %s AND %s " + driveedits.left_out() + " ORDER BY at",
+            (trip["vin"], trip["start_date"], trip["destination_date"]),
         ).fetchall()
         before, after = parked_ends(conn, trip["vin"], trip["start_date"], trip["destination_date"])
     return [(r["at"], r["latitude"], r["longitude"]) for r in rows], before, after
@@ -7599,15 +11127,20 @@ def maybe_send_summary(car: dict) -> None:
     The "once" used to live in a module-level dict, so every restart forgot it and the
     next tick sent yesterday's summary again. On a day with several deploys that is
     several identical messages, hours apart, each looking like a fresh report of a day
-    that ended long ago. It lives in the database now, where a restart cannot lose it."""
-    last = state_get("last_summary")
+    that ended long ago. It lives in the database now, where a restart cannot lose it,
+    one marker a car: a shared one let the first car's summary stand in for every car's.
+    A car with no marker yet reads the old shared one, so the switch sends nothing twice."""
+    key = f"last_summary:{car['vin']}"
+    last = state_get(key) or state_get("last_summary")
     due = summary_due(datetime.now(TZ), date.fromisoformat(last) if last else None, at=SUMMARY_AT)
     if due is None:
         return
     # Recorded before sending: a duplicate is worse than a miss, because a miss is
     # obvious tomorrow and a duplicate looks like real news.
-    state_set("last_summary", datetime.now(TZ).date().isoformat())
-    recorder.notify(compose_daily_summary(car, due), "daily_summary")
+    state_set(key, datetime.now(TZ).date().isoformat())
+    text = compose_daily_summary(car, due)
+    if text:
+        recorder.notify(text, "daily_summary", car["vin"])
 
 
 # The recorder has to sample at least as often as the connector refreshes, or the
@@ -7643,15 +11176,41 @@ def maybe_plug_reminder() -> None:
         text = plug_in_reminder(live_vehicle(v["vin"]), now_local, last_day, at, below)
         if text:
             state_set(key, now_local.date().isoformat())
-            recorder.notify(text, "plug_reminder")
+            recorder.notify(text, "plug_reminder", v["vin"])
 
 
 recorder = Recorder(
     fetch_live=live_vehicle,
     connect=db,
+    log_connect=lambda: db(timeout=2),
     interval_s=int(os.environ.get("CC_POLL_IDLE_S", 60)),
     driving_interval_s=int(os.environ.get("CC_POLL_DRIVING_S", 10)),
 )
+
+
+def recent_alerts(n: int = 20) -> list[dict]:
+    """The newest alerts as they went out or did not, for Settings › Alerts: one indexed query."""
+    try:
+        with db() as conn:
+            rows = [dict(r) for r in conn.execute("SELECT at, kind, text, outcome, channels FROM cc_alert_log ORDER BY at DESC LIMIT %s", (n,)).fetchall()]
+        return [{**r, "text": devices.humane(r["text"] or "")} for r in rows]  # rows logged before alerts said this in words
+    except Exception as err:  # noqa: BLE001 - before the recorder has made the table
+        LOG.warning("alert log: %s", type(err).__name__)
+        return []
+
+
+def finished_charge(vin: str, since: datetime) -> dict | None:
+    """The kWh and cost of the charge that started about `since`, once its facts are filled: for "finished charging"."""
+    with db() as conn:
+        row = conn.execute(FINISHED_CHARGE_SQL, (vin, since - timedelta(minutes=10))).fetchone()
+    return {"kwh": row["kwh"], "cost": row["cost"]} if row else None
+
+
+# Every car's events, whichever source reads it: the recorder feeds it the connector's car, watch_cars every other.
+WATCHER = notify_mod.Watcher(load=lambda vin: state_get(f"alert_last:{vin}"), save=lambda vin, text: state_set(f"alert_last:{vin}", text), facts=finished_charge)
+recorder.watcher = WATCHER
+# Answered before and not now. garage() reads a silent connector as no cars, so the fetch itself never fails.
+recorder.connector_lost = lambda: bool(_cache.get("connector_seen") and _cache.get("connector_down"))
 teslafi = TeslaFiPoller(os.environ.get("TESLAFI_TOKENS", "").split(","), connect=db, tz=TZ)
 teslamate = TeslaMatePoller(os.environ.get("TESLAMATE_DB_URL"), connect=db, tz=TZ)
 # The cars' own stream: listens only once the stream address is set and a car is started on Connect Tesla.
@@ -7772,8 +11331,11 @@ def apply_schema(conn) -> None:
         ("places", PLACES_DDL),
         ("software", SOFTWARE_DDL),
         ("facts", FACTS_DDL),
+        ("drive edits", driveedits.DDL),
         ("tags", TAGS_DDL),
         ("service", SERVICE_DDL),
+        ("tire days", tiredays.DDL),
+        ("battery health", healthlog.DDL),
         ("settings", settings_mod.DDL),
         ("auth", auth.DDL),
         ("api tokens and log", auth.API_DDL),
@@ -7786,11 +11348,14 @@ def apply_schema(conn) -> None:
         ("tesla navigation", tesla_nav.DDL),
         ("house energy", energy.DDL),
         ("plan search cache", urdb.DDL),
+        ("car commands", commands_mod.DDL),
+        ("tesla api use", fleet_usage.DDL),
         # The importer's and the recorder's tables are read by the site whether or not
         # anything was ever imported or recorded, so they are created here rather than on
         # first use. /day queried cc_inside_temperatures and 500'd on a fresh install.
         ("imports", IMPORT_DDL),
         ("positions", RECORDER_DDL),
+        ("garage events", garagelog.DDL),
         ("trip extras", "CREATE TABLE IF NOT EXISTS cc_trip_extras (vin VARCHAR NOT NULL, start_date TIMESTAMPTZ NOT NULL, fsd_miles DOUBLE PRECISION, PRIMARY KEY (vin, start_date))"),
         ("weather", weather.DDL),
         ("by hand", manual.DDL),
@@ -8091,10 +11656,31 @@ async def energy_backfill(request: Request):
     return energy_reply(request, back, saved="backfill", anchor="pw-history")
 
 
+@site.get("/settings/{section}/{rest:path}", response_class=HTMLResponse)
+def settings_elsewhere_page(request: Request, section: str, rest: str):
+    """An address under a Settings page that only a form posts to (a test, a remove, an add): reached by a reload or a pasted link,
+    it goes to the page the form lives on. Declared last, so every real page under Settings answers first."""
+    gone = settings_elsewhere(request, section)
+    if gone:
+        return gone
+    raise HTTPException(404, "No such settings page.")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    left = auth.placeholders(os.environ)
+    if left:
+        raise SystemExit(
+            f"{', '.join(left)} still holds {auth.PLACEHOLDER}, the placeholder from stack/.env.example. Run make setup (or scripts/setup.sh) to write stack/.env with generated passwords."
+        )
     with db() as conn:
         apply_schema(conn)
+        tesla_entered()  # the app's values entered on Connect Tesla, kept in memory from here
+        try:
+            HEALTH.load(conn)
+        except Exception as err:  # noqa: BLE001 - the Battery page goes without the series until the next start
+            LOG.warning("battery health: %s", err)
+            conn.rollback()
         try:
             if migrate_home(conn, queue_reprice):
                 LOG.info("places: home now follows the icon")
@@ -8111,7 +11697,10 @@ async def lifespan(_app: FastAPI):
     if bound:
         LOG.info("sources: bound %s sealed secrets to their rows", bound)
 
+    await asyncio.to_thread(load_fleet_meter)  # before any worker that makes a Tesla call
     load_auth()
+    IMPORTS.recover()  # a history import the last run was cut off in is marked interrupted
+    threading.Thread(target=warm_efficiency, daemon=True, name="efficiency").start()
     # An in-process cache of the trip id each car last got a message about, so the common
     # tick costs no query. It is only a cache: the answer that survives a restart is in
     # cc_state, and that is the one consulted whenever this does not already know.
@@ -8124,8 +11713,13 @@ async def lifespan(_app: FastAPI):
             return
         if cached_trip.get(car["vin"]) == latest["id"]:
             return
+        # A car not on the connector: nothing is recorded until the drive is whole (summary.drive_whole)
+        if car.get("live") is not True and not drive_whole(latest, car.get("status"), WATCHER.last_driving(car["vin"])):
+            return
         key = f"last_drive:{car['vin']}"
-        due = drive_announcement_due(latest, state_get(key), datetime.now(timezone.utc))
+        # A drive the connector closes lands at once; a feed's comes with its hourly replay
+        quiet = timedelta(minutes=15) if car.get("live") is True else timedelta(hours=2)
+        due = drive_announcement_due(latest, state_get(key), datetime.now(timezone.utc), quiet_after=quiet)
         cached_trip[car["vin"]] = latest["id"]
         # Written before the message goes out, as the daily summary is: a duplicate reads
         # as real news and a miss does not.
@@ -8139,10 +11733,18 @@ async def lifespan(_app: FastAPI):
             bits.append(f"{latest['level_start']:.0f}→{latest['level_end']:.0f}%")
         if latest.get("cost"):
             bits.append(f"${latest['cost']:.2f}")
-        recorder.notify(f"{car['name']} drove {latest['from']} → {latest['to']}: " + ", ".join(bits) + ".", "drive_summary")
+        recorder.notify(f"{car['name']} drove {latest['from']} → {latest['to']}: " + ", ".join(bits) + ".", "drive_summary", car["vin"])
 
     def on_snapshot(car):
         record_software(car["vin"], car.get("software"))
+        try:
+            record_ota_history(car["vin"])
+        except Exception as err:  # noqa: BLE001
+            LOG.warning("software history: %s", err)
+        try:
+            record_car_figures(car)
+        except Exception as err:  # noqa: BLE001
+            LOG.warning("meter and health: %s", err)
         try:
             held = _cache.get("garage_tree")
             if held:
@@ -8158,6 +11760,14 @@ async def lifespan(_app: FastAPI):
             maybe_plug_reminder()
         except Exception as err:  # noqa: BLE001
             LOG.warning("plug reminder: %s", err)
+        try:
+            garage_arrival(car)
+        except Exception as err:  # noqa: BLE001
+            LOG.warning("garage arrival: %s", type(err).__name__)
+        try:
+            rebuild_connector_drives()
+        except Exception as err:  # noqa: BLE001
+            LOG.warning("drive rebuild: %s", err)
         fill_missing_facts()
         try:
             apply_auto_tags()
@@ -8169,6 +11779,49 @@ async def lifespan(_app: FastAPI):
             LOG.warning("drive summary: %s", err)
 
     recorder.on_snapshot = on_snapshot
+
+    def watch_cars() -> None:
+        """Every car the recorder is not reading from the connector (a Tesla on its feed or stream, a
+        second connector car): its events, its finished drives and its morning summary."""
+        held = recorder.last_car or {}
+        skip = held.get("vin") if held.get("live") is True else None
+        for v in all_vehicles():
+            if v["vin"] == skip:
+                continue
+            try:
+                car = live_vehicle(v["vin"])
+                for kind, text in WATCHER.step(car):
+                    recorder.notify(text, kind, car["vin"])
+                drive_summary(car)
+                maybe_send_summary(car)
+            except Exception as err:  # noqa: BLE001 - one car's trouble is not the others'
+                LOG.warning("watch %s: %s", v["name"], err)
+
+    async def watch_loop():
+        await asyncio.sleep(30)  # after the recorder's first tick, so it is not read twice
+        trimmed = checked = None
+        while True:
+            try:
+                await asyncio.to_thread(watch_cars)
+                if garage_model_due(datetime.now(timezone.utc)):
+                    await asyncio.to_thread(learn_garage_model)
+                if plan_check_due() and (checked is None or datetime.now(timezone.utc) - checked > timedelta(hours=6)):
+                    # a check that could not compare is tried again in 6 h, so OpenEI being down is not asked every minute
+                    checked = datetime.now(timezone.utc) if await asyncio.to_thread(check_plan_hours) is None else None
+                if trimmed is None or datetime.now(timezone.utc) - trimmed > timedelta(hours=6):
+                    await asyncio.to_thread(recorder.trim_log)
+                    trimmed = datetime.now(timezone.utc)
+            except Exception as err:  # noqa: BLE001
+                LOG.warning("watch: %s", err)
+            await asyncio.sleep(60)
+
+    load_esri_key()
+    load_alert_channels()
+    settle_channel_routes()
+    load_ha_link()
+    load_garage_model()
+    garage_record(list(reversed(garage_log())))  # once-over of the cc_state list; already-kept rows are skipped
+    threading.Thread(target=garage_departure_loop, name="garage-departure", daemon=True).start()
     apply_settings(current_settings())
     # Before anything else starts, including the warm-up below: the connector reads no
     # decision as off, so write it at once and an install that allows the public geocoder
@@ -8186,6 +11839,9 @@ async def lifespan(_app: FastAPI):
     billed_worker.start()
     identity_worker.start()
     tesla_refresher.start()
+    start_fleet_meter()
+    hold_worker.start()
+    keep_proxy_files()
     try:
         with db() as conn:
             await asyncio.to_thread(energy.drop_gateway, state_get, state_set, state_delete, conn)  # a local gateway was once read; nothing of it is kept
@@ -8197,12 +11853,8 @@ async def lifespan(_app: FastAPI):
     cloud_worker.start()
 
     async def geocode_loop():
-        # Warm the finished bodies, not just the cells: the cells were never the slow
-        # part. Every car plus the garage, which is the key the Map opens on.
-        try:
-            await asyncio.to_thread(lambda: [driveprint_body(k) for k in [GARAGE, *(v["vin"] for v in all_vehicles())]])
-        except Exception as err:  # noqa: BLE001
-            LOG.warning("driveprint warm-up: %s", err)
+        # The map's cells and finished bodies, kept warm from here on (warm_driveprints)
+        threading.Thread(target=warm_driveprints, daemon=True, name="driveprints").start()
         # Every minute: local maps first, the public Nominatim only if Settings > Maps
         # allows it, otherwise nothing is looked up at all. A rate that matters only to
         # the public server (one lookup a second) relaxes once a local one answers.
@@ -8221,6 +11873,8 @@ async def lifespan(_app: FastAPI):
                     n = await asyncio.to_thread(lambda: geocode_cells(db_plain(), 200 if local else 30, 0.0 if local else 1.1, url, "local" if local else "public", fallback_url))
                     if n:
                         _cache.pop("geocells", None)
+                        _cache.pop("geotowns", None)
+                await asyncio.to_thread(warm_where)
             except Exception as err:  # noqa: BLE001
                 LOG.warning("geocoder: %s", err)
             await asyncio.sleep(60)
@@ -8245,6 +11899,34 @@ async def lifespan(_app: FastAPI):
             await asyncio.sleep(600)
 
     maps_task = asyncio.create_task(maps_loop())
+
+    async def terrain_loop():
+        # Never on a page path. A minute apart while a square is being fetched, a few seconds
+        # while drives are being filled, a quarter hour otherwise; with the switch off it works
+        # out the need locally and sends nothing.
+        if not TERRAIN.folder:
+            return
+        w = terrain_worker()
+        await asyncio.sleep(45)
+        while True:
+            pause = 900
+            try:
+                out = await asyncio.to_thread(w.tick)
+                if out.get("stopped") == "network":
+                    pause = 300  # before the backfill's short pause: a failing download is not retried every 10 s
+                elif out.get("stopped") == "disk":
+                    pause = 900
+                elif out.get("filled"):
+                    pause = 10
+                elif out.get("left"):
+                    pause = 60
+                elif out.get("idle"):
+                    pause = 300
+            except Exception as err:  # noqa: BLE001
+                LOG.warning("terrain: %s", err)
+            await asyncio.sleep(pause)
+
+    terrain_task = asyncio.create_task(terrain_loop())
 
     async def routes_loop():
         # Never on a page path: drives with sparse readings matched to the roads on the
@@ -8273,15 +11955,20 @@ async def lifespan(_app: FastAPI):
             LOG.warning("tesla stream config check: %s", err)
 
     config_task = asyncio.create_task(stream_config_check())
+    watch_task = asyncio.create_task(watch_loop())
     yield
+    watch_task.cancel()
     config_task.cancel()
     geo_task.cancel()
     maps_task.cancel()
+    terrain_task.cancel()
     routes_task.cancel()
     await recorder.stop()
     await teslafi.stop()
     tesla_stream_worker.stop()
     tesla_refresher.stop()
+    FLEET_STOP.set()
+    await asyncio.to_thread(write_fleet_meter)
     cloud_worker.stop()
 
 
@@ -8304,9 +11991,10 @@ app.mount("/", site)
 class TruePeer:
     """What uvicorn runs (app:server, without --proxy-headers): keeps the socket's own
     address in the scope, then lets uvicorn's proxy-header middleware put the forwarded
-    client in its place as --proxy-headers did. The sign-in throttle and the logs go on
-    reading the forwarded address; only the admin network rule needs the one nobody can
-    write, and a request that reached the app any other way has none and is refused."""
+    client in its place as --proxy-headers did. The sign-in throttle, the admin network
+    rule, sign-in alerts and the admin audit log read the socket's address and the hops a
+    trusted proxy reported, never the leftmost forwarded one; an admin call that reached
+    the app any other way has no socket address and is refused."""
 
     KEY = "cc_peer"
 

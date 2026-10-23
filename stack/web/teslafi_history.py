@@ -7,7 +7,7 @@
 The feed (`teslafi_live`) only ever hands over the current reading, so a car whose token
 was added late, or whose poller was down, has a hole between its last import and the
 first feed row. This fills it from the summaries: one row per drive (start, end,
-odometer, positions, miles, max speed, temperature) and per charge (start, end, levels,
+odometer, positions, miles, energy used, max speed, temperature) and per charge (start, end, levels,
 energy, position, wall volts and amps, software version). No minute-by-minute readings,
 so no route, no power curve, no battery line inside a drive; the full TeslaFi export
 (`make import`) is still the way to get those. Rows go through `history.write_history`
@@ -84,6 +84,7 @@ def trip_from(d: dict) -> dict | None:
         "destination_position_latitude": _f(d.get("endLatitude")),
         "destination_position_longitude": _f(d.get("endLongitude")),
         "max_mph": _f(d.get("speedMAX")),
+        "kwh": _f(d.get("driveKwh")) or None,  # the summary's own sum: there is no battery line to work it from
         "temp_f": (_f(d.get("temperatureAVG")) or None) if d.get("noOutsideTemperatureReported") not in (1, "1", True) else None,
         "tag": (d.get("tag") or "").strip() or None,
     }
@@ -276,13 +277,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     import app
 
-    tokens = [t.strip() for t in os.environ.get("TESLAFI_TOKENS", "").split(",") if t.strip()]
-    token = None
-    for t in tokens:
-        raw, _sep, tok = t.rpartition(":")
-        if raw == args.vin:
-            token = tok
-            break
+    import sources
+
+    tokens = [f"{vin}:{tok}" if vin else tok for vin, tok in sources.env_tokens(os.environ)]
+    token = next((tok for vin, tok in sources.env_tokens(os.environ) if vin == args.vin), None)
     if token is None:
         # learn which token is the car's from the feed's own row
         from teslafi_live import TeslaFiPoller

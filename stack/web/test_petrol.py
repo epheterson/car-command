@@ -5,7 +5,7 @@ import pytest
 
 from averages import Averages
 from test_rates_data import averages_data
-from stats import charging_summary, efficiency_by_year, estimate_note, petrol_comparison
+from stats import charging_summary, efficiency_by_year, estimate_note, petrol_comparison, place_savings, saving_cell, saving_note
 from statspage import cost_mark
 
 RATES = Averages(averages_data())
@@ -61,3 +61,24 @@ def test_a_month_of_charges_with_no_price_is_marked_not_zero():
     assert cost_mark("cost", {"charges": 3, "priced": 3, "cost": 9.0, "avg_cost": 4.0}) == "est"
     assert cost_mark("cost", {"charges": 0, "priced": 0, "cost": 0.0}) is None, "no charges is a true zero"
     assert cost_mark("miles", {"charges": 3, "priced": 0}) is None
+
+
+def test_each_place_saves_its_own_share_and_a_place_with_no_price_saves_nothing():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    chi = ZoneInfo("America/Chicago")
+    at = datetime(2026, 9, 12, 3, tzinfo=chi)
+    row = lambda where, kwh, cost: {"session_start_date": at, "where": where, "vin": "ALPHA", "region": "US-IL", "kwh": kwh, "cost": cost}  # noqa: E731
+    rows = [row("Home", 30.0, 5.0), row("Home", 30.0, 5.0), row("Springfield Supercharger", 30.0, 12.0), row("Elm Street", 30.0, None)]
+    saved = place_savings(rows, chi, EFF, 30.0, RATES)
+    whole = petrol_comparison([g(kwh=30.0, cost=5.0), g(kwh=30.0, cost=5.0), g(kwh=30.0, cost=12.0)], EFF, 30.0, RATES)
+    assert saved["Elm Street"]["saved"] is None and saved["Elm Street"]["skipped"]["unpriced"] == 1, "no priced charge: no figure, and the reason kept, not $0"
+    assert saved["Home"]["saved"] == pytest.approx(2 * 100 / 30 * 4.166 - 10.0) and (saved["Home"]["compared"], saved["Home"]["of"]) == (2, 2)
+    every = saving_cell(list(saved.values()))
+    assert every["saved"] == pytest.approx(whole["saved"]) and (every["compared"], every["of"]) == (3, 4), "the places add up to the page's whole, and say one was left out"
+    assert saving_note(every) == "3 of 4 charges compared: 1 with no price" and saving_note(saved["Home"]) is None
+    assert saving_note(saved["Elm Street"]) == "Nothing to compare: 1 with no price"
+    away = place_savings([dict(row("Paris", 30.0, 9.0), region="FR"), dict(row("Home", 30.0, 5.0), vin="CHARLIE")], chi, EFF, 30.0, RATES)
+    assert saving_note(away["Paris"]) == "Nothing to compare: 1 with no petrol price for where and when"
+    assert saving_note(away["Home"]) == "Nothing to compare: 1 with no Wh a mile for that year", "a car with no measured efficiency is named as the reason, not the price"

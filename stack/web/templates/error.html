@@ -1,7 +1,8 @@
 {% extends "base.html" %}
-{% block title %}{{ status }} · Car Command{% endblock %}
+{# Any error the site answers with a page: what went wrong in a word, the reason, and the way back. #}
+{% set head = {404: 'Not found', 403: 'Not allowed', 405: 'Not allowed'}.get(status, 'Something went wrong' if status >= 500 else 'Not possible') %}
+{% block title %}{{ head }} · Car Command{% endblock %}
 {% block body %}
-<h1>{{ status }}</h1>
-<p class="lede">{{ detail }}</p>
-<p class="muted"><a href="{{ root }}/">Back to Now</a></p>
+<div class="pbar"><h1>{{ head }}</h1><span class="pbar-ctx">{{ status }}</span></div>
+<div class="group-b"><div class="empty">{{ 'Nothing at this address' if not detail or detail == 'Not Found' else detail }}<a class="btn sm" href="{{ root }}/">Back to Now</a></div></div>
 {% endblock %}

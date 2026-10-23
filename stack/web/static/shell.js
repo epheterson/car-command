@@ -25,7 +25,7 @@
   }, { passive: true });
   // a date picker that navigates as soon as a day is chosen (the Day page's bar)
   document.addEventListener("change", function (e) {
-    if (e.target.matches && e.target.matches("input[data-autosubmit]") && e.target.form) e.target.form.submit();
+    if (e.target.matches && e.target.matches("input[data-autosubmit], select[data-autosubmit]") && e.target.form) e.target.form.submit();
   });
   // A form that waits on something slow (TeslaFi, a TeslaMate database) shows the mark pulling in,
   // with what it is doing, until the next page answers. The button is held so it is not sent twice.
@@ -41,15 +41,31 @@
     at.insertAdjacentElement("afterend", w);
     setTimeout(function () { if (at.tagName === "BUTTON") at.disabled = true; }, 0);
   });
+  // A form marked data-hold has its buttons held once sent, so a second tap cannot make the change twice;
+  // coming back to the page (the back button) lets them go again.
+  function holdButtons(form, held) { document.querySelectorAll("button[type=submit]").forEach(function (b) { if (b.form === form) b.disabled = held; }); }
+  document.addEventListener("submit", function (e) {
+    var form = e.target;
+    if (form.hasAttribute && form.hasAttribute("data-hold") && !e.defaultPrevented) setTimeout(function () { holdButtons(form, true); }, 0);
+  });
+  window.addEventListener("pageshow", function (e) { if (e.persisted) document.querySelectorAll("form[data-hold]").forEach(function (f) { holdButtons(f, false); }); });
   // Settings: a form marked data-savebar keeps its Save bar out of the way until something in
   // it changes, and again after Revert. Without this script the bar simply stays. A field that
   // belongs to another form (form="…", Find my plan's search) does not count.
   document.querySelectorAll("form[data-savebar]").forEach(function (f) {
     f.classList.add("sb-js");
-    function dirty(e) { if (!e.target.form || e.target.form === f) f.classList.add("sb-dirty"); }
+    function dirty(e) { if (e.target.hasAttribute("data-autosave")) return; if (!e.target.form || e.target.form === f) f.classList.add("sb-dirty"); }
     f.addEventListener("input", dirty);
     f.addEventListener("change", dirty);
     f.addEventListener("reset", function () { f.classList.remove("sb-dirty"); });
+    f.addEventListener("submit", function () { f.classList.add("sb-saving"); });
+  });
+  // Leaving a Settings page with changes that were never saved asks first (the browser's own
+  // prompt); a Save in progress, or a switch that saves as it is flipped, does not.
+  window.addEventListener("beforeunload", function (e) {
+    if (!document.querySelector("form[data-savebar].sb-dirty:not(.sb-saving)")) return;
+    e.preventDefault();
+    e.returnValue = "";
   });
 })();
 
@@ -76,9 +92,22 @@
   function go(el) {
     card().then(function (c) { if (c) c.open({ lat: +el.dataset.lat, lon: +el.dataset.lon, anchor: el }); }).catch(function () {});
   }
+  // On a phone the first tap on a list row opens the row (the drive); the place card opens on a press and hold.
+  function inRow(el) { return !!el.closest("a.row-b") && !!(window.matchMedia && matchMedia("(hover: none), (max-width: 600px)").matches); }
+  var hold = null, held = false;
+  document.addEventListener("pointerdown", function (e) {
+    var el = e.target.closest && e.target.closest(".pn[data-lat]");
+    if (!el || e.pointerType === "mouse" || !inRow(el)) return;
+    clearTimeout(hold);
+    hold = setTimeout(function () { held = true; go(el); }, 450);
+  });
+  ["pointerup", "pointercancel", "pointermove", "scroll"].forEach(function (n) { document.addEventListener(n, function () { clearTimeout(hold); }, { passive: true, capture: true }); });
+  document.addEventListener("contextmenu", function (e) { if (e.target.closest && e.target.closest(".pn[data-lat]") && inRow(e.target)) e.preventDefault(); });
   document.addEventListener("click", function (e) {
     var el = e.target.closest && e.target.closest(".pn[data-lat]");
     if (!el) return;
+    if (inRow(el) && !held) return;  // the row's own link takes the tap
+    held = false;
     e.preventDefault();
     e.stopPropagation();
     go(el);
@@ -118,7 +147,10 @@
         return;
       }
     }
-    if (fresh && fresh.outerHTML !== old.outerHTML) old.replaceWith(fresh);
+    // a card someone is using (a marker being moved, a command waiting for its second tap) is
+    // left alone; the next update brings it current
+    var busy = old.querySelector("button.confirm, button.busy") || (old.contains(document.activeElement) && document.activeElement.matches("input, select"));
+    if (fresh && !busy && fresh.outerHTML !== old.outerHTML) old.replaceWith(fresh);
     document.dispatchEvent(new CustomEvent("cc:live", { detail: c }));
   }
   function open() {
@@ -365,4 +397,134 @@
     else if (row.getAttribute("data-state") === "running") { tick(); begin(); }
   });
   begin();
+})();
+
+// The 24-hour strip: pointing at a stretch (or focusing it) says what it was in the line under
+// the strip, where the legend sits; leaving puts the legend back.
+(function () {
+  function show(e) {
+    var seg = e.target.closest && e.target.closest(".strip [data-tip]");
+    var sec = seg && seg.closest("section");
+    var line = sec && sec.querySelector("[data-strip-tip]");
+    if (!line) return;
+    if (line._legend == null) line._legend = line.innerHTML;
+    line.textContent = seg.getAttribute("data-tip");
+    line.classList.add("tip");
+  }
+  function hide(e) {
+    var seg = e.target.closest && e.target.closest(".strip [data-tip]");
+    var line = seg && seg.closest("section") && seg.closest("section").querySelector("[data-strip-tip]");
+    if (!line || line._legend == null) return;
+    line.innerHTML = line._legend;
+    line._legend = null;
+    line.classList.remove("tip");
+  }
+  document.addEventListener("pointerover", show);
+  document.addEventListener("focusin", show);
+  document.addEventListener("pointerout", hide);
+  document.addEventListener("focusout", hide);
+})();
+
+// ← and → step to the previous and next drive, charge or parked stretch (_prevnext.html),
+// unless a field, a map or a modified key has them.
+(function () {
+  document.addEventListener("keydown", function (e) {
+    if ((e.key !== "ArrowLeft" && e.key !== "ArrowRight") || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.defaultPrevented) return;
+    var t = e.target;
+    if (t && t.closest && t.closest("input, textarea, select, [contenteditable], .leaflet-container, .chart-segs, details[open], [role=dialog]")) return;
+    var a = document.querySelector(".prevnext a[rel=" + (e.key === "ArrowLeft" ? "prev" : "next") + "]");
+    if (a) location.href = a.href;
+  });
+})();
+
+// A phone's sub-page pills scroll sideways: the page you are on is brought into view, and an
+// edge fades where more pills sit past it, so a clipped "S" reads as more to swipe to.
+(function () {
+  var nav = document.querySelector(".subpages");
+  if (!nav) return;
+  var on = nav.querySelector("[aria-current]");
+  if (on && on.offsetLeft + on.offsetWidth > nav.clientWidth) nav.scrollLeft = on.offsetLeft - (nav.clientWidth - on.offsetWidth) / 2;
+  function edges() {
+    nav.classList.toggle("more-l", nav.scrollLeft > 2);
+    nav.classList.toggle("more-r", nav.scrollLeft + nav.clientWidth < nav.scrollWidth - 2);
+  }
+  edges();
+  nav.addEventListener("scroll", edges, { passive: true });
+  addEventListener("resize", edges);
+})();
+
+// A link marked data-keep-scroll changes only part of a page (the Now window's 24 h / 7 d): the
+// page it loads opens where the reader was, not at the top.
+(function () {
+  var KEY = "cc-keep-scroll";
+  try {
+    var kept = JSON.parse(sessionStorage.getItem(KEY) || "null");
+    sessionStorage.removeItem(KEY);
+    if (kept && kept.path === location.pathname) {
+      if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+      window.scrollTo(0, kept.y);
+      document.addEventListener("DOMContentLoaded", function () { window.scrollTo(0, kept.y); });
+    }
+  } catch (e) {}
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a[data-keep-scroll]");
+    if (!a) return;
+    try { sessionStorage.setItem(KEY, JSON.stringify({ path: new URL(a.href).pathname, y: window.scrollY })); } catch (err) {}
+  });
+})();
+
+// The Now window's 24 h / 7 d switch changes the strip and the battery line in place: the clicked word
+// takes the underline at once, the two sections dim while /now/window answers, and the page keeps its
+// scroll. Any failure (or a modified click) falls back to the link's own full load.
+(function () {
+  var pending = null;
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a[data-win-to]");
+    var box = document.getElementById("now-win");
+    if (!a || !box || !window.fetch || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return;
+    e.preventDefault();
+    try { sessionStorage.removeItem("cc-keep-scroll"); } catch (err) {}  // the page is not reloading: nothing to scroll back to later
+    var to = a.getAttribute("data-win-to");
+    if (to === box.getAttribute("data-win") && box.getAttribute("aria-busy") !== "true") return;
+    if (pending) pending.abort();
+    var ctl = pending = new AbortController();
+    box.setAttribute("aria-busy", "true");
+    box.querySelectorAll(".win a").forEach(function (l) { l.toggleAttribute("aria-current", l === a); });
+    var src = box.getAttribute("data-win-src"), url = src + (src.indexOf("?") < 0 ? "?" : "&") + "win=" + encodeURIComponent(to);
+    fetch(url, { signal: ctl.signal, credentials: "same-origin", headers: { Accept: "text/html" } })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.text(); })
+      .then(function (html) {
+        var t = document.createElement("template");
+        t.innerHTML = html.trim();
+        var fresh = t.content.querySelector("#now-win");
+        if (!fresh) throw new Error("no window");
+        pending = null;
+        box.replaceWith(fresh);
+        try { history.replaceState(null, "", a.href); } catch (err) {}
+      })
+      .catch(function (err) {
+        if (err && err.name === "AbortError") return;
+        pending = null;
+        location.href = a.href;
+      });
+  });
+})();
+
+// An (i) never wraps onto a line of its own: it is tied to the word or element just before it.
+(function () {
+  document.querySelectorAll("details.info").forEach(function (d) {
+    var prev = d.previousSibling, first;
+    if (prev && prev.nodeType === 3 && /^\s*$/.test(prev.data) && prev.previousSibling && prev.previousSibling.nodeType === 1 && prev.previousSibling.textContent.length < 24) { first = prev.previousSibling; }
+    else if (prev && prev.nodeType === 3) {
+      var m = prev.data.match(/(\S+)\s*$/);
+      if (!m) return;
+      first = m.index ? prev.splitText(m.index) : prev;
+    } else if (prev && prev.nodeType === 1 && prev.textContent.length < 24) first = prev;
+    else return;
+    var tie = document.createElement("span");
+    tie.className = "nb";
+    d.parentNode.insertBefore(tie, first);
+    while (first !== d) { var n = first.nextSibling; tie.appendChild(first); first = n; }
+    tie.appendChild(d);
+  });
 })();

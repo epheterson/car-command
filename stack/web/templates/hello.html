@@ -1,0 +1,34 @@
+{% extends "gate.html" %}
+{# First run: the three settings every date and number on the site depends on, before the first look.
+   The zone starts as the browser's (Intl); units and currency start from its language. #}
+{% block title %}Welcome · Car Command{% endblock %}
+{% from "_tz.html" import tzpick, tzscript %}
+{% block body %}
+<h1>Where are you?</h1>
+{% if error %}<p class="gate-error">{{ error }}</p>{% endif %}
+<form method="post" action="{{ root }}/hello" class="gate-form" id="hello" data-typed="{{ 1 if typed else 0 }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+  <label for="tz">Time zone</label>
+  {{ tzpick(zone, zone_groups, 'tz', 'timezone' in bad) }}
+  <label for="units">Units</label>
+  <select id="units" name="units"{{ " aria-invalid=true" if "units" in bad }}><option value="imperial"{{ ' selected' if units == 'imperial' }}>Imperial</option><option value="metric"{{ ' selected' if units == 'metric' }}>Metric</option></select>
+  <label for="cur">Currency symbol</label>
+  <input id="cur" name="currency"{{ " aria-invalid=true" if "currency" in bad }} list="currencies" value="{{ currency }}" maxlength="4" autocomplete="off" required>
+  <datalist id="currencies">{% for c in ('$', '€', '£', '¥', 'kr', 'zł', 'CHF') %}<option value="{{ c }}">{% endfor %}</datalist>
+  <button type="submit">Continue</button>
+</form>
+<script>
+/* The browser knows all three; fill them in unless they were already typed. */
+(() => {
+  const f = document.getElementById("hello");
+  if (f.dataset.typed === "1") return;  /* an error page keeps what was typed */
+  const lang = navigator.language || "en-US", region = (lang.split("-")[1] || "").toUpperCase();
+  let zone = ""; try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
+  if (zone && Array.from(f.timezone.options).some(o => o.value === zone)) f.timezone.value = zone;
+  if (["US", "GB", "LR", "MM"].includes(region) || lang === "en") f.units.value = "imperial"; else if (region) f.units.value = "metric";
+  const cur = { US: "$", CA: "$", AU: "$", NZ: "$", MX: "$", GB: "£", JP: "¥", CN: "¥", SE: "kr", NO: "kr", DK: "kr", PL: "zł", CH: "CHF" };
+  f.currency.value = cur[region] || (["DE", "FR", "ES", "IT", "NL", "BE", "AT", "IE", "PT", "FI", "GR"].includes(region) ? "€" : f.currency.value);
+})();
+</script>
+{{ tzscript() }}
+{% endblock %}

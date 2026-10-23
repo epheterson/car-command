@@ -66,18 +66,49 @@ def row(minutes, value, key="miles"):
     return {"start": T0 + minutes * M, "end": T0 + (minutes + 10) * M, key: value}
 
 
-def test_drives_pair_by_start_within_five_minutes_and_disagreements_are_marked():
+def test_drives_pair_by_overlap_and_disagreements_are_marked():
     stream = [row(60, 5.0), row(240, 12.0), row(600, 3.0), row(700, 1.0)]
-    stored = [row(61, 5.0), row(243, 10.0), row(606, 3.0)]
+    stored = [row(61, 5.0), row(243, 10.0), row(615, 3.0)]
     got = tc.match(stream, stored, "miles", tc.MILES_OFF)
     assert [(p["stream"] is not None, p["stored"] is not None, p["off"]) for p in got] == [
         (True, True, False),
         (True, True, True),  # 12 vs 10 miles
-        (True, False, True),  # 6 minutes apart: not the same drive
+        (True, False, True),  # 600-610 and 615-625 do not overlap: not the same drive
         (False, True, True),
         (True, False, True),  # the stream saw a drive the writer did not
     ]
     assert got[0]["dt_s"] == -60
+
+
+def test_a_drive_split_differently_is_one_difference_not_two():
+    """The stream had one drive where the writer had two (a stop in park): one row, off once."""
+    stream = [{"start": T0, "end": T0 + 35 * M, "miles": 26.0}]
+    stored = [{"start": T0, "end": T0 + M, "miles": 0.0}, {"start": T0 + 3 * M, "end": T0 + 35 * M, "miles": 25.8}]
+    got = tc.match(stream, stored, "miles", tc.MILES_OFF)
+    assert len(got) == 1 and got[0]["off"] and got[0]["stored"]["n"] == 2 and got[0]["stored"]["miles"] == 25.8
+
+
+def test_a_charge_split_at_a_brief_unplug_is_the_same_charge():
+    stream = [{"start": T0, "end": T0 + 300 * M, "kwh": 37.5, "type": "AC"}]
+    stored = [{"start": T0 + M, "end": T0 + 3 * M, "kwh": 0.14, "type": "AC"}, {"start": T0 + 8 * M, "end": T0 + 301 * M, "kwh": 37.2, "type": "AC"}]
+    got = tc.match(stream, stored, "kwh", tc.KWH_OFF, joins_splits=True)
+    assert len(got) == 1 and not got[0]["off"]
+
+
+def test_a_drive_still_under_way_at_the_end_of_the_window_is_not_a_difference():
+    hi = T0 + 60 * M
+    stream = [{"start": T0 + 30 * M, "end": hi, "miles": 26.6}]
+    stored = [{"start": T0 + 30 * M, "end": T0 + 53 * M, "miles": 18.9}]
+    got = tc.match(stream, stored, "miles", tc.MILES_OFF, hi=hi)
+    assert len(got) == 1 and got[0]["under_way"] and not got[0]["off"]
+
+
+def test_a_crumb_on_one_side_alone_is_not_a_difference():
+    """A garage shuffle the writer's minute polls missed, a charge of 0.09 kWh it read as none."""
+    got = tc.match([row(0, 0.1)], [], "miles", tc.MILES_OFF)
+    assert not got[0]["off"]
+    got = tc.match([row(0, 0.09, "kwh")], [row(0, None, "kwh")], "kwh", tc.KWH_OFF)
+    assert not got[0]["off"]
 
 
 def test_small_differences_are_not_marked():

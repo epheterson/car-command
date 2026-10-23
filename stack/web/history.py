@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 import averages
 import cost
+import driveedits
 import settings as settings_mod
 from facts import ensure_tables, fill_facts
 from manual import DDL as MANUAL_DDL
@@ -54,6 +55,16 @@ CREATE TABLE IF NOT EXISTS cc_modes (
     climate    BOOLEAN NOT NULL
 );
 CREATE INDEX IF NOT EXISTS cc_modes_vin_first ON cc_modes (vin, first_date);
+-- Time the car was on and parked, no drive (driverebuild.car_on): the ignition-on states
+-- no drive holds, where the readings say the car stood. Written by the drive rebuild, read by the
+-- strips, the Day page and the Timeline.
+CREATE TABLE IF NOT EXISTS cc_car_on (
+    id         BIGSERIAL PRIMARY KEY,
+    vin        VARCHAR NOT NULL,
+    first_date TIMESTAMPTZ NOT NULL,
+    last_date  TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cc_car_on_vin_first ON cc_car_on (vin, first_date);
 CREATE TABLE IF NOT EXISTS cc_charging_electrics (
     id         BIGSERIAL PRIMARY KEY,
     vin        VARCHAR NOT NULL,
@@ -69,6 +80,9 @@ CREATE TABLE IF NOT EXISTS cc_trip_extras (
     fsd_miles  DOUBLE PRECISION,
     PRIMARY KEY (vin, start_date)
 );
+-- the energy a drive used, where the source summed it itself (TeslaFi's drive summaries): a
+-- summary has no battery line inside the drive to work it out from
+ALTER TABLE cc_trip_extras ADD COLUMN IF NOT EXISTS kwh DOUBLE PRECISION;
 CREATE TABLE IF NOT EXISTS cc_charge_extras (
     vin        VARCHAR NOT NULL,
     start_date TIMESTAMPTZ NOT NULL,
@@ -86,6 +100,13 @@ INTERVAL_TABLES = {  # table -> (value column, keyed by vin or drive)
     "drive_levels": ("level", "drive"),
     "drive_ranges": ("range", "drive"),
 }
+# Every table of stretches a replay writes: (table, key in the replay's result, keyed by
+# vin or drive, value columns). Values with two columns travel as a tuple.
+RUN_TABLES = [(t, t, key, (col,)) for t, (col, key) in INTERVAL_TABLES.items()] + [
+    ("cc_inside_temperatures", "inside_temperatures", "vin", ("inside_f",)),
+    ("cc_modes", "modes", "vin", ("sentry", "climate")),
+    ("cc_charging_electrics", "charging_electrics", "vin", ("volts", "amps")),
+]
 
 
 def _t(row):
@@ -151,6 +172,19 @@ def first_logged(conn, vin: str) -> datetime | None:
     return r[0] if r else None
 
 
+# The filenames the rolling writers give their imports: a live source, not a file someone loaded.
+LIVE_IMPORTS = ("tesla stream", "teslafi feed", "teslafi history", "teslamate live")
+
+
+def live_since(conn, vin: str) -> datetime | None:
+    """When any live source began writing this vin: the connector's own rows (first_logged) or the
+    first window of a rolling import (the TeslaFi feed, the Tesla stream, TeslaMate live). A file of
+    history stops here, so loading one never rewrites what a live source logged."""
+    r = _t(conn.execute("SELECT MIN(first_at) FROM cc_imports WHERE vin = %s AND filename = ANY(%s)", (vin, list(LIVE_IMPORTS))).fetchone())
+    found = [t for t in (first_logged(conn, vin), r[0] if r else None) if t is not None]
+    return min(found) if found else None
+
+
 def cut(out: dict, until: datetime) -> dict:
     """Drop everything at or after `until` from a replay result; clip intervals that straddle it."""
     o = dict(out)
@@ -190,6 +224,18 @@ def clear_import(conn, vin: str, drive_id, import_id: str, lo: datetime, hi: dat
     and software rows inside the window. Drives and charges added by hand (cc_manual)
     are the user's, not the import's, and stay either way."""
     span = "last_date >= %s AND first_date <= %s" if rolling else "first_date >= %s AND first_date <= %s"
+    # The stretch a rolling window opens inside (the car asleep, mostly) began before lo:
+    # its head is the import's earlier work, not this window's. It is read here and
+    # handed back (keep_heads), or every hourly rebuild would cut a night down to the
+    # part after its own start, and a night would be eaten an hour at a time.
+    heads = {}
+    if rolling:
+        for table, key, by, cols in RUN_TABLES:
+            rows = conn.execute(
+                f"SELECT first_date, last_date, {', '.join(cols)} FROM {table} WHERE {'vin' if by == 'vin' else 'drive_id'} = %s AND first_date < %s AND last_date >= %s ORDER BY first_date",
+                (vin if by == "vin" else drive_id, lo, lo),
+            ).fetchall()
+            heads[key] = [(r[0], r[1], r[2] if len(cols) == 1 else tuple(r[2:])) for r in map(_t, rows)]
     for table, (col, key) in INTERVAL_TABLES.items():
         if key == "vin":
             conn.execute(f"DELETE FROM {table} WHERE vin = %s AND {span}", (vin, lo, hi))
@@ -200,18 +246,27 @@ def clear_import(conn, vin: str, drive_id, import_id: str, lo: datetime, hi: dat
     # The ids of the drives and charges removed here go back to the rows that replace
     # them (write_history): a rewrite used to give every one a new id, so an open drive
     # page went 404 within the hour and a tag or a hide keyed by the id lost its drive.
-    kept = {"trips": {}, "charging_sessions": {}}
-    for i, at in map(
-        _t, conn.execute(f"DELETE FROM trips WHERE vin = %s AND {trip_span} AND id NOT IN (SELECT ref_id FROM cc_manual WHERE kind = 'drive') RETURNING id, start_date", (vin, lo, hi)).fetchall()
-    ):
-        kept["trips"].setdefault(at, i)
-    for i, at in map(
+    # Each id's end goes back too: a drive or charge the window first wrote while it was
+    # still going comes back longer under the same id, and what was worked out from its
+    # old end is not true of the new one (write_history drops it).
+    kept = {"trips": {}, "charging_sessions": {}, "heads": heads, "ends": {"trips": {}, "charging_sessions": {}}}
+    for i, at, end in map(
         _t,
         conn.execute(
-            f"DELETE FROM charging_sessions WHERE vin = %s AND {charge_span} AND id NOT IN (SELECT ref_id FROM cc_manual WHERE kind = 'charge') RETURNING id, session_start_date", (vin, lo, hi)
+            f"DELETE FROM trips WHERE vin = %s AND {trip_span} AND id NOT IN (SELECT ref_id FROM cc_manual WHERE kind = 'drive') RETURNING id, start_date, destination_date", (vin, lo, hi)
+        ).fetchall(),
+    ):
+        kept["trips"].setdefault(at, i)
+        kept["ends"]["trips"][i] = end
+    for i, at, end in map(
+        _t,
+        conn.execute(
+            f"DELETE FROM charging_sessions WHERE vin = %s AND {charge_span} AND id NOT IN (SELECT ref_id FROM cc_manual WHERE kind = 'charge') RETURNING id, session_start_date, session_end_date",
+            (vin, lo, hi),
         ).fetchall(),
     ):
         kept["charging_sessions"].setdefault(at, i)
+        kept["ends"]["charging_sessions"][i] = end
     if rolling:
         conn.execute("DELETE FROM cc_positions WHERE import_id = %s AND at >= %s AND at <= %s", (import_id, lo, hi))
         conn.execute("DELETE FROM cc_software WHERE import_id = %s AND seen_at >= %s AND seen_at <= %s", (import_id, lo, hi))
@@ -225,6 +280,30 @@ def clear_import(conn, vin: str, drive_id, import_id: str, lo: datetime, hi: dat
     conn.execute("DELETE FROM cc_charge_extras WHERE vin = %s AND start_date >= %s AND start_date <= %s", (vin, lo, hi))
     conn.execute("DELETE FROM cc_imports WHERE id = %s", (import_id,))
     return kept
+
+
+def clear_overlap(conn, vin: str, import_id: str, lo: datetime, hi: datetime) -> None:
+    """A file import's span is its own: the positions and software rows another import left
+    inside it go too (clear_import takes only this import's), or a wider export loaded over
+    a narrower one would hold every reading twice. Rows with no import id are the live
+    recorder's and stay."""
+    conn.execute("DELETE FROM cc_positions WHERE vin = %s AND at >= %s AND at <= %s AND import_id IS NOT NULL AND import_id <> %s", (vin, lo, hi, import_id))
+    conn.execute("DELETE FROM cc_software WHERE vin = %s AND seen_at >= %s AND seen_at <= %s AND import_id IS NOT NULL AND import_id <> %s", (vin, lo, hi, import_id))
+
+
+def keep_heads(rows, heads) -> list:
+    """A replay's stretches for one table with the stretches it opened inside put back.
+    A head the replay's first stretch carries on (same value, starting before the head
+    ended) becomes one stretch from the head's start; any other head ends where the
+    replay's first stretch begins; with nothing new for the table it stays whole."""
+    rows = sorted(rows, key=lambda r: r[0])
+    out = []
+    for a, b, v in heads or ():
+        if rows and rows[0][0] <= b and rows[0][2] == v and a < rows[0][0]:
+            rows[0] = (a, rows[0][1], v)
+        else:
+            out.append((a, min(b, rows[0][0]) if rows else b, v))
+    return out + rows
 
 
 def with_kept_ids(rows, kept: dict, at: int) -> tuple[list, list]:
@@ -241,6 +320,14 @@ def with_kept_ids(rows, kept: dict, at: int) -> tuple[list, list]:
     return reuse, fresh
 
 
+def moved_ends(reuse: list, ends: dict) -> list:
+    """The rows given back their old id (with_kept_ids: id, vin, start, end, ...) whose end
+    is not where it was. Their facts were worked out to the old end: a drive the hourly
+    rebuild first wrote twenty minutes in kept the battery level of minute twenty for good,
+    and one 49-mile drive read 83 to 81 %. The rows go, and the next fill works them out again."""
+    return [r for r in reuse if r[0] in ends and ends[r[0]] != r[3]]
+
+
 def write_history(conn, vin: str, name: str, manufacturer: str, model: str | None, capacity: float | None, out: dict, import_id: str, filename: str, tz: ZoneInfo, rolling: bool = False) -> dict:
     # cc_positions belongs to the recorder, columns and all. An import can run before
     # the recorder ever has, on a database that has only just been created, so its
@@ -248,6 +335,8 @@ def write_history(conn, vin: str, name: str, manufacturer: str, model: str | Non
     conn.execute(POSITIONS_DDL)
     conn.execute(IMPORT_DDL)
     conn.execute(MANUAL_DDL)
+    conn.execute(driveedits.DDL)
+    driveedits.lock(conn, vin)  # a drive edit made now waits for this import, and the other way round
     conn.execute("INSERT INTO vehicles (vin, name, manufacturer, model, type) VALUES (%s, %s, %s, %s, 'ELECTRIC') ON CONFLICT (vin) DO NOTHING", (vin, name, manufacturer, model))
     drive = _t(conn.execute("SELECT id FROM drives WHERE vin = %s ORDER BY id LIMIT 1", (vin,)).fetchone())
     if drive is None:
@@ -262,12 +351,22 @@ def write_history(conn, vin: str, name: str, manufacturer: str, model: str | Non
     kept = {"trips": {}, "charging_sessions": {}}
     if prev:
         lo, hi, first_at = replace_span(prev, a, b, rolling)
+        driveedits.unapply(conn, vin, lo, hi)  # the drives go back as the source had them, and the edits are put on again below
         kept = clear_import(conn, vin, drive_id, import_id, lo, hi, rolling)
-    elif rolling:
-        # a rolling import's first write still owns its window: whatever another source
-        # left there (the export's last rows at the same second) goes first
+        if not rolling:
+            clear_overlap(conn, vin, import_id, lo, hi)
+    else:
+        # a first write owns its span too: a rolling import its window (whatever another
+        # source left there, the export's last rows at the same second, goes first), a file
+        # its whole range. An export that overlaps one loaded before (a wider range of the
+        # same car, a second file of the same months) replaces those rows; left in place
+        # they collide with its own on (vin, start_date) and the load fails.
+        driveedits.unapply(conn, vin, a, b)
         kept = clear_import(conn, vin, drive_id, import_id, a, b, rolling)
+        if not rolling:
+            clear_overlap(conn, vin, import_id, a, b)
     counts = {}
+    out = {**out, **{k: keep_heads(out.get(k, []), kept.get("heads", {}).get(k)) for _, k, *_ in RUN_TABLES}}
     for table, (col, key) in INTERVAL_TABLES.items():
         rows = out[table]
         if key == "vin":
@@ -301,6 +400,9 @@ def write_history(conn, vin: str, name: str, manufacturer: str, model: str | Non
     ]
     reuse, fresh = with_kept_ids(trip_rows, kept["trips"], at=1)
     counts["trips"] = copy_rows(conn, "trips", trip_cols, fresh) + (copy_rows(conn, "trips", ("id", *trip_cols), reuse) if reuse else 0)
+    moved = moved_ends(reuse, kept.get("ends", {}).get("trips", {}))
+    if moved:
+        driveedits.forget(conn, vin, [r[0] for r in moved], [r[2] for r in moved])
     charge_cols = (
         "vin",
         "session_start_date",
@@ -330,6 +432,9 @@ def write_history(conn, vin: str, name: str, manufacturer: str, model: str | Non
     ]
     reuse, fresh = with_kept_ids(charge_rows, kept["charging_sessions"], at=1)
     counts["charging_sessions"] = copy_rows(conn, "charging_sessions", charge_cols, fresh) + (copy_rows(conn, "charging_sessions", ("id", *charge_cols), reuse) if reuse else 0)
+    moved = moved_ends(reuse, kept.get("ends", {}).get("charging_sessions", {}))
+    if moved and driveedits._has(conn, "cc_charge_facts"):
+        conn.execute("DELETE FROM cc_charge_facts WHERE session_id = ANY(%s)", ([r[0] for r in moved],))
     counts["cc_positions"] = copy_rows(
         conn,
         "cc_positions",
@@ -340,7 +445,12 @@ def write_history(conn, vin: str, name: str, manufacturer: str, model: str | Non
     )
     counts["cc_inside_temperatures"] = copy_rows(conn, "cc_inside_temperatures", ("vin", "first_date", "last_date", "inside_f"), ((vin, a, b, v) for a, b, v in out.get("inside_temperatures", [])))
     counts["cc_modes"] = copy_rows(conn, "cc_modes", ("vin", "first_date", "last_date", "sentry", "climate"), ((vin, a, b, v[0], v[1]) for a, b, v in out.get("modes", [])))
-    counts["cc_trip_extras"] = copy_rows(conn, "cc_trip_extras", ("vin", "start_date", "fsd_miles"), ((vin, t["start_date"], t["fsd_miles"]) for t in out["trips"] if t.get("fsd_miles") is not None))
+    counts["cc_trip_extras"] = copy_rows(
+        conn,
+        "cc_trip_extras",
+        ("vin", "start_date", "fsd_miles", "kwh"),
+        ((vin, t["start_date"], t.get("fsd_miles"), t.get("kwh")) for t in out["trips"] if t.get("fsd_miles") is not None or t.get("kwh") is not None),
+    )
     counts["cc_charge_extras"] = copy_rows(
         conn, "cc_charge_extras", ("vin", "start_date", "network"), ((vin, c["session_start_date"], c["network"]) for c in out["charging_sessions"] if c.get("network"))
     )
@@ -348,9 +458,61 @@ def write_history(conn, vin: str, name: str, manufacturer: str, model: str | Non
         conn, "cc_charging_electrics", ("vin", "first_date", "last_date", "volts", "amps"), ((vin, a, b, v[0], v[1]) for a, b, v in out.get("charging_electrics", []))
     )
     counts["cc_software"] = copy_rows(conn, "cc_software", ("vin", "version", "seen_at", "import_id"), ((vin, v, x, import_id) for x, _y, v in real_software_changes(conn, vin, out["software"])))
+    counts["drive_edits"] = driveedits.reapply(conn, vin)
     conn.execute("INSERT INTO cc_imports (id, vin, filename, rows, first_at, last_at) VALUES (%s, %s, %s, %s, %s, %s)", (import_id, vin, filename, out["rows"], first_at, b))
     conn.commit()
     return counts
+
+
+def apply_trip_plan(conn, vin: str, actions: list[dict]) -> dict:
+    """Write what driverebuild.plan_changes decided: new drives, drives given a new end (and
+    start), drives merged away. A drive keeps its id, so its tags, hides and open page stay.
+    What was worked out for a drive that changed is dropped for the next fill (driveedits.forget)."""
+    counts = {"create": 0, "change": 0, "merge": 0, "remove": 0}
+    gone, changed, starts = [], [], []
+    for a in actions:
+        w = a.get("drive")
+        if a["do"] == "create":
+            conn.execute(
+                "INSERT INTO trips (vin, start_date, destination_date, start_odometer, destination_odometer, start_position_latitude, start_position_longitude,"
+                " destination_position_latitude, destination_position_longitude) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (vin, w["start"], w["end"], w["start_odometer"], w["destination_odometer"], w["start_lat"], w["start_lon"], w["end_lat"], w["end_lon"]),
+            )
+        elif a["do"] == "change":
+            new_start = a["start"] == w["start"]  # otherwise the drive keeps the start it has
+            conn.execute(
+                "UPDATE trips SET start_date = %s, destination_date = %s, destination_odometer = %s, destination_position_latitude = %s, destination_position_longitude = %s"
+                + (", start_odometer = %s, start_position_latitude = %s, start_position_longitude = %s" if new_start else "")
+                + " WHERE id = %s",
+                (a["start"], w["end"], w["destination_odometer"], w["end_lat"], w["end_lon"]) + ((w["start_odometer"], w["start_lat"], w["start_lon"]) if new_start else ()) + (a["id"],),
+            )
+            changed.append(a["id"])
+            starts += [a["was"][0], a["start"]]
+        elif a["do"] in ("merge", "remove"):  # a remove is a trip that never moved
+            gone.append(a["id"])
+            starts.append(a["start"])
+        else:
+            continue
+        counts[a["do"]] += 1
+    if gone:
+        conn.execute("DELETE FROM trips WHERE id = ANY(%s) AND id NOT IN (SELECT ref_id FROM cc_manual WHERE kind = 'drive')", (gone,))
+        if driveedits._has(conn, "cc_drive_tags"):
+            conn.execute("DELETE FROM cc_drive_tags WHERE trip_id = ANY(%s)", (gone,))
+    driveedits.forget(conn, vin, changed + gone, starts)
+    return counts
+
+
+def apply_car_on(conn, vin: str, since: datetime, now: datetime, stretches: list[dict]) -> bool:
+    """Make the car's car-on stretches that began in [since, now) these. Rows already right are
+    left alone (the rebuild runs every few minutes; most runs change nothing). True when it wrote."""
+    want = sorted((a["start"], a["end"]) for a in stretches)
+    have = sorted(_t(r) for r in conn.execute("SELECT first_date, last_date FROM cc_car_on WHERE vin = %s AND first_date >= %s AND first_date < %s", (vin, since, now)).fetchall())
+    if want == have:
+        return False
+    conn.execute("DELETE FROM cc_car_on WHERE vin = %s AND first_date >= %s AND first_date < %s", (vin, since, now))
+    for a, b in want:
+        conn.execute("INSERT INTO cc_car_on (vin, first_date, last_date) VALUES (%s, %s, %s)", (vin, a, b))
+    return True
 
 
 def fill_after_import(conn, vin: str, tz: ZoneInfo) -> tuple[int, int]:

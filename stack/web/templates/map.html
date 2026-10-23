@@ -2,34 +2,97 @@
 {% import "_info.html" as i %}
 {% block title %}Map · Car Command{% endblock %}
 {% block head %}
-{% include "_maphead.html" %}
+{% include "_maphead.html" %}{# view.js: base.html's, deferred like the map's #}
 {% endblock %}
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}
-<div class="pbar"><h1>Map</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span><span class="sp"></span>
-  <nav class="stepper" aria-label="Month"><a href="{{ root }}/map?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/map?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav></div>
+<div class="pbar"><h1>Map</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span><span class="sp"></span>
+  <nav class="stepper" id="map-month" aria-label="Month"><a href="{{ root }}/map?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/map?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav></div>
 <div class="chips" role="group" aria-label="Show on the map">
   {% if car.garage and vehicles|length > 1 %}{% for v in vehicles %}<button type="button" class="chip-t on" data-car="{{ v.vin }}" aria-pressed="true"><i class="c{{ colors.get(v.vin, 0) }}"></i>{{ v.name }}</button>{% endfor %}{% endif %}
-  <button type="button" class="chip-t on" data-layer="charges" aria-pressed="true"><i class="k-charge"></i>Charges</button>
-  <button type="button" class="chip-t" data-layer="cells" aria-pressed="false"><i class="k-cells"></i>Everywhere, all time</button>
+  <button type="button" class="chip-t on" data-layer="charges" aria-pressed="true"><svg class="ic k-charge" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M13 3 5.5 13.5h6L10.5 21 18.5 10.5h-6L13 3z"/></svg>This month</button>
+  <button type="button" class="chip-t" data-layer="heat" aria-pressed="false"><i class="k-heat"></i>Where it charges</button>
+  <button type="button" class="chip-t" data-layer="cells" aria-pressed="false"><i class="k-cells"></i>Everywhere</button>
 </div>
 <div id="map" class="map tall"></div>
-<div class="muted small map-note"><span id="map-note">{{ positions|num }} positions{% if since %} since {{ since|local('%b %Y') }}{% endif %}</span> {% call i.info('The map') %}The month's drives in each car's colour, and charges, red where fast. Everywhere: every 100 m cell the cars have reported from, all time.{% endcall %}</div>
+<div class="heat-key" id="heat-key" hidden><span class="hk-bar" aria-hidden="true"></span><span id="hk-text"></span></div>
+<section class="group heat-top" id="heat-top" hidden><h2 class="sec">Where it charges <a class="sec-more" href="{{ root }}/charging{{ q }}#where">Every place ›</a></h2><div class="group-b" id="heat-list"></div></section>
+<div class="muted small map-note"><span id="map-note">{{ positions|num }} positions{% if since %} since {{ since|local('%b %Y') }}{% endif %}</span> {% call i.info('The map') %}The month's drives in each car's colour, and charges, red where fast. Where it charges: every charge ever, as heat. Everywhere: every 100 m cell the cars have reported from, all time.{% endcall %}</div>
 <script>
-// the map starts at once; it never waits for the brand's arrival
-(function () {
-  var map = CCMap.base("map", { preferCanvas: true, scrollWheelZoom: true });
-  map.setView([{{ center[0] }}, {{ center[1] }}], 9);
+// the map starts once its deferred scripts have run (DOMContentLoaded); it never waits for the brand's arrival
+document.addEventListener("DOMContentLoaded", function () {
+  var map = CCMap.base("map", { preferCanvas: true, scrollWheelZoom: true, hint: true, full: true });
+  // The view lives in the link (static/view.js): centre "c", zoom "z", the layers on "l" (when not
+  // just This month), the cars hidden "x" (the last six characters of each VIN). A link with a centre opens there
+  // and the data does not re-fit the map; otherwise the view is written once the first fit is done.
+  var LAYERS = ["charges", "heat", "cells"], q = CCView.params(), saved = CCView.decodeMap(q), track = false, pinned = false;
+  map.setView(saved ? [saved.lat, saved.lon] : [{{ center[0] }}, {{ center[1] }}], saved ? saved.z : 9);
+  function fitted() { track = true; }
+  function keepView() { if (track) { var c = map.getCenter(); CCView.set(CCView.encodeMap(c.lat, c.lng, map.getZoom())); } }
+  map.on("moveend", keepView);
+  if (saved) { track = true; pinned = true; }  // a link's view stays until the person moves a layer
   // what is switched on; sync() puts exactly those layers on the map
-  var on = { charges: true, cells: false, cars: {} }, routes = {}, charges = {}, cells = null, loading = false, all = [];
+  var on = { charges: true, cells: false, heat: false, cars: {} }, routes = {}, charges = {}, cells = null, loading = false, all = [];
+  var heatPts = null, heatTop = null, heat = null, heatLoading = false;
   // the cells name each car by its place in the garage; its colour is looked up here, so a new one shows at once
   var order = {{ (vehicles or [])|map(attribute='vin')|list|tojson }}, colours = {{ colors|tojson }};
   function carOn(v) { return on.cars[v] !== false; }
+  function keepLayers() {
+    var l = CCView.encodeList(LAYERS.filter(function (k) { return on[k]; }), ["charges"]), x = CCView.encodeIds(order.filter(function (v) { return !carOn(v); }));
+    CCView.set({ l: l, x: x });
+    // the month stepper's links are built by the server, which knows neither: they carry the layers on
+    document.querySelectorAll("#map-month a[href]").forEach(function (a) {
+      var h = a.getAttribute("href"), i = h.indexOf("?");
+      a.setAttribute("href", (i < 0 ? h : h.slice(0, i)) + CCView.merged(i < 0 ? "" : h.slice(i), { l: l, x: x }));
+    });
+  }
+  // layers and hidden cars the link carries, put on the chips before anything draws
+  var lit = CCView.decodeList(q.l, LAYERS, ["charges"]);
+  LAYERS.forEach(function (k) { on[k] = lit.indexOf(k) >= 0; });
+  var hidden = CCView.decodeIds(q.x);
+  order.forEach(function (v) { if (hidden.indexOf(CCView.tail(v)) >= 0) on.cars[v] = false; });
   function show(layer, yes) { if (yes) layer.addTo(map); else map.removeLayer(layer); }
   function sync() {
-    Object.keys(routes).forEach(function (v) { show(routes[v], carOn(v)); });
+    Object.keys(routes).forEach(function (v) { show(routes[v], on.charges && carOn(v)); });
+    // Where it charges is all time: the month's lines fade under it, and the month picker rests
+    var box = document.getElementById("map"), step = document.getElementById("map-month");
+    box.classList.toggle("heat-on", on.heat);
+    if (step) { step.classList.toggle("rest", on.heat); step.setAttribute("aria-disabled", on.heat ? "true" : "false"); }
+    document.getElementById("heat-key").hidden = !(on.heat && heatPts);
+    document.getElementById("heat-top").hidden = !(on.heat && heatTop && heatTop.length);
     Object.keys(charges).forEach(function (v) { show(charges[v], on.charges && carOn(v)); });
     if (cells) Object.keys(cells).forEach(function (v) { show(cells[v], on.cells && carOn(v)); });
+    // one heat layer for the cars switched on, drawn again when that changes
+    if (heat) { map.removeLayer(heat); heat = null; }
+    if (on.heat && heatPts) {
+      var css = getComputedStyle(document.documentElement);
+      heat = CCMap.heat(heatPts.filter(function (c) { return carOn(order[c[3]] || "car"); }), css.getPropertyValue("--charging").trim() || "#2E9E5B", css.getPropertyValue("--ink").trim() || "#1B1A21").addTo(map);
+    }
+  }
+  function loadHeat(done) {
+    fetch("{{ root }}/api/charge-heat?vin={{ car.vin }}").then(function (r) { return r.json(); }).then(function (got) {
+      var list = got.pts || [];
+      heatPts = list;
+      heatTop = got.top || [];
+      var most = 0, total = 0;
+      list.forEach(function (c) { if (c[2] > most) most = c[2]; total += c[2]; });
+      document.getElementById("hk-text").textContent = "1 to " + most.toLocaleString() + " charges at one spot · " + total.toLocaleString() + " in all";
+      var host = document.getElementById("heat-list");
+      heatTop.forEach(function (p) {
+        var row = document.createElement("div"), l = document.createElement("span"), v = document.createElement("span");
+        row.className = "set-row"; l.className = "set-l"; v.className = "set-v";
+        l.textContent = p.where;
+        var s = document.createElement("span"); s.className = "set-s";
+        s.textContent = p.n.toLocaleString() + (p.n === 1 ? " charge" : " charges") + (p.per_kwh != null ? " · {{ cur }}" + p.per_kwh.toFixed(3) + " a kWh" : "");
+        l.appendChild(s);
+        var b = document.createElement("b"); b.textContent = Math.round(p.kwh).toLocaleString(); v.appendChild(b); v.appendChild(document.createTextNode(" kWh"));
+        row.appendChild(l); row.appendChild(v); host.appendChild(row);
+      });
+      heatLoading = false;
+      // the heat is all time; the month's view may not hold it all
+      if (list.length && !pinned) { var b = L.latLngBounds(list.map(function (c) { return [c[0], c[1]]; })); if (!map.getBounds().contains(b)) map.fitBounds(b, { padding: [24, 24] }); }
+      done();
+    }).catch(function () { heatLoading = false; document.getElementById("map-note").textContent = "The charges did not load."; });
   }
   ({{ (pins or [])|tojson }}).forEach(function (p) {
     var v = p.v || "car";
@@ -45,8 +108,9 @@
       all = all.concat(s.pts);
     });
     sync();
-    if (all.length) map.fitBounds(all, { padding: [24, 24] });
-  }).catch(function () { if (all.length) map.fitBounds(all, { padding: [24, 24] }); });
+    if (all.length && !pinned) map.fitBounds(all, { padding: [24, 24] });
+    fitted();
+  }).catch(function () { if (all.length && !pinned) map.fitBounds(all, { padding: [24, 24] }); fitted(); });
   function loadCells(done) {
     // the mark pulls in while every place the cars have been is gathered (several seconds on a long history)
     var note = document.getElementById("map-note"), tpl = document.getElementById("cc-wait");
@@ -74,9 +138,20 @@
       else on[b.dataset.layer] = now;
       // one load however fast the chip is pressed; sync() then shows whatever is switched on by the time it lands
       if (b.dataset.layer === "cells" && now && !cells) { if (!loading) { loading = true; loadCells(sync); } return; }
+      if (b.dataset.layer === "heat" && now && !heatPts) { if (!heatLoading) { heatLoading = true; loadHeat(sync); } return; }
       sync();
     });
+    b.addEventListener("click", function () { pinned = false; keepLayers(); });
   });
-})();
+  // chips as the link has them, and the layers that load on demand
+  keepLayers();  // the stepper's links take the view's layers at once
+  document.querySelectorAll(".chips .chip-t").forEach(function (b) {
+    var yes = b.dataset.car ? carOn(b.dataset.car) : on[b.dataset.layer];
+    b.classList.toggle("on", yes);
+    b.setAttribute("aria-pressed", yes ? "true" : "false");
+  });
+  if (on.heat) { heatLoading = true; loadHeat(sync); }
+  if (on.cells) { loading = true; loadCells(sync); }
+});
 </script>
 {% endblock %}

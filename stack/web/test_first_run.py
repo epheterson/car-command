@@ -95,7 +95,7 @@ def test_from_the_machine_itself_the_form_asks_for_no_code_and_sets_the_password
 def test_from_outside_the_form_asks_for_the_code(app_module, fresh):
     c = client_from(app_module, "203.0.113.9")
     page = c.get("/setup")
-    assert page.status_code == 200 and 'name="code"' in page.text and "make setup-code" in page.text and "setup_code.py" in page.text
+    assert page.status_code == 200 and 'name="code"' in page.text and "setup_code.py" in page.text
 
 
 def test_from_outside_without_the_code_nothing_is_set(app_module, fresh):
@@ -167,7 +167,7 @@ def test_a_peer_in_the_containers_own_subnet_needs_the_code_the_gateway_included
 def test_the_setup_page_says_whether_it_needs_the_code(app_module, fresh):
     assert client_from(app_module, "192.168.1.20").get("/setup").text.count('name="code"') == 0
     far = client_from(app_module, "203.0.113.9").get("/setup").text
-    assert far.count('name="code"') == 1 and "docker compose exec web python3 setup_code.py" in far
+    assert far.count('name="code"') == 1 and "docker compose -f stack/docker-compose.yml exec web python3 setup_code.py" in far
 
 
 def test_the_keyless_rule_for_a_peer_and_its_headers():
@@ -459,3 +459,18 @@ def test_in_kubernetes_no_network_counts_as_home(app_module, fresh, monkeypatch)
         assert auth.setup_keyless_why(peer, {}, [], first_start=t0) == "no"
     page, r = claim(app_module, "192.168.1.20")
     assert 'name="code"' in page.text and "first hour" not in page.text and r.status_code == 403 and "password" not in fresh
+
+
+def test_a_wrong_setup_code_keeps_what_was_typed_in_the_password_fields(app_module, fresh):
+    c = client_from(app_module, "203.0.113.9")
+    page = c.get("/setup")
+    r = c.post("/setup", data={"password": "a good long password", "confirm": "a good long password", "code": "AAAA-AAAA-AAAA", "csrf_token": _token(page.text)})
+    assert r.status_code == 403 and "not right" in r.text
+    assert r.text.count('value="a good long password"') == 2 and "password" not in fresh
+
+
+def test_a_mismatch_keeps_the_fields_too(app_module, fresh):
+    c = client_from(app_module, "192.168.1.20")
+    page = c.get("/setup")
+    r = c.post("/setup", data={"password": "a good long password", "confirm": "another one entirely", "csrf_token": _token(page.text)})
+    assert 'value="a good long password"' in r.text and "password" not in fresh

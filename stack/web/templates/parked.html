@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% import "_parts.html" as parts %}
+{% import "_info.html" as i %}
+{% import "_prevnext.html" as pn %}
+{% block title %}Parked · {{ start|local }} · Car Command{% endblock %}
+{% block head %}{% if close_maps and lat is not none %}{% include "_maphead.html" %}{% endif %}{% endblock %}
+{% block body %}
+{% set dq = '&vin=' ~ car.vin %}{% set f = figs %}
+{# A parked stretch: where and how long (its battery bold at the end), two headline figures (what
+   it lost, what ran), the battery line with Sentry and climate shaded, then the rest in a grid. #}
+<div class="pbar">
+  <h1>{{ 'Parked at ' if where else 'Parked' }}{% if where %}{{ place_refs(where, [where_ref]) }}{% endif %}</h1><span class="pbar-ctx keep">{{ start|local('%a %b %-d, %-I:%M %p') }} → {% if end %}{{ end|local('%-I:%M %p') if end|local('%Y-%m-%d') == start|local('%Y-%m-%d') else end|local('%a %b %-d, %-I:%M %p') }}{% else %}now{% endif %}</span>
+  <span class="sp"></span>{{ pn.inline(near, root, '?vin=' ~ car.vin) }}<a class="btn sm" href="{{ root }}/day?date={{ start|local('%Y-%m-%d') }}{{ dq }}">Day ›</a>
+</div>
+<div class="drv-sum"><b>{{ f.duration|duration }}{% if f.on_h >= 0.05 %} · car on {{ f.on|duration }}{% endif %}{% if f.cost %} · {{ cur }}{{ f.cost|num(2) }}{% endif %}</b>{% if f.cost %}{% call i.info('What it cost') %}The kWh lost at this car's home price a kWh.{% endcall %}{% endif %}<span class="sp"></span>{% if f.level_start is not none and f.level_end is not none %}<b class="drv-bat">{{ f.level_start|num(1) }}→{{ f.level_end|num(1) }}%</b>{% endif %}</div>
+{% if close_maps and lat is not none %}<figure class="strip-map"><div id="pk-map" class="map chg-map" role="img" aria-label="Where the car was parked"></div>{% if where %}<figcaption>{{ where|short_place }}</figcaption>{% endif %}</figure>{% endif %}
+{% set usual = rates[f.ran] if rates and rates[f.ran] is not none else none %}
+<div class="tiles pair heroes">
+  {% if f.range_lost is not none or f.drop is not none %}<div class="tile"><span class="l">Lost</span><span class="v">{% if f.range_lost is not none %}{{ [f.range_lost, 0]|max|dist(1) }}<small>{{ u.dist }}</small>{% else %}{{ [f.drop, 0]|max|num(1) }}<small>%</small>{% endif %}</span><span class="d">{% if f.kwh_lost and f.kwh_lost > 0 %}{{ f.kwh_lost|num(2) }} kWh{% endif %}{% if f.per_hour is not none %}{{ ' · ' if f.kwh_lost and f.kwh_lost > 0 }}{{ [f.per_hour, 0]|max|perdist(2) }} {{ u.dist }} an hour{% if usual is not none %}, usually {{ usual|perdist(2) }}{% endif %}{% endif %}</span></div>{% endif %}
+  {% if f.sentry_h >= 0.02 %}<div class="tile"><span class="l">{{ guard }} on</span><span class="v">{{ f.sentry|duration }}</span><span class="d">{% if f.climate_h >= 0.02 %}climate {{ f.climate|duration }}{% else %}no climate{% endif %}</span></div>
+  {% elif f.climate_h >= 0.02 %}<div class="tile"><span class="l">Climate on</span><span class="v">{{ f.climate|duration }}</span><span class="d">no {{ guard }}</span></div>
+  {% else %}<div class="tile"><span class="l">Running</span><span class="v">Nothing</span><span class="d">no {{ guard }}, no climate</span></div>{% endif %}
+</div>
+{{ parts.chart('parked-' ~ start.timestamp()|int, chart, title=false) }}
+{# every other figure, a step quieter #}
+<dl class="dgrid">
+  {% if f.on_h >= 0.05 %}<div><dt>Car on</dt><dd>{{ f.on|duration }}<small>parked, no drive</small></dd></div>{% endif %}
+  {% if f.range_start is not none and f.range_end is not none %}<div><dt>Rated range</dt><dd>{{ f.range_start|dist(1) }}→{{ f.range_end|dist(1) }} {{ u.dist }}</dd></div>{% endif %}
+  {% if f.asleep_share is not none %}<div><dt>Asleep</dt><dd>{{ (f.asleep_share * 100)|num }}%<small>{{ (f.hours * (1 - f.asleep_share))|num(1) }} h awake</small></dd></div>{% endif %}
+  <div><dt>Climate</dt><dd>{{ f.climate|duration if f.climate_h >= 0.02 else 'off' }}</dd></div>
+  {% if f.inside[0] is not none and f.inside[1] is not none %}<div><dt>Cabin</dt><dd>{{ f.inside[0]|temp }}→{{ f.inside[1]|temp }} {{ u.temp }}</dd></div>{% endif %}
+  {% if f.outside[0] is not none and f.outside[1] is not none %}<div><dt>Outside</dt><dd>{{ f.outside[0]|temp }}→{{ f.outside[1]|temp }} {{ u.temp }}</dd></div>{% endif %}
+  {% if usual is not none %}<div><dt>An hour usually</dt><dd>{{ usual|perdist(2) }} {{ u.dist }}<small>{{ {'idle': 'with nothing on', 'sentry': 'with ' ~ guard ~ ' on', 'climate': 'with climate on'}[f.ran] }}</small></dd></div>{% endif %}
+</dl>
+<section>
+  <h2>Every reading <span class="more">{% if samples %}{{ readings|num }} changes{% if every > 1 %}, 1 in {{ every|num }} shown{% endif %}{% endif %}</span></h2>
+  {% if samples %}
+  <details class="readings">
+    <summary>Show the readings</summary>
+    <table class="readings">
+      <thead><tr><th>Time</th><th class="r">Battery</th><th class="r">Rated {{ u.dist }}</th><th class="r">Cabin</th><th class="r">Outside</th><th>State</th></tr></thead>
+      <tbody>
+      {% for s in samples %}
+        <tr>
+          <td>{{ s.at|local('%-I:%M %p') }}</td>
+          <td class="r">{% if s.level is not none %}{{ s.level|num(1) }}%{% endif %}</td>
+          <td class="r">{{ s.rated|dist(1) }}</td>
+          <td class="r">{% if s.inside is not none %}{{ s.inside|temp }}{{ u.temp }}{% endif %}</td>
+          <td class="r">{% if s.outside is not none %}{{ s.outside|temp }}{{ u.temp }}{% endif %}</td>
+          <td>{{ 'asleep' if s.asleep else 'awake' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% else %}<div class="empty">No readings inside this stretch</div>{% endif %}
+</section>
+{% if close_maps and lat is not none %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    var at = [{{ lat }}, {{ lon }}];
+    var map = CCMap.base("pk-map", { close: true, still: true, zoomControl: false, dragging: false });
+    ["doubleClickZoom", "touchZoom", "boxZoom", "keyboard", "scrollWheelZoom"].forEach(function (h) { if (map[h]) map[h].disable(); });
+    if (map.attributionControl && !CCMap.satellite()) map.attributionControl.addAttribution(CCMap.credit);
+    L.circleMarker(at, { radius: 7, color: "#fff", fillColor: CCMap.palette[{{ colors.get(car.vin, 0) }}], fillOpacity: 1, weight: 3 }).addTo(map);
+    map.setView(at, 17);
+  });
+</script>
+{% endif %}
+{% endblock %}

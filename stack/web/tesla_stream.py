@@ -29,7 +29,20 @@ from datetime import datetime, timedelta, timezone
 from itertools import groupby
 
 # Enum values arrive by name; the prefix is the enum's, the rest is the meaning.
-ENUM_PREFIXES = ("DetailedChargeState", "ChargeState", "ShiftState", "SentryModeState", "CarType", "WindowState")
+SENTRY_ON = ("Armed", "Aware", "Panic", "Quiet")
+ENUM_PREFIXES = (
+    "DetailedChargeState",
+    "ChargeState",
+    "ShiftState",
+    "SentryModeState",
+    "CarType",
+    "WindowState",
+    "HvacPowerState",
+    "ClimateKeeperModeState",
+    "DefrostModeState",
+    "ChargePortLatch",
+    "CabinOverheatProtectionModeState",
+)
 VALUE_KEYS = {
     "stringValue": "string_value",
     "floatValue": "float_value",
@@ -45,7 +58,25 @@ VALUE_KEYS = {
     "carTypeValue": "car_type_value",
     "doorValue": "door_value",
     "windowStateValue": "window_state_value",
+    "hvacPowerValue": "hvac_power_value",
+    "climateKeeperModeValue": "climate_keeper_mode_value",
+    "defrostModeValue": "defrost_mode_value",
+    "chargePortLatchValue": "charge_port_latch_value",
+    "cabinOverheatProtectionModeValue": "cabin_overheat_protection_mode_value",
 }
+ENUMS = (
+    "shiftStateValue",
+    "chargingValue",
+    "detailedChargeStateValue",
+    "sentryModeStateValue",
+    "carTypeValue",
+    "windowStateValue",
+    "hvacPowerValue",
+    "climateKeeperModeValue",
+    "defrostModeValue",
+    "chargePortLatchValue",
+    "cabinOverheatProtectionModeValue",
+)
 # The Doors message's six bools (protojson leaves out every false one), by the name that survives case and underscores.
 DOORS = {n.lower(): n for n in ("DriverFront", "DriverRear", "PassengerFront", "PassengerRear", "TrunkFront", "TrunkRear")}
 NUMBER = re.compile(r"^-?\d+(\.\d+)?([eE][-+]?\d+)?$")
@@ -80,7 +111,7 @@ def value_of(value: dict):
             return (float(v.get("latitude")), float(v.get("longitude")))
         if camel == "doorValue":
             return {DOORS[k.replace("_", "").lower()]: bool(b) for k, b in (v if isinstance(v, dict) else {}).items() if k.replace("_", "").lower() in DOORS}
-        if camel in ("shiftStateValue", "chargingValue", "detailedChargeStateValue", "sentryModeStateValue", "carTypeValue", "windowStateValue"):
+        if camel in ENUMS:
             name = str(v)
             for p in ENUM_PREFIXES:
                 if name.startswith(p):
@@ -138,7 +169,8 @@ def records(payloads: list[dict]) -> list[tuple[datetime, str, dict]]:
 # ---- sessions. The rules, each pinned by a test in test_tesla_stream.py.
 DRIVING_GEARS = {"D", "R", "N"}
 MOVING_MPH = 0.5
-DRIVE_END = timedelta(minutes=3)  # a stop longer than this in park ends the drive; shorter is a light
+DRIVE_END = timedelta(minutes=3)  # a stretch with no gear and no speed (out of reach, a tunnel) longer than this ends the drive
+PARK_END = timedelta(minutes=1)  # in park longer than this ends the drive; a quicker tap of P while manoeuvring does not
 CHARGING_STATES = {"Starting", "Charging"}
 CHARGE_END = timedelta(minutes=5)  # a pause longer than this ends the charge
 SLEEP_AFTER = timedelta(minutes=15)  # gone this long after a disconnect: asleep
@@ -168,6 +200,7 @@ class _Car:
         self.drive_no = self.charge_no = 0
         self.in_drive = self.in_charge = False
         self.not_driving_since: datetime | None = None
+        self.parked_at: datetime | None = None  # put in park during the drive
         self.not_charging_since: datetime | None = None
         self.session_dc = False
 
@@ -197,10 +230,15 @@ class _Car:
         speed = self.dist(c.get("VehicleSpeed"))
         driving = self.connected and not asleep and (c.get("Gear") in DRIVING_GEARS or (speed or 0) > MOVING_MPH)
         closes_drive = closes_charge = False
+        if not driving and self.in_drive and self.parked_at is None and c.get("Gear") == "P":
+            self.parked_at = t
         if driving:
-            if not self.in_drive or (self.not_driving_since and t - self.not_driving_since > DRIVE_END):
+            # Park ends a drive, as it does in every drive the history holds: a drop-off with
+            # the driver out for 90 s is two drives. A stop in D (a light) is not a stop at all.
+            parked = self.parked_at is not None and t - self.parked_at > PARK_END
+            if not self.in_drive or parked or (self.not_driving_since and t - self.not_driving_since > DRIVE_END):
                 self.drive_no += 1
-            self.in_drive, self.not_driving_since = True, None
+            self.in_drive, self.not_driving_since, self.parked_at = True, None, None
         elif self.in_drive and self.not_driving_since is None:
             # the moment it parks (or leaves) closes the drive: the final odometer and place arrive with it
             self.not_driving_since, closes_drive = t, True
@@ -221,7 +259,11 @@ class _Car:
             self.not_charging_since, closes_charge = t, True
         dc = dc_now or (self.in_charge and self.session_dc)
         kw = (c.get("DCChargingPower") if dc else c.get("ACChargingPower")) or 0.0
-        energy = c.get("DCChargingEnergyIn") if dc and c.get("DCChargingEnergyIn") is not None else c.get("ACChargingEnergyIn")
+        # The pack-side meter, AC or DC: on an AC charge DCChargingEnergyIn is the on-board
+        # charger's output, what reached the battery; ACChargingEnergyIn is its input, 3-10 %
+        # more. Every charge in the history and every efficiency figure is pack side, so the
+        # wall side stands in only when the car sends nothing else.
+        energy = c.get("DCChargingEnergyIn") if c.get("DCChargingEnergyIn") is not None else c.get("ACChargingEnergyIn")
         volts, amps = c.get("PackVoltage"), c.get("PackCurrent")
         loc = c.get("Location") or (None, None)
         sentry = c.get("SentryMode")
@@ -255,9 +297,9 @@ class _Car:
             "elevation": None,
             "power_kw": round(PACK_SIGN * volts * amps / 1000, 3) if volts is not None and amps is not None else None,
             "inside_f": _f(c.get("InsideTemp")),
-            "sentry_raw": "" if sentry is None else ("true" if sentry is True or sentry not in (False, "Off", "Unknown") else "false"),
+            # Idle is Sentry switched off for here (activity.sentry_on); Armed, Aware, Panic and Quiet are on
+            "sentry_raw": "" if sentry is None or sentry is INVALID or sentry == "Unknown" else ("true" if sentry is True or sentry in SENTRY_ON else "false"),
             "climate_raw": "",
-            "fan_on": False,
             "drive_no": self.drive_no if driving or closes_drive else 0,
             "charge_no": self.charge_no if charging or closes_charge else 0,
         }

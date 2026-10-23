@@ -33,3 +33,34 @@ def test_a_drive_by_hand_lays_its_distance_on_the_last_odometer():
     assert row["start_latitude"] == 39.78 and row["end_latitude"] is None and row["level_end"] == 71
     assert drive_from_form(form, TZ, NOW, None, None, None)["start_odometer"] == 0.0
     assert drive_from_form(dict(form, miles="0"), TZ, NOW, None, None, None).startswith("distance is needed")
+
+
+def test_a_drive_added_after_the_fact_reads_the_odometer_of_its_own_start(monkeypatch):
+    import importlib
+    import os
+
+    os.environ.setdefault("DATABASE_URL", "postgresql://u:p@localhost:1/x")
+    os.environ.setdefault("REST_USER", "u")
+    os.environ.setdefault("REST_PASSWORD", "p")
+    app = importlib.import_module("app")
+    seen = []
+
+    class Conn:
+        def execute(self, sql, args=()):
+            seen.append((sql, args))
+            return self
+
+        def fetchone(self):
+            return {"o": 1914.0}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(app, "db", lambda: Conn())
+    at = NOW
+    assert app.last_odometer("V1", at) == 1914.0
+    sql, args = seen[-1]
+    assert "start_date <= %s" in sql and args == ("V1", at, at)

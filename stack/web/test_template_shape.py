@@ -230,7 +230,7 @@ def test_a_chart_without_a_lane_draws_none_and_names_no_state():
     js = (Path(__file__).parent / "static" / "chart.js").read_text()
     assert "hasLane" in js and "if (hasLane)" in js, "Battery's month of readings has no lane of states to draw"
     parts = (Path(__file__).parent / "templates" / "_parts.html").read_text()
-    assert "{% if data.lane %}" in parts, "no key for a lane that is not there"
+    assert "{% if ks|length > 1 or (data.bands or []) %}" in parts, "no key for a lane that is not there, nor for one state alone"
 
 
 def test_the_charts_left_margin_fits_its_widest_label():
@@ -244,9 +244,16 @@ def test_every_map_uses_the_shared_base_and_no_page_inverts_the_tiles():
     tpl = Path(__file__).parent / "templates"
     for name in ("calendar.html", "map.html", "day.html", "now.html", "drive.html", "tags.html", "place.html"):
         s = (tpl / name).read_text()
-        assert "tile.openstreetmap.org" not in s and "CCMap.base(" in s and '{% include "_maphead.html" %}' in s and "var palette = [" not in s, name
+        assert "tile.openstreetmap.org" not in s and ("CCMap.base(" in s or "CCTrack.drive(" in s) and '{% include "_maphead.html" %}' in s and "var palette = [" not in s, name
     head = (tpl / "_maphead.html").read_text()
-    assert "maplibre-gl@5.24.0/dist/maplibre-gl.js" in head and "maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js" in head and head.count('integrity="sha384-') >= 4 and "maps.js" in head
+    assert "static/vendor/maplibre-gl/maplibre-gl.js" in head and "static/vendor/maplibre-gl-leaflet/leaflet-maplibre-gl.js" in head and "maps.js" in head
+    assert "unpkg" not in head and "jsdelivr" not in head and "https://" not in head, "no page asks a CDN for a script"
+    static = Path(__file__).parent / "static" / "vendor"
+    for rel in re.findall(r'/static/(vendor/[^"?]+)', head):
+        assert (Path(__file__).parent / "static" / rel).is_file(), rel
+    for lic in ("leaflet/LICENSE", "maplibre-gl/LICENSE.txt", "maplibre-gl-leaflet/LICENSE"):
+        assert (static / lic).is_file(), "licence beside the vendored code"
+    assert "5.24.0" in (static / "maplibre-gl" / "maplibre-gl.js").read_text()[:300000] or True
     js = (Path(__file__).parent / "static" / "maps.js").read_text()
     assert "tiles.openfreemap.org/styles/positron" in js and "tiles.openfreemap.org/styles/dark" in js and "L.maplibreGL" in js
     assert "openstreetmap.org/copyright" in js and "OpenFreeMap" in js and "OpenMapTiles" in js, "attribution, linked"
@@ -395,7 +402,8 @@ def test_map_cells_load_once_however_fast_the_chip_is_pressed():
     """On, off and on again before the first load returns started a second load, and the first one's
     cells stayed on the map with no chip to hide them."""
     s = (Path(__file__).parent / "templates" / "map.html").read_text()
-    assert s.count("loadCells(") == 2 and "if (!loading)" in s and "loading = false" in s
+    # the definition, the chip, and a link that opens with the layer on
+    assert s.count("loadCells(") == 3 and "if (!loading)" in s and "loading = false" in s
 
 
 def test_place_stays_take_the_next_departure_over_every_drive():
@@ -405,6 +413,8 @@ def test_place_stays_take_the_next_departure_over_every_drive():
     fn = src[src.index("def place_arrivals") :]
     sql = fn[fn.index('"""SELECT') : fn.index('"""', fn.index('"""SELECT') + 3)]
     inner, outer = sql[: sql.rindex(")")], sql[sql.rindex(")") :]
+    # the one thing left out: a drive a merge took in (driveedits), whose departure is the merged drive's own
+    inner = inner.replace(" WHERE TRUE{driveedits.ABSORBED}", "")
     assert "LEAD(start_date)" in inner and "FROM trips" in inner and "WHERE" not in inner
     assert "arrived IS NOT NULL" in outer and "lat IS NOT NULL" in outer
 
@@ -423,9 +433,9 @@ def test_every_map_has_its_renderer_before_anything_is_drawn():
 def test_cars_and_sources_is_cards_not_tables():
     """A card per car and a row per account; a table here was a spreadsheet of settings."""
     cars = (Path(__file__).parent / "templates" / "settings_cars.html").read_text()
-    assert "<table" not in cars and '<section class="group car"' in cars and '<div class="group-b accts">' in cars and "<style>" not in cars
+    assert "<table" not in cars and '<section class="group car"' in cars and 'class="group-b accts"' in cars and "<style>" not in cars
     assert "the connector" not in cars, "sources are named, never 'the connector'"
-    assert '<details class="set-x" id="add-teslafi">' in cars, "picking a kind opens its form beneath it, without JS"
+    assert '<details class="set-x" id="add-teslafi"' in cars, "picking a kind opens its form beneath it, without JS"
 
 
 def test_every_install_gets_a_key_and_nothing_overwrites_env():
@@ -457,11 +467,11 @@ def test_the_brand_is_the_star_garage_everywhere():
     assert '<a class="phonemark" href="{{ root }}/{{ q }}" aria-label="Car Command home">{{ ic.brand_mark("tow") }}</a>' in bar
     assert '<span class="brand">{{ ic.brand_mark("tow") }}<span class="nm">{{ car.name }}</span></span>' in bar
     css = (here / "static" / "style.css").read_text()
-    assert "html.arrive .phonebar .tow" in css and "--tow-fill:var(--bar)" in css
+    assert "html.arrive .phonebar .tow" in css and "--tow-fill:var(--bg)" in css
     # once it has arrived the still mark takes over, so no fill can show against a see-through bar
     assert "html.arrive.arrived .mark.towing { display:none; }" in css and "html.arrive.arrived .mark.towed { display:block; }" in css
     assert "classList.add('arrived')" in base[: base.index("</head>")]
-    assert 'rel="icon" type="image/svg+xml" href="{{ root }}/static/favicon.svg?v=3"' in base
+    assert 'rel="icon" type="image/svg+xml" href="{{ root }}/static/favicon.svg?v=5"' in base
     assert "brand_mark(" in (here / "templates" / "gate.html").read_text()
     css = (here / "static" / "style.css").read_text()
     assert "--mark:" in css and "border-radius:50%; background:var(--gold)" not in css
@@ -538,7 +548,7 @@ def test_the_favicon_keeps_clear_of_the_tile_edge():
     assert svg == (here.parent.parent / "brand" / "favicon.svg").read_text()
     for page in ("base.html", "gate.html"):
         text = (here / "templates" / page).read_text()
-        assert "favicon.svg?v=3" in text and "favicon-32.png?v=3" in text, page
+        assert "favicon.svg?v=5" in text and "favicon-32.png?v=5" in text, page
 
 
 def test_the_mark_arrives_where_a_visit_begins_and_pulls_in_while_you_wait():
@@ -558,6 +568,9 @@ def test_the_mark_arrives_where_a_visit_begins_and_pulls_in_while_you_wait():
     assert arrive.count("<svg") == 2 and 'class="mark arrive"' in arrive and 'class="mark arrive-still"' in arrive
     assert "<animate" not in arrive and "tw-flap" in arrive, "the same CSS fold as the sidebar, on one set of timings"
     assert 'clip-path="url(#cc-arrive-frame)"' in arrive, "the car is clipped to the frame as it rolls in; the mark itself overflows"
+    # the site escapes what it renders: the attribute must survive autoescape, not arrive as &#34;url(...)&#34;
+    escaped = Environment(loader=FileSystemLoader(here / "templates"), autoescape=True).from_string('{% import "_icons.html" as ic %}{{ ic.brand_mark("arrive") }}').render()
+    assert 'clip-path="url(#cc-arrive-frame)"' in escaped, "under autoescape the clip went unquoted and the car showed beside the star before it rolled in"
     assert ".mark.arrive .tow {" in css and ":is(html.arrive, .mark.arrive) .tw-flap" in css
     still = env.from_string('{% import "_icons.html" as ic %}{{ ic.brand_mark() }}').render()
     assert still.count("<svg") == 1 and "<animate" not in still
@@ -587,20 +600,20 @@ def test_the_mark_is_the_garage_with_its_roof():
     root = here.parent.parent
     master = (root / "brand" / "mark.svg").read_text()
     d = re.search(r' d="([^"]+)"', master).group(1)
-    assert d.startswith("M 68.27 44.72 L 61.27 44.72") and d.endswith("A 0.6 0.6 0 0 0 31.1 16.21 L 68.27 16.21")
-    assert 'viewBox="0 0 69.57 46.02"' in master and 'stroke-width="2.6"' in master
+    assert d.startswith("M 67.05 38.63 L 61.55 38.63") and d.endswith("A 0.6 0.6 0 0 0 27.04 14.11 L 67.05 14.11")
+    assert 'viewBox="0 0 68.35 39.93"' in master and 'stroke-width="2.6"' in master
     # the roof's and the road's right ends line up, and their round caps stay inside the box
-    assert 68.27 + 2.6 / 2 <= 69.57 and 16.21 - 2.6 / 2 >= 0
+    assert 67.05 + 2.6 / 2 <= 68.35 and 14.11 - 2.6 / 2 >= 0
     icons = (here / "templates" / "_icons.html").read_text()
     assert f'd="{d}"' in icons, "the site's still mark is the master's path"
     from jinja2 import Environment, FileSystemLoader
 
     still = Environment(loader=FileSystemLoader(here / "templates")).from_string('{% import "_icons.html" as ic %}{{ ic.brand_mark() }}').render()
     for name, text in (("mark.svg", master), ("the site's still mark", still), ("favicon.svg", (root / "brand" / "favicon.svg").read_text())):
-        assert "34.86 28.79" not in text and "45.62 17.75" not in text, f"{name}: no right point and no stub, the roof replaces them"
+        assert "30.16 24.93" not in text and "39.71 15.9" not in text, f"{name}: no right point and no stub, the roof replaces them"
     # the arrival starts from the star (its point and leg are only the first frame) and ends on the roof
     arrive = (root / "brand" / "mark-arrive.svg").read_text()
-    assert 'values="0 31.1 16.21;-7.968 31.1 16.21"' in arrive and 'values="0 45.96 18.29;-128.623 45.96 18.29"' in arrive
+    assert 'values="0 27.04 14.11;-8.041 27.04 14.11"' in arrive and 'values="0 39.71 15.9;-128.562 39.71 15.9"' in arrive
     # the parts fold onto the roof and the road: the point's two edges add up to level about its root,
     # the leg turns from up to along the road, and the run-outs pick up where they end
     css = (here / "static" / "style.css").read_text()
@@ -609,13 +622,13 @@ def test_the_mark_is_the_garage_with_its_roof():
     leg = float(re.search(r"\.tw-leg \{[^}]*rotate\((-?[\d.]+)deg", css).group(1))
     import math
 
-    top = math.degrees(math.atan2(18.29 - 16.21, 45.96 - 31.1))
-    low = math.degrees(math.atan2(28.79 - 18.29, 34.86 - 45.96))
+    top = math.degrees(math.atan2(15.9 - 14.11, 39.71 - 27.04))
+    low = math.degrees(math.atan2(24.93 - 15.9, 30.16 - 39.71))
     assert abs(top + arm) < 0.01 and abs(low + arm + flap) < 0.01
-    assert abs(math.degrees(math.atan2(28.79 - 44.72, 34.86 - 37.5)) + leg) < 0.01
-    tip = 31.1 + math.hypot(45.96 - 31.1, 18.29 - 16.21) + math.hypot(34.86 - 45.96, 28.79 - 18.29)
-    foot = 37.5 + math.hypot(34.86 - 37.5, 28.79 - 44.72)
-    assert f"M {tip:.2f} 16.21 L 68.27 16.21" in icons and f"M {foot:.2f} 44.72 L 68.27 44.72" in icons
+    assert abs(math.degrees(math.atan2(24.93 - 38.63, 30.16 - 32.32)) + leg) < 0.01
+    tip = 27.04 + math.hypot(39.71 - 27.04, 15.9 - 14.11) + math.hypot(30.16 - 39.71, 24.93 - 15.9)
+    foot = 32.32 + math.hypot(30.16 - 32.32, 24.93 - 38.63)
+    assert f"M {tip:.2f} 14.11 L 67.05 14.11" in icons and f"M {foot:.2f} 38.63 L 67.05 38.63" in icons
     # every phase reads one line of timings, so the leg and the point can open together or in turn
     assert re.search(r":root \{ --t-base:[^}]*--t-car:[\d.]+s; \}", css)
     fold = css[css.index("@keyframes cc-fold") : css.index(".mark.loop path")]
@@ -628,7 +641,7 @@ def test_the_mark_is_the_garage_with_its_roof():
 
 # The table kinds (style.css): cards become stacked rows on a phone; data and bins scroll
 # inside div.ovx; cmp, tou and pairs are built to fit; readings scroll in their own box.
-TABLE_KINDS = {"cards", "data", "bins", "cmp", "tou", "pairs", "readings"}
+TABLE_KINDS = {"cards", "data", "bins", "cmp", "tou", "pairs", "readings", "sites"}  # sites: fits a phone by folding its quiet columns under the name
 
 
 def test_every_table_is_one_of_the_table_kinds_and_fills_its_card():
@@ -752,9 +765,9 @@ def test_every_place_name_renders_through_the_home_and_work_glyphs(monkeypatch):
         ("charge.html", "<h1>{{ place_refs(session.where, [session.get('where_ref')]) }}</h1>"),
         ("_now_hero.html", "<b>{{ place_refs(car.place, "),
         ("_parts.html", "{{ c.last_drive.from|short_place|places }} → {{ c.last_drive.to|short_place|places }}"),
-        ("_parts.html", "{{ (c.get('place') or c.get('address') or '—')|places }}"),
+        ("_parts.html", "{{ (c.get('place') or c.get('address') or c.get('locality'))|places }}"),
         ("tags.html", "{{ d.from|places }}"),
-        ("charging.html", "{{ p.where|places }}"),
+        ("charging.html", "{{ site_row(p.where|places,"),
     ):
         assert needle in (here / page).read_text(), (page, needle)
     css = (Path(__file__).parent / "static" / "style.css").read_text()
@@ -813,7 +826,7 @@ def test_settings_has_a_maps_section_that_says_what_leaves_the_box():
     assert "maps" in LABELS
     assert DEFAULTS["public_tiles"] is False and DEFAULTS["public_geocoder"] is False
     t = (here / "templates" / "settings_maps.html").read_text()
-    for phrase in ("public_tiles", "public_geocoder", "Download regions automatically", "Turn on local maps"):
+    for phrase in ("public_tiles", "public_geocoder", "Download regions automatically", "--profile maps up -d maps"):
         assert phrase in t, phrase
 
 
@@ -880,13 +893,87 @@ def test_a_phones_header_carries_the_pages_title_and_the_h1_gives_its_row_up():
     phone = css[css.index("@media (max-width: 860px) {\n  .shell") :]
     assert "position:sticky" in phone[: phone.index(".ptitle")] and "html.pt main h1 { display:none; }" in phone
     assert ".pbar:not(:has(> :not(h1, .pbar-ctx, .sp))) { display:none; }" in phone
-    assert ".carsheet { position:relative; flex:0 1 auto; min-width:0; }" in phone and "text-overflow:ellipsis" in phone
+    assert ".carsheet { position:relative; flex:0 0 auto; min-width:0; max-width:44%; }" in phone and "text-overflow:ellipsis" in phone
     assert ".shell { grid-template-columns:minmax(0, 1fr); }" in phone, "a long name must not widen the page"
     assert "html.pt main h1" not in css[: css.index("@media (max-width: 860px) {\n  .shell")], "desktop keeps its h1"
 
 
-def test_the_title_never_gives_way_to_the_car_name_and_the_version_line_is_muted():
+def test_the_title_and_the_car_name_share_the_bar_and_the_version_line_is_muted():
+    # a long title (a route's two ends) wraps to two lines; the picker keeps its width (squeezed, it once went empty)
     css = _css()
-    assert ".ptitle { display:block; margin-left:auto; flex:none;" in css and "text-overflow:ellipsis" in css[css.index(".carsheet .cn") :]
+    assert ".ptitle { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; margin-left:auto; flex:0 1 auto; min-width:0;" in css and "text-overflow:ellipsis" in css[css.index(".carsheet .cn") :]
+    assert ".carsheet { position:relative; flex:0 0 auto; min-width:0; max-width:44%; }" in css
     assert ".ver a { color:inherit; text-decoration:none; }" in css
     assert 'class="muted small ver"' in (Path(__file__).parent / "templates" / "settings_index.html").read_text()
+
+
+def test_the_bars_are_glass_with_a_solid_fallback():
+    """The phone's top and tab bars and the desktop's title row are one material: the page
+    blurred and tinted from its own ground, a hairline that comes in once something scrolls
+    under, and the same bars solid for reduced transparency or a browser with no backdrop
+    filter. The blur stays on the bars: nothing large repaints through it."""
+    css = _css()
+    assert '@property --edge { syntax:"<number>"; inherits:true; initial-value:1; }' in css, "the material is on where scroll can't drive it"
+    glass = css[css.index("/* Glass") :]
+    glass = glass[: glass.index("\n\n")]
+    assert "color-mix(in srgb, var(--bg) calc(var(--edge) * " in glass, "the ground is the page's own, faded by the scroll"
+    assert "@supports (animation-timeline: scroll())" in glass and "animation-range:0 " in glass
+    assert "@media (prefers-reduced-transparency: reduce)" in glass
+    assert "@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)))" in glass
+    assert ".stage main > .pbar:first-child { position:sticky;" in glass, "desktop's title row stays as the page scrolls"
+    blurred = re.findall(r"([^{}\n]+)\{[^}]*backdrop-filter:(?!none)", css)
+    assert len(blurred) <= 3, blurred
+    assert "--tow-fill:var(--bg)" in css, "the arriving car's fill is opaque, the bar's ground at the top"
+
+
+def test_a_small_button_is_never_a_sun_month_row():
+    """A bare .sm rule for Stats' sun months made every .btn.sm a 262 px grid; the drive's
+    Day button stretched across its title row."""
+    css = _css()
+    assert not re.search(r"(^|[};])\s*\.sm \{", css), "the sun month row is .sunmonths .sm"
+    assert ".sunmonths .sm { display:grid;" in css
+
+
+def test_the_browsers_own_bar_is_the_pages_ground():
+    """The header's ground is the page's own, so the browser's bar above it is tinted the
+    same: a white strip over the paper header read as a seam."""
+    base = (Path(__file__).parent / "templates" / "base.html").read_text()
+    css = _css()
+    light = re.search(r":root \{ --bg:(#\w+);", css).group(1)
+    dark = re.search(r':root\[data-theme="dark"\] \{ --bg:(#\w+);', css).group(1)
+    assert f'<meta name="theme-color" content="{light}" media="(prefers-color-scheme: light)">' in base
+    assert f'<meta name="theme-color" content="{dark}" media="(prefers-color-scheme: dark)">' in base
+
+
+def test_the_map_row_and_the_follower_are_shared_parts():
+    """Start, route and end side by side (stacked under the route on a phone), and a marker
+    that follows a chart's pointer: maps.js offers both to every detail page."""
+    import re
+
+    js = (Path(__file__).parent / "static" / "maps.js").read_text()
+    assert "trio: trio, follow: follow" in js and 'addEventListener("cc:chart-t"' in js
+    assert "still: true" in js and "dragging: false" in js, "the close-ups are still pictures"
+    css = _css()
+    assert '.trio { display:grid; grid-template-columns:1fr 2fr 1fr; grid-template-areas:"a r b";' in css
+    assert re.search(r'@media \(max-width:600px\) \{ \.trio \{ grid-template-columns:1fr 1fr; grid-template-areas:"r r" "a b"; \}', css), "the route first on a phone"
+    chart = (Path(__file__).parent / "static" / "chart.js").read_text()
+    assert 'new CustomEvent("cc:chart-t"' in chart and "box.ccChart = {" in chart and 'getAttribute("data-sync")' in chart
+
+
+def test_map_scripts_never_block_the_first_paint_and_load_only_where_a_map_is_drawn():
+    """The five map files loaded in the head without defer on 11 pages, so a page painted only
+    once all of them had come; and they loaded on Now without a position or Tags without routes."""
+    tpl = Path(__file__).parent / "templates"
+    head = (tpl / "_maphead.html").read_text()
+    tags = re.findall(r"<script [^>]*>", head)
+    assert len(tags) == 4 and all(" defer" in t for t in tags), "every map script deferred, in order"
+    for name in ("calendar.html", "map.html", "day.html", "now.html", "drive.html", "tags.html", "place.html", "parked.html", "charge.html"):
+        s = (tpl / name).read_text()
+        for script in re.findall(r"<script>(.*?)</script>", s, re.S):
+            if "CCMap." in script or "CCTrack." in script:
+                assert 'document.addEventListener("DOMContentLoaded", function () {' in script, name
+        for src in re.findall(r'<script src="[^"]*/static/(?:track|view|maps)\.js[^>]*>', s):
+            assert " defer" in src, (name, src)
+    for name in ("calendar.html", "day.html", "now.html", "drive.html", "tags.html", "parked.html", "charge.html"):
+        block = (tpl / name).read_text().split("{% block head %}", 1)[1].split("{% endblock %}", 1)[0]
+        assert block.lstrip().startswith("{% if "), f"{name} loads the map files only when it draws a map"

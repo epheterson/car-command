@@ -1,35 +1,27 @@
 {% extends "base.html" %}
 {% import "_parts.html" as parts %}
-{% block title %}{{ car.name }} · {{ state_word(car.status)[0] }} · Car Command{% endblock %}
-{% block head %}
+{% block title %}{{ car.name }} · {{ ('Offline' if car.get('offline') else state_word(car.status)[0]) }} · Car Command{% endblock %}
+{% block head %}{% if car.lat and car.lon %}
 {% include "_maphead.html" %}
-{% endblock %}
+{% endif %}{% endblock %}
 {% block body %}
+{% from "_mapsoffer.html" import offer %}{{ offer(settings, root, csrf, here) }}
 {% include "_activity.html" %}
 {% include "_now_hero.html" %}
-{{ parts.pw_row(pw) }}
+{% import "_commands.html" as cmds %}{{ cmds.dock(cmd, car, root) }}
+{% if cmd %}<script src="{{ root }}/static/commands.js?v={{ js_v }}" defer></script>{% endif %}
 
 {% if car.lat and car.lon %}
-<section>
-  <h2>Where</h2>
-  <div id="map" class="map" role="img" aria-label="Map showing where {{ car.name }} is parked"></div>
+<section aria-label="Where">
+  {% set td = today or {} %}
+  <div class="maps2{{ ' one' if not day_path }}">
+    <figure><div id="map" class="map" role="img" aria-label="Map of where {{ car.name }} is"></div><figcaption>{{ (car.get('place') or car.get('address') or car.get('locality') or 'Here')|short_place }}</figcaption></figure>
+    {% if day_path %}<figure><div id="map-day" class="map" role="img" aria-label="Map of {{ car.name }}'s {{ 'drives today' if path_kind == 'today' else 'last drive' }}"></div><figcaption>{% if path_kind == 'today' %}Today{% if td.drives %} · {{ td.drives }} {{ 'drive' if td.drives == 1 else 'drives' }}{% if td.miles %} · {{ td.miles|dist }} {{ u.dist }}{% endif %}{% endif %}{% else %}Last drive{% if drives %} · {{ drives[0].start_date|when }}{% endif %}{% endif %}</figcaption></figure>{% endif %}
+  </div>
 </section>
 {% endif %}
 
-<section>
-  <h2>Last 24 hours</h2>
-  {{ parts.strip(ribbon, ticks or []) }}
-  <p class="legend muted"><span class="key sleeping"></span>Asleep <span class="key idle"></span>Parked, awake <span class="key driving"></span>Driving <span class="key charging"></span>Charging</p>
-</section>
-
-<section>
-  <h2>Battery, last 7 days</h2>
-  {% if spark %}
-  <svg class="spark" viewBox="0 0 600 80" preserveAspectRatio="none" role="img" aria-label="Battery level over the last seven days">
-    <polyline points="{{ spark }}"/>
-  </svg>
-  {% else %}<p class="muted">Not enough history yet.</p>{% endif %}
-</section>
+{% include "_now_window.html" %}
 
 <section class="two">
   <div>
@@ -38,25 +30,50 @@
   </div>
   <div>
     <h2>Recent charges <a class="more" href="{{ root }}/charges{{ q }}">all</a></h2>
-    {% if charges %}<div class="rows">{% for c in charges %}{{ parts.row(root ~ '/charges/' ~ c.id ~ q, c.session_start_date|when, c.where, [c.duration|duration, 'fast' if c.charging_type == 'DC' else '', (('≈' if c.cost_source == 'average' else '') ~ cur ~ '%.2f'|format(c.cost)) if c.cost else ''], ((c.kwh|num(1)) ~ ' kWh') if c.kwh is not none else '—', ((c.start_level|num) ~ '→' ~ (c.end_level|num) ~ '%') if c.start_level is not none and c.end_level is not none else '', kind='charge', mix=c.get('mix')) }}{% endfor %}</div>{% else %}<p class="muted">No charges yet.</p>{% endif %}
+    {% if charges %}<div class="rows">{% for c in charges %}{{ parts.row(root ~ '/charges/' ~ c.id ~ q, c.session_start_date|when, c.where, [c.duration|duration, 'fast' if c.charging_type == 'DC' else '', (('≈' if c.cost_source == 'average' else '') ~ cur ~ '%.2f'|format(c.cost)) if c.cost else ''], ((c.kwh|num(1)) ~ ' kWh') if c.kwh is not none else '—', ((c.start_level|num) ~ '→' ~ (c.end_level|num) ~ '%') if c.start_level is not none and c.end_level is not none else '', kind='charge', mix=c.get('rate')) }}{% endfor %}</div>{% else %}<p class="muted">No charges yet.</p>{% endif %}
   </div>
 </section>
 {% if car.lat and car.lon %}
 <script>
-  // the map starts at once; it never waits for the brand's arrival
-  (function () {
-    var map = CCMap.base("map", { zoomControl: false }).setView([{{ car.lat }}, {{ car.lon }}], 15);
-    var pin = L.circleMarker([{{ car.lat }}, {{ car.lon }}], { radius: 8, color: "#fff", weight: 3, fillColor: CCMap.palette[{{ colors.get(car.vin, 0) }}], fillOpacity: 1 }).addTo(map)
-      .bindTooltip(CCMap.lines([[{{ car.name|tojson }}, {{ (car.address or "")|tojson }}].filter(Boolean).join(" · ")]), { permanent: true, direction: "top", offset: [0, -10] });
-    // the live stream moves the pin with the car, and the map with it when the car leaves the view
+  // the maps start once their deferred scripts have run (DOMContentLoaded); they never wait for the brand's arrival
+  document.addEventListener("DOMContentLoaded", function () {
+    var colour = CCMap.palette[{{ colors.get(car.vin, 0) }}], here = [{{ car.lat }}, {{ car.lon }}];
+    var map = CCMap.base("map", { zoomControl: false, hint: true }).setView(here, 16);
+    var pin = L.circleMarker(here, { radius: 8, color: "#fff", weight: 3, fillColor: colour, fillOpacity: 1 }).addTo(map)
+      .bindTooltip(CCMap.lines([[{{ car.name|tojson }}, {{ (car.address or car.get("locality") or "")|tojson }}].filter(Boolean).join(" · ")]), { permanent: true, direction: "top", offset: [0, -10] });
+    // beside it, the day's drives (or the last one) fitted to their own map, the car where it is now
+    var path = {{ (day_path or [])|tojson }}, dayPin = null;
+    if (path.length && document.getElementById("map-day")) {
+      var dm = CCMap.base("map-day", { zoomControl: false, hint: true }), reach = L.latLngBounds([here, here]);
+      path.forEach(function (pts) { CCMap.route(dm, pts, colour, 3); reach.extend(L.latLngBounds(pts)); });
+      dayPin = L.circleMarker(here, { radius: 6, color: "#fff", weight: 2, fillColor: colour, fillOpacity: 1 }).addTo(dm);
+      dm.fitBounds(reach, { padding: [18, 18], maxZoom: 15 });
+    }
+    // the live stream moves the pins with the car, gliding between fixes (CCMap.glider), with an arrow
+    // that turns with its heading while it moves; the near map follows when the car leaves the view
+    var arrow = L.marker(here, { icon: L.divIcon({ className: "cc-arrow", html: "<i></i>", iconSize: [28, 28] }), interactive: false, keyboard: false });
+    var panning = false;
+    var glide = CCMap.glider({ move: function (lat, lon, hd) {
+      var at = L.latLng(lat, lon);
+      pin.setLatLng(at);
+      if (dayPin) dayPin.setLatLng(at);
+      // the view follows the glided point, not the raw fix, so the marker never sits off screen mid-glide
+      if (!panning && !map.getBounds().contains(at)) { panning = true; map.once("moveend", function () { panning = false; }); map.panTo(at, { animate: !CCMap.still() }); }
+      if (hd === null || hd === undefined) { arrow.remove(); return; }
+      arrow.setLatLng(at);
+      if (!map.hasLayer(arrow)) arrow.addTo(map);
+      var i = arrow.getElement() && arrow.getElement().firstChild;
+      if (i) i.style.transform = "rotate(" + hd + "deg)";
+    } });
+    var prior = here;
     document.addEventListener("cc:live", function (e) {
       var c = e.detail;
       if (c.vin !== {{ car.vin|tojson }} || c.lat == null || c.lon == null) return;
-      var at = L.latLng(c.lat, c.lon);
-      pin.setLatLng(at);
-      if (!map.getBounds().contains(at)) map.panTo(at);
+      var moved = Math.abs(c.lat - prior[0]) + Math.abs(c.lon - prior[1]) > 0.00002;  // about 2 m
+      prior = [c.lat, c.lon];
+      glide.fix(c.lat, c.lon, moved && c.heading != null ? c.heading : null);
     });
-  })();
+  });
 </script>
 {% endif %}
 {% endblock %}

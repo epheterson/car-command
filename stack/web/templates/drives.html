@@ -11,13 +11,14 @@
   {% else %}<nav class="stepper" aria-label="Month"><a href="{{ root }}/drives?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/drives?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav>{% endif %}
 </div>
 <nav class="segs2" aria-label="Order">{% for k, dr, lbl in [("start", "desc", "Newest"), ("start", "asc", "Oldest"), ("miles", "desc", "Farthest"), ("time", "desc", "Longest"), ("wh", "desc", "Least efficient")] %}<a href="{{ root }}/drives{{ sort_base }}sort={{ k }}&amp;dir={{ dr }}"{% if sort == k and (desc == (dr == 'desc')) %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}<a class="aside" href="{{ root }}/drives.csv{{ q }}" data-no-prefetch>CSV</a>{% if hidden %}<a href="{{ root }}/drives{{ q }}">Back to the list</a>{% else %}<a href="{{ root }}/drives?show=hidden{{ dq }}">Hidden</a>{% endif %}</nav>
-<details class="fsheet"{% if nflt %} open{% endif %}><summary>Filter{% if nflt %} · {{ nflt }} on{% endif %}</summary>
+<details class="fsheet"{% if nflt %} open{% endif %}>{% set e = ends or {'from': {}, 'to': {}} %}{% set fl, tl = e.from.label, e.to.label %}{% set words = (fl ~ (' ⇄ ' if raw.get('both') == 'on' else ' → ') ~ tl) if fl and tl else ('From ' ~ fl if fl else ('To ' ~ tl if tl else '')) %}{% set extra = nflt - (1 if fl else 0) - (1 if tl else 0) %}
+<summary>Filter{% if nflt %} · {% if words %}{{ words }}{% if extra %} + {{ extra }}{% endif %}{% else %}{{ nflt }} on{% endif %}{% endif %}</summary>
 <form method="get" action="{{ root }}/drives" class="row range">{% if q %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}
   <label>From <input type="date" name="from" value="{{ window.from.isoformat() if window.get('from') else '' }}"></label>
   <label>To <input type="date" name="to" value="{{ window.to.isoformat() if window.get('to') else '' }}"></label>
   {% set f = flt or {} %}{% set raw = f.get('raw', {}) %}
-  <label>Leaving <select name="at"><option value="">anywhere</option>{% for p in named_places or [] %}<option value="{{ p.name }}" {% if raw.get('at') == p.name %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
-  <label>Arriving <select name="dest"><option value="">anywhere</option>{% for p in named_places or [] %}<option value="{{ p.name }}" {% if raw.get('dest') == p.name %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
+  <label>Leaving <select name="at"><option value="">anywhere</option>{% if e.from.extra %}<option value="{{ e.from.value }}" selected>{{ e.from.label }}</option>{% endif %}{% for p in named_places or [] %}<option value="{{ p.name }}" {% if raw.get('at') == p.name %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
+  <label>Arriving <select name="dest"><option value="">anywhere</option>{% if e.to.extra %}<option value="{{ e.to.value }}" selected>{{ e.to.label }}</option>{% endif %}{% for p in named_places or [] %}<option value="{{ p.name }}" {% if raw.get('dest') == p.name %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></label>
   <label class="check"><input type="checkbox" name="both" {% if raw.get('both') == 'on' %}checked{% endif %}> both ways</label>
   <label>Longer than, {{ u.dist }} <input type="number" name="min" min="0" step="0.1" value="{{ raw.get('min', '') }}" style="min-width:5em"></label>
   <label>Tag or note <input name="q" value="{{ raw.get('q', '') }}" placeholder="e.g. Commute" style="min-width:9em"></label>
@@ -25,8 +26,9 @@
 </form>
 </details>
 {% if drives %}
-  {% if days %}{% for day in days %}<section class="tday">{% if day.date %}<h2 class="day-h"><a href="{{ root }}/day?date={{ day.date.isoformat() }}{{ dq }}">{{ day.date.strftime('%A, %B %-d') }}</a><span>{{ day.miles|dist }} {{ u.dist }}</span></h2>{% endif %}<div class="rows">{% for d in day.rows %}{{ drow(d, true) }}{% endfor %}</div></section>{% endfor %}
+  {% if days %}{% for day in days %}<section class="tday">{% if day.date %}<h2 class="day-h"><a href="{{ root }}/day?date={{ day.date.isoformat() }}{{ dq }}">{{ day.date|dfmt('%A, %B %-d') }}</a><span>{{ day.miles|dist }} {{ u.dist }}</span></h2>{% endif %}<div class="rows">{% for d in day.rows %}{{ drow(d, true) }}{% endfor %}</div></section>{% endfor %}
   {% else %}<div class="rows">{% for d in drives %}{{ drow(d, false) }}{% endfor %}</div>{% endif %}
+{% if more %}<div class="empty">{{ more.left|num }} more<a class="btn sm" href="{{ more.href }}" data-no-prefetch>{{ more.label }}</a></div>{% endif %}
 {% else %}<p class="muted">No drives in {{ window.label }}.</p>{% endif %}
 {% if said %}<p class="said">{{ said }}</p>{% endif %}
 <details class="byhand"><summary class="muted">Add a drive by hand</summary>

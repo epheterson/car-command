@@ -182,3 +182,65 @@ def test_custom_reveals_two_date_fields_that_keep_the_rest(env):
     form = html[html.index('class="dates"') : html.index("</form>", html.index('class="dates"'))]
     assert 'name="from" value="2026-09-01"' in form and 'name="to" value="2026-09-20"' in form and 'name="period" value="custom"' in form
     assert 'name="vin" value="V1"' in form and 'name="by"' not in form, "the rest of the state rides along, defaults left out"
+
+
+def test_a_thin_baseline_reads_as_its_figure_not_a_percent(env):
+    """A car's first fortnight is a thin baseline: "Sep 1–5 4 mi" beside the month, never "▲ 1,175 %"."""
+    ctx = context()
+    young = statspage.by_month([month(2026, 10, 51, 79, 23.76), month(2026, 9, 4, 70, 20.0)])
+    ctx["cmp"] = statspage.compare(young, (2026, 10), ctx["fraction"], (2026, 9), young)
+    t = text(env.get_template("stats.html").render(**ctx))
+    assert "Sep 1–5 4 mi" in t and "1,175%" not in t
+    rng = statspage.period("year", None, "2025", None, None, NOW)
+    other = statspage.versus(rng, "prev")
+    totals = dict(ctx["totals"], miles=376.0)
+    ctx |= {"rng": rng, "period": "year", "totals": totals, "compare": {**other, "totals": dict(totals, miles=21.0)}}
+    ctx["compare"]["change"] = {k: statspage.change(k, totals, ctx["compare"]["totals"]) for k in ("miles", "added_kwh")}
+    t = text(env.get_template("stats.html").render(**ctx))
+    assert "Driven 376 mi 21 mi Drives" in t and "Energy added 79 kWh 79 kWh 0% Cost" in t, "no percent beside a thin year; a real one beside a fair one"
+
+
+def test_the_driven_tile_says_how_much_the_odometer_moved_outside_any_drive(env):
+    ctx = context()
+    ctx |= {"rng": statspage.period("all", None, None, None, None, NOW), "period": "all", "totals": dict(ctx["totals"], miles=91518.0, unlogged=3702.0)}
+    assert "3,702 mi not logged as drives" in text(env.get_template("stats.html").render(**ctx))
+    ctx["totals"]["unlogged"] = 40.0
+    assert "not logged" not in text(env.get_template("stats.html").render(**ctx)), "under half a percent says nothing"
+
+
+def test_a_phones_first_tap_on_a_row_opens_the_row_and_a_hold_opens_the_place():
+    from pathlib import Path
+
+    js = (Path(__file__).parent / "static" / "shell.js").read_text()
+    assert 'closest("a.row-b")' in js and "if (inRow(el) && !held) return;" in js and "}, 450)" in js, "tap goes to the row's link; a 450 ms hold opens the card"
+
+
+def test_the_phone_title_and_map_end_labels_wrap_instead_of_clipping():
+    from pathlib import Path
+
+    css = (Path(__file__).parent / "static" / "style.css").read_text()
+    title = css.split("  .ptitle {")[1].split("}")[0]
+    assert "-webkit-line-clamp:2" in title and "nowrap" not in title and "ellipsis" not in title
+    end = css.split(".leaflet-tooltip.tr-end {")[1].split("}")[0]
+    assert "white-space:normal" in end and "max-width:min(10em, 32vw)" in end
+
+
+def test_a_segmented_radio_never_sits_over_its_label():
+    from pathlib import Path
+
+    css = (Path(__file__).parent / "static" / "style.css").read_text()
+    assert "pointer-events:none" in css.split(".segmented input {")[1].split("}")[0], "the hidden radio takes no click: the label's own text is what is tapped"
+
+
+def test_a_comparison_with_no_average_has_no_average_column(env):
+    """A car's first month has no earlier months to average: "12-mo avg (0)" over a column of dashes is dropped, with its bars."""
+    ctx = context()
+    first = statspage.by_month([month(2026, 10, 51, 79, 23.76)])
+    ctx["cmp"] = statspage.compare(first, (2026, 10), ctx["fraction"], (2026, 10), first)
+    assert all(m["avg"] is None for m in ctx["cmp"])
+    html = env.get_template("stats.html").render(**ctx)
+    head = html[html.index('<table class="cmp">') : html.index("</thead>")]
+    assert "12-mo avg" not in head and "vs average" not in head and head.count("<th") == 4
+    body = html[html.index("</thead>") : html.index("</table>", html.index("</thead>"))]
+    assert body.count("<tr>") and all(row.count("<td") == 3 for row in body.split("<tr>")[1:]) and "(0)" not in html
+    assert "vs average" in env.get_template("stats.html").render(**context())

@@ -219,7 +219,7 @@ def test_the_geocoder_decision_is_written_before_the_warm_up():
     body = app_src[start:end]
     call = "asyncio.to_thread(geocoder_tick, 0)"
     assert "await " + call in body, "the startup decision must be awaited before the loop exists"
-    assert body.index(call) < body.index("driveprint_body"), "it must run before the warm-up"
+    assert body.index(call) < body.index("target=warm_driveprints"), "it must run before the warm-up"
 
 
 def test_the_startup_schema_cannot_hold_the_site_shut():
@@ -240,7 +240,7 @@ def test_what_has_already_been_sent_survives_a_restart():
     database, not in the process that keeps being replaced."""
     src = (HERE / "app.py").read_text()
     assert "CREATE TABLE IF NOT EXISTS cc_state" in src
-    assert 'state_set("last_summary"' in src, "the summary marker is not persisted"
+    assert 'key = f"last_summary:{car[\'vin\']}"' in src and "state_set(key, datetime.now(TZ)" in src, "the summary marker is not persisted, a car"
     assert 'state_set(key, now_local.date().isoformat())' in src and 'f"plug_reminder:{' in src, "the plug-in reminder marker is not persisted; a restart would repeat it"
     assert '_last_summary' not in src, "the in-memory marker is still there"
 
@@ -342,3 +342,54 @@ def test_the_schema_step_and_the_connectors_grants_take_turns():
     ours = int(re.search(r"^GRANTS_LOCK = (0x[0-9a-fA-F_]+)", src, re.M).group(1), 16)
     theirs = int(re.search(r"^GRANTS_LOCK = (0x[0-9a-fA-F_]+)", (HERE.parent / "cc" / "plugin_role.py").read_text(), re.M).group(1), 16)
     assert ours == theirs
+
+
+def test_each_car_gets_its_own_daily_summary(monkeypatch):
+    """One shared marker meant the first car's summary marked the day sent for every car."""
+    for k, v in (("DATABASE_URL", "postgresql://u:p@localhost:1/x"), ("REST_USER", "u"), ("REST_PASSWORD", "p")):
+        monkeypatch.setenv(k, v)
+    import app
+
+    store, sent = {"last_summary": "2026-10-12"}, []
+    monkeypatch.setattr(app, "state_get", lambda k: store.get(k))
+    monkeypatch.setattr(app, "state_set", lambda k, v: store.__setitem__(k, v))
+    monkeypatch.setattr(app, "summary_due", lambda now, last, at: None if last and last.isoformat() == now.date().isoformat() else "day")
+    monkeypatch.setattr(app, "compose_daily_summary", lambda car, due: car["vin"])
+    monkeypatch.setattr(app.recorder, "notify", lambda text, kind, vin=None: sent.append(text))
+    for vin in ("ALPHA", "BRAVO", "ALPHA", "BRAVO"):
+        app.maybe_send_summary({"vin": vin})
+    assert sent == ["ALPHA", "BRAVO"], "each car once, none twice"
+    store2, sent2 = {"last_summary": app.datetime.now(app.TZ).date().isoformat()}, []
+    monkeypatch.setattr(app, "state_get", lambda k: store2.get(k))
+    monkeypatch.setattr(app.recorder, "notify", lambda text, kind, vin=None: sent2.append(text))
+    app.maybe_send_summary({"vin": "CHARLIE"})
+    assert sent2 == [], "a car with no marker of its own reads the shared one, so the switch sends nothing twice"
+
+
+def test_no_daily_summary_for_a_car_without_a_live_source_or_a_day_with_nothing(monkeypatch):
+    for k, v in (("DATABASE_URL", "postgresql://u:p@localhost:1/x"), ("REST_USER", "u"), ("REST_PASSWORD", "p")):
+        monkeypatch.setenv(k, v)
+    import app
+
+    monkeypatch.setattr(app, "source_of", lambda car: "history")
+    assert app.compose_daily_summary({"vin": "ALPHA", "name": "Alpha"}, app.date(2026, 9, 4)) is None
+    store, sent = {}, []
+    monkeypatch.setattr(app, "state_get", lambda k: store.get(k))
+    monkeypatch.setattr(app, "state_set", lambda k, v: store.__setitem__(k, v))
+    monkeypatch.setattr(app, "summary_due", lambda now, last, at=None: app.date(2026, 9, 4))  # due whatever the clock says
+    monkeypatch.setattr(app, "compose_daily_summary", lambda car, due: None)
+    monkeypatch.setattr(app.recorder, "notify", lambda text, kind, vin=None: sent.append(text))
+    monkeypatch.setattr(app, "SUMMARY_AT", app.dtime(0, 0))  # due at any hour: the test would fail before 07:00 local
+    app.maybe_send_summary({"vin": "ALPHA"})
+    assert sent == [] and "last_summary:ALPHA" in store, "nothing sent, and not retried all day"
+
+
+def test_staging_subnets_avoid_the_compose_defaults_and_env_example_leaves_the_stack_subnet_commented():
+    import re
+
+    root = HERE.parent.parent
+    compose = (root / "stack" / "docker-compose.yml").read_text()
+    prod = set(re.findall(r"CC_[A-Z_]*SUBNET:-([\d.]+/\d+)", compose))
+    staging = set(re.findall(r'CC_STAGING_[A-Z_]*SUBNET:-([\d.]+/\d+)', (root / "scripts" / "staging.sh").read_text()))
+    assert len(prod) == 4 and len(staging) == 4 and not prod & staging
+    assert not re.search(r"^CC_SUBNET=", (root / "stack" / ".env.example").read_text(), re.M)

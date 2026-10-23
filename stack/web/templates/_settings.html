@@ -12,13 +12,13 @@
 {%- endmacro %}
 
 {# On or off. An unticked box posts nothing, so a page that needs to know sends a marker beside it. #}
-{% macro switch(name, on, label, id=none, chan=none) -%}
-<label class="switch"><input type="checkbox" role="switch"{% if name %} name="{{ name }}"{% endif %}{% if id %} id="{{ id }}"{% endif %} aria-label="{{ label }}"{% if on %} checked{% endif %}{% if chan %} data-chan="{{ chan }}"{% endif %}><span aria-hidden="true"></span></label>
+{% macro switch(name, on, label, id=none, chan=none, disabled=false, secchan=none, auto=false) -%}
+<label class="switch"><input type="checkbox" role="switch"{% if name %} name="{{ name }}"{% endif %}{% if id %} id="{{ id }}"{% endif %} aria-label="{{ label }}"{% if on %} checked{% endif %}{% if disabled %} disabled{% endif %}{% if chan %} data-chan="{{ chan }}"{% endif %}{% if secchan %} data-secchan="{{ secchan }}"{% endif %}{% if auto %} data-autosave{% endif %}><span aria-hidden="true"></span></label>
 {%- endmacro %}
 
 {# A time of day, as compact as the value. #}
 {% macro time(name, value, label, id=none) -%}
-<input class="field time" type="time" name="{{ name }}"{% if id %} id="{{ id }}"{% endif %} value="{{ value or '' }}" aria-label="{{ label }}">
+<input class="field time" type="text" inputmode="text" autocomplete="off" name="{{ name }}"{% if id %} id="{{ id }}"{% endif %} value="{{ value|tod }}" placeholder="{{ '21:00'|tod }}" aria-label="{{ label }}">
 {%- endmacro %}
 
 {# A figure without a needless ".0": 50.0 reads 50, 32.5 stays. #}

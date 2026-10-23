@@ -24,6 +24,9 @@ def test_settings_opens_on_a_grouped_list_of_every_section(client):  # noqa: F81
     r = client.get("/settings")
     assert r.status_code == 200 and "<h1>Settings</h1>" in r.text
     for key, label in SECTIONS:
+        if key in ("energy", "commands"):  # an empty install has no car that could use them
+            assert f'href="/settings/{key}"' not in r.text, key
+            continue
         assert f'href="/settings/{key}"' in r.text and f'<span class="set-l">{label}</span>' in r.text, key
     assert "No plan" in r.text and "Sign-in off" in r.text and 'class="subpages" aria-label="Settings"' not in r.text
 
@@ -98,6 +101,7 @@ def kept(bare, monkeypatch):  # noqa: F811
     monkeypatch.setattr(bare.teslafi, "fetch", lambda tok, cmd=None: {"vin": ALPHA, "display_name": "Alpha", "battery_level": 60} if tok.startswith("good") else {})
     monkeypatch.delenv("TESLAFI_TOKENS", raising=False)
     monkeypatch.delenv("TESLAMATE_DB_URL", raising=False)
+    monkeypatch.setattr(bare, "connector_answers", lambda: True)
     return store, told
 
 
@@ -133,7 +137,7 @@ def test_moving_twice_makes_one_source_per_car(bare, client, kept, monkeypatch):
     store, told = kept
     monkeypatch.setenv("TESLAFI_TOKENS", f"{ALPHA}:good-env-1111")
     page = client.get("/settings/cars").text
-    assert "from an older token setting" in page and "Move into the app" in page and "good-env" not in page
+    assert "from .env" in page and "older token setting" not in page and "Move into the app" in page and "good-env" not in page
     for _ in range(2):
         assert client.post("/settings/sources/move", data=form(bare, {})).status_code == 303
     assert len(store.rows) == 1 and told["teslafi"] == [f"{ALPHA}:good-env-1111"]
@@ -256,12 +260,94 @@ def test_signing_in_to_lucid_seals_it_for_the_connector_and_never_shows_it(bare,
     import json
 
     store, _ = kept
-    r = client.post("/settings/sources", data=form(bare, {"kind": "lucid", "email": "owner@example.com", "password": "hunter-lucid-1"}))
-    assert r.status_code == 200 and "Signing in" in r.text and "hunter-lucid" not in r.text
+    r = client.post("/settings/sources", data=form(bare, {"kind": "lucid", "email": "owner@example.com", "password": "hunter-lucid-1"}), follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/settings/cars"), "the result lives at an address that survives a reload"
+    page = client.get("/settings/cars").text
+    assert "Signing in" in page and "hunter-lucid" not in page
+    assert 'id="accts" data-waiting="1"' in page, "the page looks again by itself while a sign-in is under way"
     row = store.rows[0]
     assert row["kind"] == "lucid" and json.loads(row["config"]) == {"pending": True} and b"hunter-lucid" not in bytes(row["secret"])
     assert "sources_version" in store.state
     assert "Signing in" in client.get("/settings/cars").text
+
+
+def test_adding_another_brand_lands_on_cars_and_the_rows_poll_until_it_is_done(bare, client, kept):  # noqa: F811
+    r = client.post("/settings/sources", data=form(bare, {"kind": "carconnectivity", "connector": "cupra", "username": "a@example.com", "password": "pw-cupra-1"}), follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/settings/cars")
+    page = client.get("/settings/cars").text
+    assert 'id="accts" data-waiting="1"' in page and "location.reload()" in page and 'getElementById("accts")' in page
+
+
+def test_every_settings_address_a_person_can_land_on_goes_somewhere(client):  # noqa: F811
+    """/settings/sources is where a form's result used to sit; a reload, a bookmark or an old link reached a 404."""
+    for path, where in (
+        ("/settings/sources", "/settings/cars"),
+        ("/settings/import", "/settings/cars#import"),
+        ("/settings/sources/3/test", "/settings/cars"),
+        ("/settings/sources/3/remove", "/settings/cars"),
+        ("/settings/alerts/channel/discord/test", "/settings/alerts"),
+        ("/settings/alerts/channel/discord/add", "/settings/alerts"),
+        ("/settings/maps/regions/add", "/settings/maps"),
+        ("/settings/money/plan/clear", "/settings/money"),
+        ("/settings/tokens/abc/revoke", "/settings/access"),
+        ("/settings/signin/off", "/settings/access"),
+    ):
+        r = client.get(path, follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"] == where, path
+    assert client.get("/settings/nowhere", follow_redirects=False).status_code == 404
+    assert client.get("/settings/nowhere/deeper", follow_redirects=False).status_code == 404
+    assert client.get("/settings/sources/tesla").status_code == 200, "a real page under a redirected name still answers"
+
+
+def test_with_the_connector_down_nothing_is_saved_and_sign_in_is_disabled(bare, client, kept, monkeypatch):  # noqa: F811
+    store, _ = kept
+    monkeypatch.setattr(bare, "connector_answers", lambda: False)
+    r = client.post("/settings/sources", data=form(bare, {"kind": "lucid", "email": "owner@example.com", "password": "hunter-lucid-1"}))
+    assert r.status_code == 409 and "up -d cc" in r.text and "ConnectError" not in r.text and not store.rows
+    r = client.post("/settings/sources", data=form(bare, {"kind": "carconnectivity", "connector": "cupra", "username": "a@example.com", "password": "pw-cupra-1"}))
+    assert r.status_code == 409 and not store.rows
+    bare._cache["connector_down"] = (bare.datetime.now(bare.timezone.utc), "CarConnectivity is not answering.")
+    try:
+        page = client.get("/settings/cars").text
+    finally:
+        bare._cache.pop("connector_down", None)
+    lucid = page.split('id="pane-lucid"')[1].split("</form>")[0]
+    assert "disabled" in lucid.split("Sign in</button>")[0].rsplit("<button", 1)[1]
+    cupra = page.split('id="cc-pane-cupra"')[1].split("</form>")[0]
+    assert "disabled" in cupra.split(">Add</button>")[0].rsplit("<button", 1)[1]
+
+
+def test_a_refused_brand_add_keeps_what_was_typed_but_the_secret(bare, client, kept, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(bare, "connector_answers", lambda: False)
+    r = client.post("/settings/sources", data=form(bare, {"kind": "carconnectivity", "connector": "tronity", "client_id": "my-client-17", "client_secret": "s3cret-value-9"}))
+    pane = r.text.split('id="cc-tronity"')[1].split("</form>")[0]
+    assert r.status_code == 409 and 'value="my-client-17"' in pane and "s3cret-value-9" not in r.text
+
+
+def test_a_sign_in_tapped_while_the_connector_is_quiet_is_stopped_inside_its_own_open_form(bare, client, kept, monkeypatch):  # noqa: F811
+    """The banner waits a minute before it shows, but the submit-time check does not: its reason sits in the form that was tapped, open."""
+    store, _ = kept
+    monkeypatch.setattr(bare, "connector_answers", lambda: False)
+    r = client.post("/settings/sources", data=form(bare, {"kind": "lucid", "email": "owner@example.com", "password": "hunter-lucid-1"}))
+    lucid = r.text.split('id="add-lucid"')[1]
+    assert lucid.split(">", 1)[0].endswith("open data-err"), "the form stays open"
+    inside = lucid.split("</form>")[0]
+    assert "up -d cc" in inside and 'class="notice err" role="alert"' in inside, "with the reason inside it"
+    assert r.text.count("so nothing was saved") == 1, "once, not again at the top of Accounts"
+    r = client.post("/settings/sources", data=form(bare, {"kind": "carconnectivity", "connector": "cupra", "username": "a@example.com", "password": "pw-cupra-1"}))
+    cupra = r.text.split('id="cc-cupra"')[1]
+    assert cupra.split(">", 1)[0].endswith("open data-err") and "up -d cc" in cupra.split("</form>")[0]
+    assert 'id="add-carconnectivity" open' in r.text
+    monkeypatch.setattr(bare, "connector_answers", lambda: True)
+    r = client.post("/settings/sources", data=form(bare, {"kind": "carconnectivity", "connector": "nonesuch"}))
+    assert "Pick a brand from the list." in r.text and "data-err>" not in r.text.split('id="add-carconnectivity"')[0], "no pane to open: the notice stays on top"
+    assert not store.rows
+
+
+def test_a_token_that_is_refused_comes_back_inside_its_own_form(bare, client, kept):  # noqa: F811
+    r = client.post("/settings/sources", data=form(bare, {"kind": "teslafi", "token": "bad-token-5555"}))
+    tf = r.text.split('id="add-teslafi"')[1]
+    assert tf.split(">", 1)[0].endswith("open data-err") and 'role="alert"' in tf.split("</form>")[0]
 
 
 def test_a_kind_the_page_does_not_know_still_renders(bare, client, kept):  # noqa: F811
@@ -333,8 +419,10 @@ def test_another_brand_is_sealed_never_shown_or_logged(bare, client, kept, caplo
             },
         ),
     )
-    assert r.status_code == 200 and "installs its plugin" in r.text
-    for text in (r.text, client.get("/settings/cars").text, caplog.text):
+    assert r.status_code == 303
+    page = client.get("/settings/cars").text
+    assert "Installing carconnectivity-connector-seatcupra" in page
+    for text in (r.text, page, caplog.text):
         assert "hunter-cupra" not in text and "owner@example.com" not in text and "4321" not in text
     row = store.rows[0]
     config = json.loads(row["config"])
@@ -358,7 +446,8 @@ def test_another_brand_is_sealed_never_shown_or_logged(bare, client, kept, caplo
     assert "sources_version" in store.state
     page = client.get("/settings/cars").text
     assert "Cupra (CarConnectivity)" in page and "Installing carconnectivity-connector-seatcupra 0.6.4" in page
-    assert f'name="uninstall" form="src-rm-{row["id"]}" checked' in page and f'form="src-test-{row["id"]}"' not in page
+    assert "Uninstall the plugin" not in page and 'name="uninstall"' not in page, "a choice a stranger has no context for: Remove leaves the plugin installed, ready for the next account"
+    assert f'form="src-test-{row["id"]}"' not in page
     # the same brand again replaces the account, it does not add a second
     client.post(
         "/settings/sources",
@@ -457,3 +546,78 @@ def test_a_failed_install_shows_why(bare, client, kept):  # noqa: F811
     )
     page = client.get("/settings/cars").text
     assert "Škoda (CarConnectivity)" in page and "ERROR: no network" in page
+
+
+def test_energy_and_commands_rows_show_only_with_a_car_or_account_that_uses_them():
+    from settingsform import hidden_rows, index
+
+    def rows(st, **kw):
+        return {r["key"] for g in index(st, 1, [], False, hide=hidden_rows(st, **kw)) for r in g["rows"]}
+
+    none = rows({}, tesla=False, commandable=False)
+    assert "energy" not in none and "commands" not in none and {"cars", "money", "alerts", "look", "maps", "data", "access"} <= none
+    assert "commands" in rows({}, tesla=True, commandable=False), "a Tesla takes commands"
+    assert "commands" in rows({}, tesla=False, commandable=True), "and so does a connector car"
+    for kw in ({"tesla": True}, {"tesla": False, "energy_on": True}):
+        assert "energy" not in rows({}, commandable=False, **kw), "the Powerwall opens from the Tesla account's row, never from the top of Settings"
+    assert "commands" in rows({"commands_on": True}, tesla=False, commandable=False), "commands left on stay findable"
+
+
+def test_the_sidebar_leaves_out_hidden_sections_but_keeps_the_open_one(client):  # noqa: F811
+    r = client.get("/settings/money")
+    assert 'href="/settings/money"' in r.text and 'href="/settings/energy"' not in r.text and 'href="/settings/commands"' not in r.text
+    assert 'href="/settings/commands"' in client.get("/settings/commands").text, "the section you are on stays in the sidebar"
+    pw = client.get("/settings/energy").text
+    assert "‹ Cars and sources" in pw and 'href="/settings/energy"' not in pw, "the Powerwall page sits under Cars and sources, not in the sidebar"
+    import nav
+
+    kept = [p[0] for p in nav.settings_without({"energy"})[3]]
+    assert "settings-energy" not in kept and "settings-commands" in kept and len(kept) == len(nav.SETTINGS[3]) - 1
+
+
+def test_a_tesla_that_is_only_imported_history_does_not_open_energy_or_commands(bare, monkeypatch):  # noqa: F811
+    cars = [{"vin": ALPHA}, {"vin": "BRAVO0000000000001"}]
+    monkeypatch.delenv("TESLA_CLIENT_ID", raising=False)
+    monkeypatch.setattr(bare, "source_of", lambda v: "history" if v["vin"] == ALPHA else "feed")
+    assert not bare.tesla_usable(cars[:1], ["Tesla"]), "history only"
+    assert bare.tesla_usable(cars, ["Lucid", "Tesla"]), "a Tesla with a live source"
+    assert not bare.tesla_usable(cars[1:], ["Lucid"]), "a live car that is not a Tesla"
+    monkeypatch.setenv("TESLA_CLIENT_ID", "app-id")
+    assert bare.tesla_usable(cars[:1], ["Tesla"]), "the Tesla app is configured"
+
+
+def test_the_tire_limits_follow_the_units_setting(bare, client, monkeypatch):  # noqa: F811
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(bare.notify_mod, "hidden_kinds", lambda *a, **k: set())
+    monkeypatch.setattr(bare.recorder, "channels", lambda: ["discord"])
+
+    try:
+        for units, name, other, label in (("metric", "tire_low_bar", "tire_low_psi", "bar"), ("imperial", "tire_low_psi", "tire_low_bar", "psi")):
+            bare._cache["settings"] = (datetime.now(timezone.utc), {**bare.settings_mod.DEFAULTS, "units": units, "tire_low_psi": 36.0})
+            page = client.get("/settings/alerts").text
+            assert f'name="{name}"' in page and f'name="{other}"' not in page and f'<span class="muted">{label}</span>' in page, units
+    finally:
+        bare._cache.pop("settings", None)
+
+
+def test_against_a_petrol_car_speaks_litres_with_metric_units(bare, client):  # noqa: F811
+    from datetime import datetime, timezone
+
+    try:
+        bare._cache["settings"] = (datetime.now(timezone.utc), {**bare.settings_mod.DEFAULTS, "units": "metric", "currency": "€", "gas_mpg": 28.0, "gas_price": 4.6})
+        page = client.get("/settings/money").text
+        assert 'name="gas_l100"' in page and 'value="8.4"' in page and 'name="gas_ppl"' in page and 'value="1.22"' in page and "€" in page
+        assert 'name="gas_mpg"' not in page and 'name="gas_price"' not in page and "mpg</span>" not in page and "/gal" not in page
+        bare._cache["settings"] = (datetime.now(timezone.utc), {**bare.settings_mod.DEFAULTS, "units": "imperial", "gas_mpg": 28.0})
+        page = client.get("/settings/money").text
+        assert 'name="gas_mpg"' in page and 'name="gas_l100"' not in page and "/gal" in page
+    finally:
+        bare._cache.pop("settings", None)
+
+
+def test_a_malformed_env_token_is_a_notice_not_a_working_car(bare, client, kept, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("TESLAFI_TOKENS", "Comet:faketoken0000")
+    page = client.get("/settings/cars").text
+    assert 'class="notice warn"' in page and "TESLAFI_TOKENS in stack/.env: entry 1 of 1 is not a token or VIN:token" in page
+    assert "faketoken" not in page and "Comet" not in page and "from .env" not in page and "Move into the app" not in page, "no phantom source from it"

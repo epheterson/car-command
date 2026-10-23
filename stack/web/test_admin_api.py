@@ -149,8 +149,8 @@ def test_the_owner_ticks_anywhere_on_and_off_and_it_is_kept_beside_the_password(
 
 def test_a_bearer_write_outside_admin_still_needs_csrf(app_module):
     """Only /api/admin/ skips the CSRF check; a token's POST anywhere else is refused as before."""
-    r = client_from(app_module).post("/api/whoami", headers=bearer(ADMIN))
-    assert r.status_code == 400
+    r = client_from(app_module).post("/api/nothing-here", headers=bearer(ADMIN))
+    assert r.status_code == 400 and "control token" in r.json()["error"]
 
 
 class _Rows:
@@ -187,7 +187,7 @@ def test_reload_reads_the_kind_and_an_admin_token_is_never_one_cars(app_module, 
     ]
     monkeypatch.setattr(app_module, "db", lambda: _TokenConn(rows))
     app_module.reload_tokens()
-    assert app_module.TOKENS["h1"] == {"label": "old", "vin": "VIN-ALPHA", "kind": "read", "last4": None, "share_place": False}
+    assert app_module.TOKENS["h1"] == {"label": "old", "vin": "VIN-ALPHA", "kind": "read", "last4": None, "share_place": False, "coords": False}
     assert app_module.TOKENS["h2"]["kind"] == "admin" and app_module.TOKENS["h2"]["vin"] is None
     assert app_module.TOKENS["h3"]["kind"] == "read", "a kind this code does not know reads"
 
@@ -270,7 +270,12 @@ def test_a_public_socket_forging_a_private_forwarded_address_is_refused(app_modu
     """uvicorn's proxy headers would make the forged address the client; the rule reads the socket."""
     status, body = asgi_get(app_module.server, NOWHERE, PUBLIC, [("Authorization", f"Bearer {ADMIN}"), ("X-Forwarded-For", "192.168.1.5")])
     assert status == 403 and "local network" in body["error"]
-    assert app_module.audited[-1][4] == "192.168.1.5", "the log still says what the proxy path claimed"
+    assert app_module.audited[-1][4] == "203.0.113.9", "the log names the socket, not the address it forged"
+
+
+def test_the_log_names_the_proxy_a_call_came_through(app_module):
+    status, _ = asgi_get(app_module.server, NOWHERE, LAN, [("Authorization", f"Bearer {ADMIN}"), ("X-Forwarded-For", "10.0.0.2")])
+    assert app_module.audited[-1][4] == "10.0.0.2 via 192.168.1.40", "what the hop at home reported, and the hop itself"
 
 
 def test_a_private_socket_with_no_cloudflare_headers_is_let_through(app_module):

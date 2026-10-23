@@ -229,6 +229,12 @@ def migrate_home(conn, queue_reprice) -> int:
     return len(give) + len(changed)
 
 
+def other_homes(rows: list[dict], keep_id: int) -> list[dict]:
+    """The places that are home besides `keep_id`. There is one home: the place that becomes
+    it takes the house from these. Pure; app.demote_other_homes applies it."""
+    return [r for r in rows if r["id"] != keep_id and r.get("merged_into") is None and is_home(r)]
+
+
 def car_at_home(car: dict) -> bool:
     """Whether a car is at home: what the site worked out from the place it is at
     (`at_home`, by is_home); a car dict from elsewhere with only a place name takes the

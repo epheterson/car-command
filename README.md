@@ -19,7 +19,6 @@
 <p>
 <a href="https://github.com/epheterson/car-command/actions/workflows/test.yml"><img alt="tests" src="https://img.shields.io/github/actions/workflow/status/epheterson/car-command/test.yml?branch=main&label=tests"></a>
 <a href="https://github.com/epheterson/car-command/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/epheterson/car-command?label=release"></a>
-<a href="https://scorecard.dev/viewer/?uri=github.com/epheterson/car-command"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/epheterson/car-command/badge"></a>
 <a href="LICENSE"><img alt="PolyForm Noncommercial license" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-555"></a>
 </p>
 
@@ -29,11 +28,12 @@
 
 Car Command is a logbook and dashboard for the electric cars in your household, running on a machine you own: a home server or NAS with Docker. It records every drive and every charge from the cars themselves: where each car went, the energy it took, what that cost at your own electricity rates, and how the battery is holding up. Everything is kept in your own database.
 
-- **Every car on one site**, of several makes: Tesla directly (streaming live, about once a second), Lucid, and the other [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) brands (Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity). Tesla live data needs the [stream](docs/tesla-stream.md) (Docker Compose, a Tailscale account and a Tesla developer app billed per use), or a TeslaFi or TeslaMate you already run.
+- **Every car on one site**, of several makes: Tesla directly (streaming live, about once a second), Lucid, and the other [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) brands (Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity). Tesla live data needs the [stream](docs/tesla-stream.md) (a Tailscale account and a Tesla developer app billed per use), or a TeslaFi or TeslaMate you already run.
 - **Your history comes with you**: years of drives and charges import from TeslaFi or TeslaMate.
 - **Real costs**: each charge priced from your time-of-use plan by the hour the car drew power, a price you set for a place, or what Tesla billed for a Supercharger. A home charge no plan covers falls back to the regional average, marked `≈`.
 - **Solar and Powerwall**: with a Tesla Powerwall at home, each home charge is split into sun, Powerwall and grid, and the sun counts as free.
 - **The rest of owning an EV**: battery health and parked drain, efficiency by temperature and speed, a service log with reminders and tire sets, alerts (Discord, Telegram, email, Pushover), CSV and JSON export.
+- **Commands, if you want them**: start and stop charging, the charge limit, climate and locks from the Now card, off until you turn them on; Teslas through Tesla's own signing proxy. A charging hold can keep a home charge out of the expensive hours. See [docs/commands.md](docs/commands.md).
 - **Phone widgets and other apps**: any app can [connect](docs/api.md) with a sign-in and read each car's state, but not where it is.
 
 ## Quick start
@@ -55,16 +55,16 @@ What you need, settings, backups and upgrades: [docs/install.md](docs/install.md
 
 ## Docker Compose
 
-Compose runs the same parts as separate containers, from a checkout. Tesla owners who want live data need Compose for now: the [Tesla live stream](docs/tesla-stream.md) runs only there, as does the [local maps add-on](docs/maps.md).
+Compose runs the same parts as separate containers, from a checkout. The [local maps add-on](docs/maps.md) runs only there; the [Tesla live stream](docs/tesla-stream.md) runs in either.
 
 ```sh
 git clone https://github.com/epheterson/car-command car-command && cd car-command
 git checkout "$(git describe --tags --abbrev=0)"         # the newest release, not unreleased main
 make setup                                                # writes stack/.env with generated passwords
-docker compose -f stack/docker-compose.yml up -d db web   # Postgres, the schema, and the site
+docker compose -f stack/docker-compose.yml up -d          # Postgres, the schema, the site and the connector
 ```
 
-For Lucid or another CarConnectivity brand, start the connector too: `docker compose -f stack/docker-compose.yml up -d`. `make demo` loads the demo car, and `make one-container-move` [moves a compose install](docs/install.md#moving-a-compose-install-into-the-one-container) into the one container.
+The connector (`cc`) is how Lucid and other CarConnectivity brands sign in; an install of imported history alone can skip it with `up -d db web`. `make demo` loads the demo car, and `make one-container-move` [moves a compose install](docs/install.md#moving-a-compose-install-into-the-one-container) into the one container.
 
 ## Features
 
@@ -87,7 +87,7 @@ Also: the same miles priced in gas, trip tags, an [API](docs/api.md), dark mode 
 
 | Source | Live data | Drive route and power | Charge curve | History before you connect |
 |---|---|---|---|---|
-| Tesla, direct | about once a second with the [stream](docs/tesla-stream.md) (Compose only for now); none without it | both | yes | import from TeslaFi or TeslaMate |
+| Tesla, direct | about once a second with the [stream](docs/tesla-stream.md); none without it | both | yes | import from TeslaFi or TeslaMate |
 | TeslaFi (feed and export) | each minute | both | yes | the export |
 | TeslaMate (database) | as TeslaMate records | both | yes | its database |
 | Lucid ([connector](https://github.com/epheterson/CarConnectivity-connector-lucid)) | each minute, 15 s driving | route only | yes | none |
@@ -103,7 +103,7 @@ Your cars' data stays in your own database. What leaves your machine:
 - **Map backgrounds** (off by default): OpenFreeMap receives the map tiles you view.
 - **Place names** (off by default): OpenStreetMap's Nominatim receives each new stop's position, rounded to about 100 m. The [local maps add-on](docs/maps.md) names places on your machine instead; it downloads its regions from Geofabrik.
 - **Weather** (off by default): Open-Meteo receives each drive's start, rounded to about 1 km, and its date.
-- **Find my plan**: OpenEI receives the ZIP code or utility name you type.
+- **Find my plan**: OpenEI receives the utility you pick (or a ZIP code, only if you type one). Your home's ZIP code is matched to its utilities on your machine. A bill you upload is read on your machine and never stored; only its rate schedule, provider, start date and prices are kept.
 - **Alerts**: the service you choose (Discord, Pushover, Telegram, email) receives the alert.
 
 ## Documentation
@@ -126,7 +126,8 @@ Your cars' data stays in your own database. What leaves your machine:
 
 - **Car data:** [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) and its connectors.
 - **Maps:** © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL), extracts from [Geofabrik](https://download.geofabrik.de), backgrounds from [OpenFreeMap](https://openfreemap.org) (© [OpenMapTiles](https://www.openmaptiles.org/)). The local maps add-on runs [Valhalla](https://github.com/valhalla/valhalla) (MIT) and [osmium](https://osmcode.org/osmium-tool/) (GPL-3.0, as a separate tool).
-- **Prices:** US EIA, Eurostat and the EU Weekly Oil Bulletin; US utility plans from [OpenEI](https://openei.org/wiki/Utility_Rate_Database).
+- **Prices:** US EIA, Eurostat and the EU Weekly Oil Bulletin; US utility plans from [OpenEI](https://openei.org/wiki/Utility_Rate_Database); utilities by ZIP code from NREL's [U.S. Electric Utility Companies and Rates: Look-up by Zipcode](https://data.openei.org/submissions/6225) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), filtered and re-encoded).
+- **Terrain:** [Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (Mapzen/Tilezen) on AWS Open Data, a blend of SRTM, USGS 3DEP, EU-DEM and other national models; each source and its attribution is listed in [joerd's attribution.md](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
 - **Weather:** [Open-Meteo](https://open-meteo.com).
 - **Icons:** [Lucide](https://lucide.dev) (ISC).
 

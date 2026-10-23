@@ -71,3 +71,14 @@ def springfield_plan():
     cost.use_plan(plan)
     yield plan
     cost.use_plan(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_alert_log_database(monkeypatch):
+    """Tests have no database: the sent log of every alert a request raises (a sign-in, a
+    connect) would wait out the pool on each one. A test of the log gives its Recorder one."""
+    import sys
+
+    app = sys.modules.get("app")
+    if app is not None and hasattr(app, "recorder"):
+        monkeypatch.setattr(app.recorder, "log_connect", None)

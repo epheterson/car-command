@@ -305,3 +305,46 @@ def test_upgrading_to_plans_changes_no_cost(stored, no_plan):
         before += old_cost
         after += new["cost"]
     assert after == pytest.approx(before, abs=1e-9) and before > 0
+
+
+def test_a_profile_of_charging_prices_like_the_charges_themselves(no_plan):
+    """Charges folded into weekday/weekend x month x hour, priced on a plan's grid, cost what
+    each charge priced alone costs at the same version: the profile loses only the date."""
+    plan = _four_period_plan()
+    profile = [0.0] * 576
+    charges = [
+        (datetime(2026, 7, 1, 8, tzinfo=PT), datetime(2026, 7, 1, 18, tzinfo=PT), 10.0),  # a July weekday
+        (datetime(2026, 7, 4, 15, 30, tzinfo=PT), datetime(2026, 7, 4, 22, tzinfo=PT), 7.2),  # a July Saturday
+        (datetime(2026, 1, 13, 23, tzinfo=PT), datetime(2026, 1, 14, 6, tzinfo=PT), 11.0),  # over midnight in January
+    ]
+    for a, b, kw in charges:
+        cost.profile_add(profile, [(a, b, kw)], a, b, PT)
+    assert sum(profile) == pytest.approx(10 * 10 + 6.5 * 7.2 + 7 * 11)
+    assert profile[cost.profile_index(True, 7, 16)] == pytest.approx(7.2) and profile[cost.profile_index(False, 7, 16)] == pytest.approx(10.0)
+    alone = sum(session_cost([(a, b, kw)], a, b, PT, plan)["cost"] for a, b, kw in charges)
+    assert cost.profile_cost(plan, profile, date(2026, 10, 1)) == pytest.approx(alone)
+    # at the prices in force on another day: the older version; before the first, the first
+    older = cost.with_prices(plan, {})["versions"][0]
+    assert cost.profile_cost(plan, profile, date(2025, 6, 1)) == cost.profile_cost({**plan, "versions": [older]}, profile, date(2025, 6, 1))
+    assert cost.profile_cost(plan, profile, date(2020, 1, 1)) == cost.profile_cost(plan, profile, date(2025, 6, 1))
+    assert cost.profile_cost(None, profile, date(2026, 1, 1)) is None
+
+
+def seasonal(part_peak_late):
+    """A plan as OpenEI files one: summer and winter periods side by side, six in all."""
+    def row(off, part, peak):
+        return [off] * 15 + [part] + [peak] * 5 + [part] * 3 if part_peak_late else [off] * 15 + [part] + [peak] * 5 + [off] * 3
+
+    summer, winter = row(0, 1, 2), row(3, 4, 5)
+    grid = [winter if m < 5 or m > 8 else summer for m in range(12)]
+    prices = [0.22, 0.43, 0.54, 0.22, 0.39, 0.41]
+    return {"periods": [{"key": str(i), "label": str(i), "price": p} for i, p in enumerate(prices)], "weekday": grid, "weekend": grid}
+
+
+def test_hours_in_a_different_role_are_found_and_said_by_month():
+    late = [{"period": "peak", "days": "all", "start": 16, "end": 21, "months": None}, {"period": "part_peak", "days": "all", "start": 15, "end": 16, "months": None}]
+    mine = compile_rows("Springfield EV", [{"from": "2026-01-01", "off_peak": 0.3, "part_peak": 0.49, "peak": 0.52}], late + [{"period": "part_peak", "days": "all", "start": 21, "end": 22, "months": [1, 2, 3, 4, 5, 10, 11, 12]}])["versions"][0]
+    assert cost.hours_differ(mine, seasonal(True)) == ["off-peak here, part-peak there: 10pm–12am Jan–May, Oct–Dec; 9pm–12am Jun–Sep"]
+    right = compile_rows("Springfield EV", [{"from": "2026-01-01", "off_peak": 0.3, "part_peak": 0.49, "peak": 0.52}], late + [{"period": "part_peak", "days": "all", "start": 21, "end": 24, "months": None}])["versions"][0]
+    assert cost.hours_differ(right, seasonal(True)) == []  # six seasonal periods rank within each month, so winter's peak is still peak
+    assert cost.hours_differ(right, seasonal(False)) == ["part-peak here, off-peak there: 9pm–12am every month"]

@@ -17,10 +17,32 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
-from history import cut, fill_after_import, first_logged, write_history
+from history import cut, fill_after_import, live_since, write_history
 from teslamate_import import replay_dir
 
 TZ = ZoneInfo(os.environ.get("TZ", "America/Los_Angeles"))
+
+
+def write_car(conn, out: dict, vin: str, name: str, manufacturer: str, model: str | None, capacity: float | None, label: str, until_arg: str = "auto", dry_run: bool = False, say=print) -> dict | None:
+    """Write one car's replayed TeslaMate history; None for a dry run. One import id per car, not per dump: the source keeps growing, and a re-import must replace the last one."""
+    import_id = f"tm-{vin}"
+    # imports written before the id was per car carry a content hash; adopt them so they get replaced, not duplicated
+    for table, col in (("cc_imports", "id"), ("cc_positions", "import_id"), ("cc_software", "import_id")):
+        conn.execute(f"UPDATE {table} SET {col} = %s WHERE vin = %s AND {col} LIKE 'tm-%%' AND {col} <> %s", (import_id, vin, import_id))
+    conn.commit()
+    until = None
+    if until_arg == "auto":
+        until = live_since(conn, vin)
+    elif until_arg:
+        until = datetime.fromisoformat(until_arg.replace("Z", "+00:00")).astimezone(timezone.utc)
+    if until:
+        out = cut(out, until)
+        say(f"cut at {until:%Y-%m-%d %H:%M:%S%z}: {len(out['trips'])} trips, {len(out['charging_sessions'])} charges, {len(out['positions'])} positions remain")
+    if dry_run:
+        return None
+    counts = write_history(conn, vin, name, manufacturer, model, capacity, out, import_id, label, TZ)
+    counts["trip_facts"], counts["charge_facts"] = fill_after_import(conn, vin, TZ)
+    return counts
 
 
 def main(argv: list[str]) -> int:
@@ -46,22 +68,9 @@ def main(argv: list[str]) -> int:
         f"{len(out['charging_sessions'])} charges, {len(out['positions'])} positions, {len(out['software'])} software versions, import {import_id}"
     )
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        # imports written before the id was per car carry a content hash; adopt them so they get replaced, not duplicated
-        for table, col in (("cc_imports", "id"), ("cc_positions", "import_id"), ("cc_software", "import_id")):
-            conn.execute(f"UPDATE {table} SET {col} = %s WHERE vin = %s AND {col} LIKE 'tm-%%' AND {col} <> %s", (import_id, args.vin, import_id))
-        conn.commit()
-        until = None
-        if args.until == "auto":
-            until = first_logged(conn, args.vin)
-        elif args.until:
-            until = datetime.fromisoformat(args.until.replace("Z", "+00:00")).astimezone(timezone.utc)
-        if until:
-            out = cut(out, until)
-            print(f"cut at {until:%Y-%m-%d %H:%M:%S%z}: {len(out['trips'])} trips, {len(out['charging_sessions'])} charges, {len(out['positions'])} positions remain")
-        if args.dry_run:
+        counts = write_car(conn, out, args.vin, args.name, args.manufacturer, args.model, args.capacity, str(d), args.until, args.dry_run)
+        if counts is None:
             return 0
-        counts = write_history(conn, args.vin, args.name, args.manufacturer, args.model, args.capacity, out, import_id, str(d), TZ)
-        counts["trip_facts"], counts["charge_facts"] = fill_after_import(conn, args.vin, TZ)
     print("loaded: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
     return 0
 

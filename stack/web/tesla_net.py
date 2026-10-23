@@ -57,6 +57,23 @@ FIELDS = {
     "FastChargerType": 60,
     "InsideTemp": 60,
     "OutsideTemp": 60,
+    # Climate: on, preconditioning or Cabin Overheat Protection; the keeper (Dog, Camp), defrost,
+    # the set temperature. Sent when they change.
+    "HvacPower": 10,
+    "ClimateKeeperMode": 60,
+    "DefrostMode": 60,
+    "CabinOverheatProtectionMode": 300,
+    "HvacLeftTemperatureRequest": 60,
+    "PreconditioningEnabled": 60,
+    # Charging, beyond power: the port, its latch, the rate, time to full, the current asked for
+    "ChargePortDoorOpen": 10,
+    "ChargePortLatch": 10,
+    "ChargeRateMilePerHour": 60,
+    "TimeToFullCharge": 60,
+    "ChargeCurrentRequest": 60,
+    # Someone in the driver's seat; a software update waiting
+    "DriverSeatOccupied": 10,
+    "SoftwareUpdateVersion": 3600,
     "Version": 3600,
     "VehicleName": 3600,
     # What the car is (identity.py): model, trim, paint, wheels, roof. They change only with

@@ -1,3 +1,7 @@
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+import filters
 from filters import place_city, place_road, short_address, short_place
 
 
@@ -35,7 +39,7 @@ def test_the_clock_and_date_order_rewrite_every_pattern_the_templates_ask_for():
     tz = ZoneInfo("UTC")
     at = datetime(2026, 3, 4, 17, 5, tzinfo=timezone.utc)
     now = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
-    assert when(at, tz, now) == "Mar 4, 5:05 PM"
+    assert when(at, tz, now) == "Mar 4, 5:05 PM"
     assert when(at, tz, now, clock="24", date_order="dmy") == "4 Mar, 17:05"
     assert when(now, tz, now, clock="24") == "12:00"
 
@@ -115,3 +119,36 @@ def test_a_place_name_with_regex_metacharacters_never_raises():
     # one bad name must not break matching an unrelated one in the same map
     out = str(places("Home", icon_map=icon_map))
     assert out.count("<svg") == 1 and 'class="pl-ic pl-home"' in out
+
+
+def test_a_title_leads_with_a_glyph_only_where_places_draws_one():
+    from filters import leads_with_icon, places
+
+    for text, icons, want in (("Home → Lake", None, True), ("Grocery → Home", None, False), ("Grocery → Home", {"grocery": "shop"}, True), ("Home → Lake", {"home": "none"}, False), ("", None, False)):
+        drawn = str(places(text, icons)).startswith('<span class="pl">')
+        assert leads_with_icon(text, icons) is want is drawn, (text, icons)
+
+
+def test_a_12_hour_time_keeps_its_am_or_pm_on_its_line():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from filters import tied, when
+
+    assert tied("Mar 4, 5:05 PM") == "Mar 4, 5:05 PM" and tied("17:05") == "17:05"
+    at = datetime(2026, 3, 4, 17, 5, tzinfo=timezone.utc)
+    assert when(at, ZoneInfo("UTC"), at, clock="12") == "5:05 PM"
+
+
+def test_a_clock_change_reaches_macros_already_imported():
+    """Jinja keeps an imported template's macros with the filters they were built with; the
+    filters read the clock as they run, so a page's macros follow the switch to 24 hours."""
+    from jinja2 import DictLoader, Environment
+
+    env = Environment(loader=DictLoader({"m.html": "{% macro t(x) %}{{ x|local('%-I:%M %p') }} {{ x|when }}{% endmacro %}", "p.html": "{% import 'm.html' as m %}{{ m.t(x) }}"}))
+    x = datetime(2026, 1, 1, 19, 5, tzinfo=timezone.utc)
+    filters.register(env, ZoneInfo("UTC"), "12")
+    assert env.get_template("p.html").render(x=x).startswith("7:05")
+    filters.register(env, ZoneInfo("UTC"), "24")
+    assert env.get_template("p.html").render(x=x).startswith("19:05")
+    filters.register(env, ZoneInfo("UTC"), "12")

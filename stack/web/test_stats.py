@@ -106,55 +106,6 @@ def test_rows_without_the_value_go_last_either_way():
     assert [r["cost"] for r in sort_rows(rows, "cost", True, DRIVE_SORTS)[0]] == [3.0, 1.0, None]
 
 
-def test_charging_efficiency_per_place_is_rated_miles_per_kwh_over_matched_pairs():
-    from datetime import datetime, timedelta, timezone
-
-    from stats import charging_summary
-
-    t = datetime(2026, 9, 1, tzinfo=timezone.utc)
-    rows = [
-        {
-            "session_start_date": t,
-            "where": "Home",
-            "kwh": 40.0,
-            "range_added": 160.0,
-            "cost": 16.0,
-            "start_level": 20,
-            "end_level": 80,
-            "duration": timedelta(hours=4),
-            "charging_type": "AC",
-            "at_home": True,
-        },
-        {
-            "session_start_date": t,
-            "where": "Home",
-            "kwh": 10.0,
-            "range_added": None,
-            "cost": 4.0,
-            "start_level": 70,
-            "end_level": 85,
-            "duration": timedelta(hours=1),
-            "charging_type": "AC",
-            "at_home": True,
-        },
-        {
-            "session_start_date": t,
-            "where": "Supercharger",
-            "kwh": 50.0,
-            "range_added": 175.0,
-            "cost": None,
-            "start_level": 10,
-            "end_level": 80,
-            "duration": timedelta(minutes=30),
-            "charging_type": "DC",
-            "at_home": False,
-        },
-    ]
-    places = {p["where"]: p for p in charging_summary(rows)["places"]}
-    assert places["Home"]["mi_per_kwh"] == 4.0, "the session with no range figure is left out of the ratio, not counted as zero"
-    assert places["Supercharger"]["mi_per_kwh"] == 3.5
-
-
 def test_the_feed_gets_a_parked_row_for_each_long_gap_with_the_battery_lost():
     from datetime import datetime, timedelta, timezone
     from zoneinfo import ZoneInfo
@@ -252,3 +203,70 @@ def test_the_drive_filter_matches_places_both_ways_length_and_words():
     assert [c["id"] for c in filter_charges(charges, kind="fast")] == [2]
     assert [c["id"] for c in filter_charges(charges, kind="away")] == [3]
     assert [c["id"] for c in filter_charges(charges, min_kwh=1)] == [1, 2] and [c["id"] for c in filter_charges(charges, where="power plant")] == [3]
+
+
+def test_a_charge_still_going_and_a_top_up_are_not_counted_as_charges():
+    """A live session has no energy yet, and a third of the Teslas' sessions add under a kWh at
+    the plug: counted as charges they read "19 charges · 0.0 kWh" and pulled every average down."""
+    from stats import charge_kind
+
+    end = T + timedelta(hours=12)
+    charges = [
+        {"session_start_date": T + timedelta(hours=10), "session_end_date": end, "kwh": 30.0, "cost": 12.0},
+        {"session_start_date": T + timedelta(hours=13), "session_end_date": end + timedelta(hours=1.1), "kwh": 0.4, "cost": 0.15},
+        {"session_start_date": T + timedelta(hours=14), "session_end_date": None, "kwh": None, "cost": None},
+    ]
+    assert [charge_kind(c) for c in charges] == ["charge", "topup", "open"]
+    assert charge_kind({"session_start_date": T, "session_end_date": end, "kwh": None}) == "charge", "energy not worked out yet"
+    r = summarize([], charges, "week", PT, None)[0]
+    assert r["charges"] == 1 and r["topups"] == 1, "one charge, one top-up, the live one in neither"
+    assert r["added_kwh"] == pytest.approx(30.4) and r["cost"] == pytest.approx(12.15) and r["priced"] == 2, "the top-up's energy and cost still count"
+
+
+def test_the_charging_summary_leaves_a_live_charge_out_and_counts_top_ups_apart():
+    """A live charge read "Old Ranch Road · 1 charge · 0.0 kWh each" and was in the All row's average."""
+    from stats import charging_summary
+
+    def ch(where, kwh, end=True, cost=None):
+        return {"session_start_date": T, "session_end_date": T + timedelta(hours=2) if end else None, "where": where, "kwh": kwh, "cost": cost, "duration": timedelta(hours=2) if end else None}
+
+    s = charging_summary([ch("Home", 60.0, cost=18.0), ch("Home", 0.4, cost=0.12), ch("Home", 40.0, cost=12.0), ch("Elm St", None, end=False)])
+    assert [p["where"] for p in s["places"]] == ["Home"], "the live charge has no place row yet"
+    home = s["places"][0]
+    assert (home["charges"], home["topups"], home["kwh"], home["topup_kwh"]) == (2, 1, 100.4, 0.4)
+    assert home["avg_time"] == timedelta(hours=2), "a session's length over the charges, not the top-ups"
+    assert (s["total_charges"], s["total_topups"], s["charging_now"], s["priced"]) == (2, 1, 1, 3)
+    assert s["total_cost"] == pytest.approx(30.12), "a top-up's cost is money spent"
+
+
+def test_a_route_with_an_unnamed_end_filters_to_exactly_its_drives():
+    import toproutes
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    from stats import filter_drives
+
+    home, found, bravo = {"id": 1, "name": "Home"}, {"id": 7, "name": "Elm Street, Springfield", "auto": True}, {"id": 8, "name": "Elm Street, Springfield", "auto": True}
+    t0 = datetime(2026, 3, 2, 13, 0, tzinfo=timezone.utc)
+    rows, pairs = [], [(found, home)] * 2 + [(home, found)] * 2 + [(bravo, home)] * 2 + [(home, home)]
+    for i, (a, b) in enumerate(pairs):
+        rows.append(
+            {
+                "id": i + 1,
+                "from": a["name"],
+                "to": b["name"],
+                "from_id": a["id"],
+                "to_id": b["id"],
+                "start_place": a,
+                "end_place": b,
+                "start_date": t0 + timedelta(days=i),
+                "destination_date": t0 + timedelta(days=i, minutes=9),
+                "miles": 3.0,
+            }
+        )
+    routes = {r["key"]: r for r in toproutes.routes(rows, [], ZoneInfo("America/Chicago"))}
+    r = routes["1-7"]
+    ids = lambda **kw: sorted(d["id"] for d in filter_drives(rows, **kw))
+    assert ids(frm_id=r["a"]["id"], to_id=r["b"]["id"], both_ways=True) == sorted(r["ids"]) == [1, 2, 3, 4], "the route's two ends by id, both ways, are exactly its drives"
+    assert ids(frm_id=7, to_id=1) == [1, 2] and ids(frm_id=1, to_id=7) == [3, 4], "one way each"
+    assert ids(frm="Elm Street, Springfield", to="Home") == [1, 2, 5, 6], "by name, two found places that share a name are one: the id is what tells them apart"
+    assert ids(frm_id=999, to_id=1, both_ways=True) == [], "an id no drive has matches nothing, not everything"

@@ -5,6 +5,7 @@ route passes one cached query of arrivals."""
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from statistics import median
 
@@ -47,6 +48,9 @@ def stays(arrivals: list[tuple], places: list[dict], tz, keep: int = 40) -> dict
     return out
 
 
+COORDINATES = re.compile(r"^\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*$")
+
+
 def city_of(p: dict) -> str:
     """The town a place is in, for its row: the last part of the owner's own address when
     it has one ("12 Elm Street, Springfield"), else of the looked-up one cut to "Road,
@@ -59,7 +63,7 @@ def city_of(p: dict) -> str:
         p.get("street"),
         found,
     ):
-        if text and ", " in text:
+        if text and ", " in text and not COORDINATES.match(text):  # "39.765, -89.575" has no town: its tail is a longitude
             return text.rsplit(",", 1)[1].strip()
     return ""
 
@@ -148,24 +152,27 @@ def nearby(lat: float, lon: float, every: list[dict], skip: int | None = None, w
     return sorted((o for o in out if o["m"] <= within), key=lambda o: o["m"])
 
 
-def visits(p: dict, stays: dict) -> int:
+def visits(p: dict, stays: dict, vin: str | None = None) -> int:
     """How many times the cars stopped at a place: the drives that ended inside it, as `stays`
     counts them. The one count every page shows, always called visits. (cc_places.visits is
     what discovery counted once from both ends of every drive, about twice this and never
-    updated; nothing shows it.)"""
+    updated; nothing shows it.) `vin`: only that car's stops."""
     st = stays.get(p["id"])
-    return st["n"] if st else 0
+    if not st:
+        return 0
+    return st["by_car"].get(vin, 0) if vin else st["n"]
 
 
-def index_rows(every: list[dict], stays: dict, navs: dict, city, icon) -> list[dict]:
+def index_rows(every: list[dict], stays: dict, navs: dict, city, icon, vin: str | None = None) -> list[dict]:
     """The Places page's list and map as one compact list: the found places first (they want a
     name), most stops first, each with the cars' navigation name when there is one; then the
     named ones, most visits first. `city(p)` and `icon(p)` give a place's town and the icon it
-    shows. Short keys: this is the one thing the page fetches."""
+    shows. Short keys: this is the one thing the page fetches. With a `vin`, only the places
+    that car has stopped at, each with that car's visits; none, every place."""
 
     def row(p: dict) -> dict:
         r = {"id": p["id"], "n": p["name"], "la": round(p["latitude"], 6), "lo": round(p["longitude"], 6), "r": round(p["radius_m"])}
-        r.update(v=visits(p, stays), c=city(p))
+        r.update(v=visits(p, stays, vin), c=city(p))
         if p.get("auto"):
             r["a"] = 1
             nv = navs.get(p["id"])
@@ -176,5 +183,7 @@ def index_rows(every: list[dict], stays: dict, navs: dict, city, icon) -> list[d
         return r
 
     rows = [row(p) for p in every]
+    if vin:
+        rows = [r for r in rows if r["v"]]
     order = lambda r: (-r["v"], r["id"])  # noqa: E731
     return sorted((r for r in rows if r.get("a")), key=order) + sorted((r for r in rows if not r.get("a")), key=order)

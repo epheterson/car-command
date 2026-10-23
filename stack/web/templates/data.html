@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Readings · {{ day.strftime('%b %-d, %Y') }} · Car Command{% endblock %}
+{% block title %}Readings · {{ day|dfmt('%b %-d, %Y') }} · Car Command{% endblock %}
 {% block body %}
-<p class="muted small"><a href="{{ root }}/day?date={{ day.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ day.strftime('%A, %B %-d') }}</a> › readings</p>
-<h1>Readings <span class="more">{{ car.name }}, {{ day.strftime('%b %-d, %Y') }}</span> <a class="more" href="{{ root }}/data.csv?date={{ day.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">Download CSV</a></h1>
-<p class="seg-links month-nav"><a href="{{ root }}/data?date={{ prev.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">‹ {{ prev.strftime('%a %b %-d') }}</a><span aria-current="page">{{ day.strftime('%a %b %-d') }}</span>{% if next %}<a href="{{ root }}/data?date={{ next.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ next.strftime('%a %b %-d') }} ›</a>{% endif %}</p>
+<p class="muted small"><a href="{{ root }}/day?date={{ day.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ day|dfmt('%A, %B %-d') }}</a> › readings</p>
+<h1>Readings <span class="more">{{ car.name }}, {{ day|dfmt('%b %-d, %Y') }}</span> <a class="more" href="{{ root }}/data.csv?date={{ day.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">Download CSV</a></h1>
+<p class="seg-links month-nav"><a href="{{ root }}/data?date={{ prev.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">‹ {{ prev|dfmt('%a %b %-d') }}</a><span aria-current="page">{{ day|dfmt('%a %b %-d') }}</span>{% if next %}<a href="{{ root }}/data?date={{ next.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ next|dfmt('%a %b %-d') }} ›</a>{% endif %}</p>
 <p class="muted small">{{ count }} reading{{ 's' if count != 1 }} {% if source == 'feed' %}from TeslaFi, one a minute while the car is awake{% elif source == 'live' %}from CarConnectivity, one per change{% else %}(no live source for this car){% endif %}.{% if every > 1 %} One in every {{ every }} shown here; the CSV has them all.{% endif %}</p>
 {% if rows %}<div class="scroll"><table class="readings"><thead><tr>{% for c in cols %}<th>{{ c }}</th>{% endfor %}</tr></thead>
   <tbody>{% for r in rows %}<tr>{% for c in cols %}<td>{% if c in ('at',) %}{{ r.get(c)|local('%-I:%M:%S %p') if r.get(c) else '' }}{% else %}{{ r.get(c, '') if r.get(c) is not none else '' }}{% endif %}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>

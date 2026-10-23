@@ -1,0 +1,75 @@
+{% extends "settings_base.html" %}
+{# Settings › Commands: the switch for every command, each car's tier, each car's charging hold.
+   One form, one Save bar. The commands themselves are on the car's Now card. #}
+{% from "_info.html" import info %}
+{% import "_settings.html" as s %}
+{% import "_strips.html" as st %}
+{% block section %}
+<form id="commands" method="post" action="{{ root }}/settings/commands{{ q }}" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
+<section class="group">
+  <h2 class="sec">Commands</h2>
+  <div class="group-b">
+    <input type="hidden" name="commands_shown" value="1">
+    <div class="set-row"><span class="set-l"><label for="commands-on">Send commands to the cars</label> {% call info("What this allows") %}Charging, its limit, climate and lock from each car's Now card, after a confirming tap. Every command is logged on the Now card.{% endcall %}<span class="set-s">Off turns every command and the charging hold off</span></span><div class="set-c">{{ s.switch('commands_on', st.commands_on, 'Send commands to the cars', id='commands-on') }}</div></div>
+    {% if not cmd_signed %}<div class="set-notes"><p class="notice warn">Commands need the site's sign-in or Cloudflare Access. <a href="{{ root }}/settings/access">Sign-in and API</a></p></div>{% endif %}
+    {% if cmd_scope is not none and not cmd_scope.all %}<div class="set-row sub"><span class="set-l">Tesla: sign in again to allow commands</span><div class="set-c"><a class="btn sm" href="{{ root }}/settings/sources/tesla/start">Sign in again</a></div></div>{% endif %}
+  </div>
+</section>
+<section class="group">
+  <h2 class="sec">Each car {% call info("What each step adds") %}Everyday: charging, its limit and current, climate, defrost, seat heat, lights, horn, wake, lock. Settings: Sentry and scheduled charging. Access: unlock, trunk, frunk, windows and keyless driving, each after the password again.{% endcall %}</h2>
+  <div class="group-b">
+    <input type="hidden" name="tiers_shown" value="1">
+    {% for c in cmd_cars %}
+    <div class="set-row"><span class="set-l">{{ c.name }}<span class="set-s">{% if c.way == 'tesla' %}Through Tesla's signing proxy{% elif c.way == 'connector' %}Through CarConnectivity{% else %}{{ c.reason }}{% endif %}</span></span>
+      <div class="set-c">{% if c.way %}{{ s.segmented('tier_' ~ c.vin, [('1', 'Everyday'), ('2', '+ Settings'), ('3', '+ Access')], c.tier|string, 'What ' ~ c.name ~ ' may be sent', full=false) }}{% endif %}</div></div>
+    {% else %}
+    <div class="empty">No cars yet</div>
+    {% endfor %}
+  </div>
+</section>
+<section class="group" id="hold">
+  <h2 class="sec">Charging hold {% call info("What it does") %}At home, a charge inside these hours is paused after 10 minutes and started again half a minute after they end. Started by hand, it's left alone until then. Unplugging resets it.{% endcall %}</h2>
+  <div class="group-b">
+    <input type="hidden" name="hold_shown" value="1">
+    {% for c in cmd_cars if c.way %}
+    <div class="set-row hold"><span class="set-l"><label for="hold-{{ c.vin }}">{{ c.name }}</label><span class="set-s">{% if c.hold_last %}{{ c.hold_last }}{% elif c.hold %}On{% else %}Off{% endif %}</span></span>
+      <div class="set-c hold-c">{{ s.time('hold_from_' ~ c.vin, c.hold_rule['from'], 'Hold ' ~ c.name ~ ' from') }}<span class="muted">to</span>{{ s.time('hold_until_' ~ c.vin, c.hold_rule['until'], 'Hold ' ~ c.name ~ ' until') }}{{ s.switch('hold_' ~ c.vin, c.hold, 'Hold ' ~ c.name ~ ' charging', id='hold-' ~ c.vin) }}</div></div>
+    {% else %}
+    <div class="empty">No car takes commands yet</div>
+    {% endfor %}
+  </div>
+</section>
+<section class="group" id="fleet">
+  <h2 class="sec">Tesla API {% call info("What counts") %}Every call Car Command makes to Tesla's Fleet API and every signal a car streams, counted on disk by car and kind. Tesla gives each account a monthly credit; use past it is billed. Only calls Tesla bills are counted. Months run in UTC, as Tesla's billing months do. The signing proxy's own handshakes with the car aren't seen here.{% endcall %}</h2>
+  <div class="group-b fleet">
+    <input type="hidden" name="fleet_shown" value="1">
+    <div class="fleet-h">
+      <div class="fleet-n"><b>${{ '%.2f'|format(fleet.spend) }}</b><span class="muted"> of ${{ '%g'|format(fleet.credit) }} · {{ fleet.month }} UTC</span>{% if fleet.pace is not none and fleet.credit %}<span class="fleet-pace{{ ' over' if fleet.pace > fleet.credit }}" title="At this month's pace so far">on pace for ${{ '%.2f'|format(fleet.pace) }}</span>{% endif %}</div>
+      <span class="chip-v fleet-step {{ fleet.step }}" title="{{ {'ok': 'Polling at its normal pace', 'slow': 'Background polling waits twice as long', 'tight': 'Polling waits four times as long; background wakes are refused', 'stopped': 'Background calls are paused; commands still go'}[fleet.step] if fleet.on else 'The budget is off' }}">{{ {'ok': 'Normal', 'slow': 'Slowing', 'tight': 'Tight', 'stopped': 'Paused'}[fleet.step] if fleet.on else 'Budget off' }}</span>
+    </div>
+    <div class="fleet-bar" role="img" aria-label="{{ '%.0f'|format(fleet.pct) }}% of this month's allowance"><span class="seg {{ fleet.step }}" style="width:{{ '%.1f'|format(fleet.pct) }}%"></span><i style="left:{{ fleet.slow_at }}%" title="Polling slows"></i><i style="left:{{ fleet.tight_at }}%" title="Wakes refused; an alert is sent"></i></div>
+    <div class="ovx"><table class="data fleet-t">
+      <thead><tr><th>This month</th><th class="r">Calls</th><th class="r">Cost</th></tr></thead>
+      <tbody>{% for r in fleet.rows %}
+        <tr title="{% if r.key == 'signals' %}${{ '%g'|format(r.rate * 1000) }} per 1,000 signals{% elif r.rate is not none %}${{ '%g'|format(r.rate) }} a call{% else %}Free{% endif %}{% for c in r.cars %} · {{ c.name }} {{ '{:,}'.format(c.calls) }}{% endfor %}"><td>{{ r.label }}{% if r.cars|length > 1 %}<span class="muted small fleet-cars">{% for c in r.cars %}{{ c.name }} {{ '{:,}'.format(c.calls) }}{{ ' · ' if not loop.last }}{% endfor %}</span>{% endif %}</td><td class="r">{{ '{:,}'.format(r.calls) }}</td><td class="r">{% if r.rate is not none %}${{ '%.2f'|format(r.cost) }}{% else %}<span class="muted">free</span>{% endif %}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>
+    {{ st.strip(fleet.strip, 'Tesla API spend each month, last 12 months', 'fleet-strip') }}
+    <details class="set-x fleet-log"><summary class="set-row"><span class="set-l">Last {{ fleet.recent|length }} calls</span></summary>
+      {% macro callrows(rows) %}<dl class="cmd-rows">{% for r in rows %}<dt>{{ r.at|local }}</dt><dd><span class="sstate"><span class="sdot {{ 'ok' if r.ok else 'bad' }}" aria-hidden="true"></span>{{ r.endpoint }}</span> <span class="muted small">{{ r.car }} · {{ r.category }} · {{ r.status or 'no answer' }}</span></dd>{% endfor %}</dl>{% endmacro %}
+      {% if fleet.recent %}{{ callrows(fleet.recent[:10]) }}
+      {% if fleet.recent|length > 10 %}<details class="fleet-more"><summary class="muted small">{{ fleet.recent|length - 10 }} more</summary>{{ callrows(fleet.recent[10:]) }}</details>{% endif %}
+      {% else %}<div class="empty">No calls yet</div>{% endif %}
+    </details>
+    <div class="set-row"><span class="set-l"><label for="fleet-on">Hold back near the limit</label> {% call info("What the budget does") %}From 50%: background polling waits twice as long. From 80%: four times as long, background wakes are refused, and one alert is sent. At 100%: background calls stop, with a second alert, until you raise the allowance. An allowance of 0 turns this off. Commands you send, and the charging hold, always go; past the limit they say so.{% endcall %}</span><div class="set-c">{{ s.switch('fleet_budget_on', st.fleet_budget_on is not false, 'Hold Tesla API use back near the limit', id='fleet-on') }}</div></div>
+    <div class="set-row"><span class="set-l"><label for="fleet-credit">Monthly allowance</label> {% call info("Tesla's free credit") %}US$10 a month per account at Tesla's last published terms (developer.tesla.com/docs/fleet-api/billing-and-limits). Raise it if you've set a higher billing limit with Tesla.{% endcall %}</span><div class="set-c">{{ s.num('fleet_credit', '%g'|format(fleet.credit), pre='$', w='5', step='0.5', min=0, id='fleet-credit', label='Monthly allowance in dollars') }}</div></div>
+    <details class="set-x"><summary class="set-row"><span class="set-l">Rates {% call info("Where these come from") %}Tesla's pay-per-use prices as published in 2026 (developer.tesla.com): 500 data requests, 1,000 commands, 50 wakes or 150,000 streamed signals per $1. Tesla changes them; edit here.{% endcall %}</span></summary>
+      {% for k, label in [('data', 'Data request'), ('commands', 'Command'), ('wakes', 'Wake'), ('signals', 'Per 1,000 signals')] %}
+      <div class="set-row sub"><span class="set-l"><label for="fleet-rate-{{ k }}">{{ label }}</label></span><div class="set-c">{{ s.num('fleet_rate_' ~ k, '%g'|format(fleet_rates[k] * (1000 if k == 'signals' else 1)), pre='$', w='6', step='any', min=0, id='fleet-rate-' ~ k, label=label ~ ' rate in dollars') }}</div></div>
+      {% endfor %}
+    </details>
+  </div>
+</section>
+{{ s.savebar() }}
+</form>
+{% endblock %}

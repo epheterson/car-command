@@ -13,6 +13,8 @@ H = timedelta(hours=1)
 class Conn:
     """cc_software as a list of dicts; answers the statements under test."""
 
+    description = None  # no cursor columns: a statement it does not answer returns no rows (driveedits reads by column name)
+
     def __init__(self, rows=()):
         self.rows = [dict(id=i + 1, vin=ALPHA, import_id=None, **r) for i, r in enumerate(rows)]
         self.deleted, self.commits, self.last = [], 0, []

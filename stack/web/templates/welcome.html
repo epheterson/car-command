@@ -11,12 +11,12 @@
   <section>
     <h2>Log a car live</h2>
     <p class="lede">Add a source under <a href="{{ root }}/settings/cars">Settings › Cars and sources</a>.</p>
-    {% if connector %}<p class="muted small">{{ connector }}</p>{% else %}<p class="muted small">CarConnectivity is answering, but it has no cars yet.</p>{% endif %}
+    {% if connector %}<p class="muted small">{{ connector }}</p>{% else %}<p class="muted small">No source is set up yet.</p>{% endif %}
   </section>
   <section>
     <h2>Or bring history in</h2>
-    <p class="lede">Import a TeslaFi export or a TeslaMate database.</p>
-    <p class="muted small"><code>make import FILE=TeslaFiData.csv.gz</code>, then <code>make discover</code> to name its places.</p>
+    <p class="lede">A TeslaFi export or a TeslaMate database, from the browser.</p>
+    <div class="acts"><a class="btn primary" href="{{ root }}/settings/cars#import">Import history</a></div>
   </section>
 </div>
 {% endblock %}

@@ -4,7 +4,7 @@ The star is the garage: one leg folded flat into the road, one point raised leve
 
 | File | Use |
 |---|---|
-| `mark.svg` | The mark, a 2.6-unit stroke in a 69.6 × 46.0 box. 48 px wide and up. |
+| `mark.svg` | The mark, a 2.6-unit stroke in a 68.4 × 39.9 box. 48 px wide and up. |
 | `mark-outlined.svg` | The same, the stroke expanded to a filled shape, for tools that do not take strokes. |
 | `lockup-horizontal.svg`, `lockup-horizontal-night.svg` | The mark with the name (Jost Medium, outlined), on light and on dark. |
 | `icon.svg`, `icon-light.svg` | The app icon, the mark inside the maskable safe circle. |

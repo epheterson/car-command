@@ -16,10 +16,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Which CarConnectivity connectors this image carries: pip specs, separated by semicolons
 # or newlines, from CC_CONNECTORS in stack/.env. Any brand CarConnectivity supports; the
-# default is the Lucid connector at its pinned PyPI release.
-ARG CC_CONNECTORS="carconnectivity-connector-lucid==0.1.8"
+# default is the Lucid connector at its pinned PyPI release. A wheel in wheels/ (make wheel,
+# untracked) can be pinned too, for a build that is not on PyPI yet; with none there, pip
+# finds exactly what it did before.
+ARG CC_CONNECTORS="carconnectivity-connector-lucid==0.4.0"
+COPY wheels/ /tmp/wheels/
 RUN printf '%s\n' "$CC_CONNECTORS" | tr ';' '\n' | sed 's/^ *//; /^$/d' > /tmp/connectors.txt \
- && pip install --no-cache-dir -r /tmp/connectors.txt && rm /tmp/connectors.txt
+ && pip install --no-cache-dir --find-links /tmp/wheels -r /tmp/connectors.txt && rm -rf /tmp/connectors.txt /tmp/wheels
 
 COPY render_config.py entrypoint.sh healthcheck.py init_db.py lucid_login.py supervise.py plugins.py plugin_role.py privsep.py sealing.py privacy.py logscrub.py sitecustomize.py connectors.json ./
 # sitecustomize.py rounds the positions the connector sends to Nominatim (privacy.py); it

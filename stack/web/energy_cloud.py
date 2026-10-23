@@ -18,6 +18,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 import energy
+import fleet_usage
 from tesla_fleet import TeslaError
 
 LOG = logging.getLogger("energy_cloud")
@@ -104,7 +105,7 @@ class CloudWorker(threading.Thread):
 
     # ---- the live reading
     def fallback(self, now: datetime) -> None:
-        if self.last_live is not None and (now - self.last_live).total_seconds() < LIVE_EVERY_S:
+        if self.last_live is not None and (now - self.last_live).total_seconds() < fleet_usage.slowed(LIVE_EVERY_S):
             return
         site, got, fleet = self.site(), self.access(), self.fleet()
         if not (site and got and fleet):
@@ -218,7 +219,7 @@ class CloudWorker(threading.Thread):
             prog["state"] = "done"
         self._keep(prog)
         if asked:
-            self.sleep(STEP_GAP_S)
+            self.sleep(fleet_usage.slowed(STEP_GAP_S))
         return prog["state"]
 
     # ---- the thread

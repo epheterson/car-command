@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import cost
+import zonelist
 from settingsform import parse, reprices
 from test_settingsform import WAS, _money_page, _post_of
 
@@ -154,7 +155,7 @@ def test_the_settings_pages_lead_back_and_the_landing_renders():
     car = {"name": "Alpha", "vin": "V1", "live": True}
     base = {"root": "", "now": __import__("datetime").datetime(2026, 9, 4, 16), "car": car, "active": "settings", "vehicles": [car], "q": "", "colors": {"V1": 0}, "names": {"V1": "Alpha"}, "cur": "$"}
     html = env.get_template("settings_index.html").render(**base, groups=index({}, 1, [], False))
-    assert html.count('class="set-row set-nav"') == 8 and html.count('<h2 class="sec">') == 3 and "<p" not in html.split("<main")[1].split("</main>")[0]
+    assert html.count('class="set-row set-nav"') == 9 and html.count('<h2 class="sec">') == 3 and "<p" not in html.split("<main")[1].split("</main>")[0]
 
 
 # ---- stage 2: every other Settings page on the same components ----------------------------
@@ -211,18 +212,32 @@ def test_alerts_are_grouped_switch_rows_with_one_save_bar(chans):
     import notify
 
     routes = {"parked": {chans[-1]}, "login": set()} if chans else {}
-    html = _render("settings_alerts.html", st=ALERT_ST, section="alerts", label="Alerts", channels=chans, routes=routes, alert_kinds=notify.KINDS, alert_groups=notify.GROUPS)
+    import alertchans
+
+    chan = {"where": {c: "env" for c in chans}, "hints": {}, "addable": [k for k in notify.CHANNELS if k not in chans], "fields": alertchans.FIELDS, "vault_ready": True}
+    html = _render("settings_alerts.html", st=ALERT_ST, section="alerts", label="Alerts", channels=chans, routes=routes, alert_kinds=notify.KINDS, alert_groups=notify.GROUPS, chan=chan)
     assert_plain(html)
     assert html.count('class="savebar"') == 1 and "data-savebar" in html and "<table" not in _main(html)
     assert 'value="50"' in html and 'name="plug_reminder_below"' in html, "a whole percentage reads as one"
-    assert 'type="time" name="plug_reminder_at"' in html and 'type="time" name="summary_at"' in html
+    assert (
+        'type="text" inputmode="text" autocomplete="off" name="plug_reminder_at"' in html and 'name="summary_at"' in html and 'type="time"' not in html
+    ), "typed, so the chosen clock decides how it reads"
+    assert 'name="summary_at" value="7:00 AM" placeholder="9:00 PM"' in html, "the stored 07:00, said in the 12-hour clock"
     switches = html.count('class="switch"')
+    # a channel not set up yet offers its form, folded; one that is says where it comes from
+    assert html.count('class="set-row chan-setup"') == 5 - len(chans) and "@BotFather" not in html
+    assert ('action="/settings/alerts/channel/telegram/add"' in html) and ('/channel/discord/add"' in html) is ("discord" not in chans)
+    assert html.count("from .env") == len(chans) and html.count('form="chan-test-') == len(chans) and 'form="chan-rm-' not in html, ".env's channels are tested but not removed here"
+    assert ("needs a channel" in html) is (not chans), "reminders without a channel say they will not be sent"
     if not chans:
         assert "No channel set up" in html and switches == 0 and 'name="routes_shown"' not in html
         return
     titles = re.findall(r'<h2 class="sec">([^<]+)', html)
-    assert [t.strip() for t in titles] == ["Channels"] + [g for g, _ in notify.GROUPS]
-    assert switches == len(chans) * (len(notify.KINDS) + 1), "a switch per kind per channel, and one per channel"
+    assert [t.strip() for t in titles] == ["Channels"] + [g for g, _ in notify.GROUPS] + ["Add a channel"]  # the Garage door section waits for Home Assistant to be linked
+    sections = len(notify.GROUPS) if len(chans) > 1 else 0
+    assert switches == len(chans) * (len(notify.KINDS) + 1 + sections), "a switch per kind per channel, one per channel, and one per channel at the head of each section"
+    assert html.count(' data-secchan="') == len(chans) * sections
+    assert 'name="' not in "".join(re.findall(r"<input[^>]*data-secchan[^>]*>", html)), "a section switch posts nothing itself"
     assert ("al-cols" in html) is (len(chans) > 1), "channel names above the switches only when there are several"
     assert 'name="tire_low_psi" value="30"' in html
     # an unchanged save stores what was there
@@ -268,7 +283,18 @@ def _maps(status, **kw):
 
     t = datetime(2026, 10, 3, 19, tzinfo=timezone.utc)
     regions = [{"id": "us/oregon", "label": "Oregon", "why": "Your drives", "mb": 254, "added_dt": t, "refreshed_dt": t}] if status else []
-    ctx = dict(st={"public_tiles": True, "public_geocoder": False}, section="maps", label="Maps", regions=regions, wait_until_dt=None, maps_on=bool(status), status=status)
+    ctx = dict(
+        st={"public_tiles": True, "public_geocoder": False},
+        section="maps",
+        label="Maps",
+        regions=regions,
+        wait_until_dt=None,
+        maps_on=bool(status),
+        status=status,
+        esri={"ready": False, "hint": None},
+        esri_sign_up="https://example.test/sign-up",
+        esri_error=None,
+    )
     return _render("settings_maps.html", **{**ctx, **kw})
 
 
@@ -279,16 +305,57 @@ def test_maps_is_one_form_of_switch_rows(status):
     html = _maps(status)
     assert_plain(html)
     assert html.count('class="savebar"') == 1 and "<table" not in _main(html) and "Save</button>" in html
-    assert html.count('type="submit"') == (3 if status else 1), "Save, plus Add and a Remove for the one region when the add-on runs"
+    assert html.count('type="submit"') == (4 if status else 2), "Save and Save key, plus Add and a Remove for the one region when the add-on runs"
     form = _post_of(html)
     got = parse("maps", form, dict(WAS, public_tiles=True, public_geocoder=False))
-    assert got == {"public_tiles": True, "public_geocoder": False}
+    assert got == {"public_tiles": True, "public_geocoder": False, "satellite": False}
     assert maps_service(form) is None, "an unchanged save makes no call to the add-on"
     if status:
-        assert html.count('class="switch"') == 3 and "Oregon" in html and 'form="region-rm" name="id" value="us/oregon"' in html
+        assert html.count('class="switch"') == 4 and "Oregon" in html and 'form="region-rm" name="id" value="us/oregon"' in html
         assert maps_service(dict(form, auto="on")) == {"auto": True, "refresh": "quarterly"} and maps_service(dict(form, refresh="off")) == {"auto": False, "refresh": "off"}
     else:
-        assert html.count('class="switch"') == 2 and 'name="auto"' not in html and "region-add" not in html, "no add-on: nothing to set on it"
+        assert html.count('class="switch"') == 3 and 'name="auto"' not in html and "region-add" not in html, "no add-on: nothing to set on it"
+
+
+def _terrain(**kw):
+    base = {"on": True, "need": 14, "have": 12, "left": 2, "mb_left": 20, "disk_mb": 34, "regions": ["California", "Nevada"], "state": "waiting", "error": None, "gave_up": 0, "disk": False}
+    return _maps(None, st={"public_tiles": True, "public_geocoder": False, "terrain": base["on"]}, terrain={**base, **kw})
+
+
+def test_maps_terrain_row_says_the_size_the_region_and_the_status():
+    html = _terrain()
+    assert_plain(html)
+    assert "Downloading" in html and "12 of 14 squares" in html and "34 MB" in html and "California · Nevada" in html and "up to 20 MB to fetch" in html
+    assert "Terrain Tiles on AWS" in html
+    assert html.count('class="switch"') == 4 and 'name="terrain"' in html and 'name="terrain_shown"' in html and html.count('class="savebar"') == 1
+    leaves = html[html.index("What leaves this box") :]
+    assert (
+        "Terrain tiles from Amazon (AWS)" in leaves and "AWS sees each 1&deg; square (about 100 km) your cars have ever been to" in leaves
+    ), "the switch lives with the other outbound ones, and names who sees what"
+    ready = _terrain(state="ready", left=0, have=14, mb_left=0)
+    assert "Ready" in ready and "14 squares" in ready and "to fetch" not in ready
+    off = _terrain(on=False, state="paused")
+    assert "Off · 12 of 14 squares" in off
+    before = _terrain(on=False, state="off", have=0, left=14, mb_left=140, disk_mb=0)
+    assert "up to 140 MB to fetch" in before and "California · Nevada" in before, "the size and the regions show before anything is switched on"
+    fresh = _terrain(need=0, have=0, left=0, mb_left=0, disk_mb=0, regions=[])
+    assert "Starts shortly" in fresh and "Where your cars drive" in fresh
+    assert "Terrain" not in _maps(None), "no terrain context, no row"
+    assert 'name="terrain"' not in _maps(None) and "terrain_shown" not in _maps(None), "and no switch"
+
+
+def test_maps_terrain_row_says_what_failed_and_when_it_gave_up():
+    retry = _terrain(error="ValueError: not a 1 or 3 arc-second tile")
+    assert "Retrying" in retry and "not a 1 or 3 arc-second tile" in retry and "Downloading" not in retry
+    assert "Can&#39;t download" in _terrain(error="Can't write the terrain folder (Permission denied)", disk=True) or "Can't download" in _terrain(error="x", disk=True)
+    gave = _terrain(error="BadGzipFile: x", gave_up=2)
+    assert "Gave up on 2 squares" in gave
+
+
+def test_maps_terrain_switch_is_saved_with_the_page():
+    form = _post_of(_terrain())
+    assert parse("maps", form, dict(WAS, public_tiles=True, public_geocoder=False, terrain=True)) == {"public_tiles": True, "public_geocoder": False, "satellite": False, "terrain": True}
+    assert parse("maps", {k: v for k, v in form.items() if k != "terrain"}, dict(WAS, terrain=True))["terrain"] is False, "an unticked box posts nothing"
 
 
 @pytest.mark.parametrize("anywhere", [False, True])
@@ -429,7 +496,7 @@ def test_data_checks_are_rows_that_fit_a_phone():
     html = _render("settings_data.html", st={"min_drive_mi": 0.1, "min_charge_kwh": 0.0, "weather": True}, section="data", label="Data", data_checks=checks)
     assert_plain(html)
     main = _main(html)
-    assert "<table" not in main and html.count('class="savebar"') == 1 and 'class="notice warn"' in html and "1 finding" in html and "not checked yet" in html
+    assert "<table" not in main and html.count('class="savebar"') == 1 and 'class="notice warn"' in html and "1 issue" in html and "1 finding" not in html and "not checked yet" in html
     assert "TeslaFi (API)" in html and "Lucid (CarConnectivity)" in html and "/drives.csv" in html and "/charges.csv" in html
     got = parse("data", _post_of(html), dict(WAS, min_drive_mi=0.1, min_charge_kwh=0.0, weather=True))
     assert got == {"min_drive_mi": 0.1, "min_charge_kwh": 0.0, "weather": True}
@@ -437,9 +504,165 @@ def test_data_checks_are_rows_that_fit_a_phone():
 
 @pytest.mark.parametrize("st", [{"currency": "€", "units": "metric", "week_start": "sunday", "clock": "24", "date_order": "dmy", "theme": "dark", "timezone": "Europe/Paris"}, {}])
 def test_units_and_look_are_segmented_rows_and_save_unchanged(st):
-    html = _render("settings_look.html", st=st, section="look", label="Units and look", zones=("Europe/Paris",), tz_key="Europe/Paris", tz_default="America/Chicago")
+    html = _render("settings_look.html", st=st, section="look", label="Units and look", zone_groups=zonelist.with_current("Europe/Paris"), tz_key="Europe/Paris", tz_default="America/Chicago")
     assert_plain(html)
-    assert html.count('class="segmented"') == 5 and "<select" not in _main(html) and html.count('class="savebar"') == 1
+    assert html.count('class="segmented"') == 5 and _main(html).count("<select") == 1 and html.count('class="savebar"') == 1
     got = parse("look", _post_of(html), dict(WAS, **st))
     want = {"currency": "$", "units": "imperial", "week_start": "monday", "clock": "12", "date_order": "mdy", "theme": "system", "timezone": None}
     assert got == {**want, **st}, "an unchanged save stores what was there, the currency symbol included"
+
+
+def test_satellite_waits_for_its_key_and_says_what_it_sends():
+    nokey = _maps(None)
+    assert 'aria-label="Satellite close-ups from Esri" disabled' in nokey and "Esri sees the area you view and your key" in nokey
+    assert 'type="password" name="key" form="esri-key"' in nokey and "Get a key" in nokey and "https://example.test/sign-up" in nokey
+    err = _maps(None, esri_error="That does not look like an ArcGIS API key.")
+    assert "That does not look like an ArcGIS API key." in err
+    kept = _maps(None, esri={"ready": True, "hint": "…ab12"}, st={"public_tiles": False, "public_geocoder": False, "satellite": True})
+    assert "saved, ends …ab12" in kept and 'name="remove" value="1"' in kept and 'form="esri-key"' in kept
+    assert 'aria-label="Satellite close-ups from Esri" checked>' in kept and "Satellite close-ups from Esri\" disabled" not in kept
+    assert "AAPK" not in kept, "the key itself is never on the page"
+
+
+def test_alerts_show_the_recent_ones_one_line_each():
+    from datetime import datetime, timezone
+
+    import notify
+
+    at = datetime(2026, 3, 1, 20, 5, tzinfo=timezone.utc)
+    recent = [
+        {"at": at, "kind": "charge_done", "text": "Alpha finished charging at Home: 47→90%, 20.1 kWh, $6.05.", "outcome": "sent", "channels": "discord"},
+        {"at": at, "kind": "parked", "text": "Bravo parked at Work.", "outcome": "muted", "channels": ""},
+        {"at": at, "kind": "charge_start", "text": "Charlie started charging at Home: 30% now.", "outcome": "failed", "channels": "discord failed"},
+    ]
+    html = _render("settings_alerts.html", st=ALERT_ST, section="alerts", label="Alerts", channels=["discord"], routes={}, alert_kinds=notify.KINDS, alert_groups=notify.GROUPS, recent=recent)
+    assert_plain(html)
+    assert html.count('class="set-row al-log"') == 3 and "Charging finished" in html and "20.1 kWh, $6.05" in html
+    assert '<span class="badge due" title="discord failed">failed</span>' in html and '<span class="badge kind">muted</span>' in html
+    assert '<span class="badge" title="discord">sent</span>' in html
+    quiet = _render("settings_alerts.html", st=ALERT_ST, section="alerts", label="Alerts", channels=["discord"], routes={}, alert_kinds=notify.KINDS, alert_groups=notify.GROUPS, recent=[])
+    assert "al-log" not in quiet and ">Recent" not in quiet, "nothing sent yet: no empty section"
+
+
+def test_a_time_zone_left_as_the_page_showed_it_stays_blank_and_follows_the_container():
+    html = _render("settings_look.html", st={}, section="look", label="Units and look", zone_groups=zonelist.with_current("Europe/Paris"), tz_key="Europe/Paris", tz_default="Europe/Paris")
+    assert '<option value="Europe/Paris" selected>' in html and 'name="timezone_was" value="Europe/Paris"' in html and "Showing" not in html
+    assert parse("look", {"timezone": "Europe/Paris", "timezone_was": "Europe/Paris"}, dict(WAS))["timezone"] is None
+    assert parse("look", {"timezone": "Europe/London", "timezone_was": "Europe/Paris"}, dict(WAS))["timezone"] == "Europe/London"
+    chosen = _render(
+        "settings_look.html",
+        st={"timezone": "Europe/London"},
+        section="look",
+        label="Units and look",
+        zone_groups=zonelist.with_current("Europe/London"),
+        tz_key="Europe/London",
+        tz_default="Europe/Paris",
+    )
+    assert '<option value="Europe/London" selected>' in chosen and "timezone_was" not in chosen
+
+
+def test_adding_lucid_or_another_brand_says_when_the_connector_is_not_running():
+    cars, accts, rows, _ = _cars_and_packs()
+    ctx = dict(st={}, section="cars", label="Cars and sources", cars=cars, accounts=[], sources=rows, env_sources=[], vault_ready=True, cc_catalogue=[{"key": "audi", "name": "Audi", "fields": []}])
+    up = _render("settings_cars.html", connector=None, **ctx)
+    assert "CarConnectivity is not running" not in up, "answering: nothing to say"
+    down = _render("settings_cars.html", connector="CarConnectivity is not running; every page reads logged history.", **ctx)
+    assert down.count("CarConnectivity is not running") == 2, "once in the Lucid pane, once in Other brand"
+    assert down.count("docker compose -f stack/docker-compose.yml up -d cc") == 2
+    lucid = down.split('id="pane-lucid"')[1].split("</form>")[0]
+    other = down.split('id="pane-carconnectivity"')[1].split("</details>")[0]
+    assert "not running" in lucid and "not running" in other
+
+
+def test_a_stopped_connector_is_one_banner_at_the_top_and_the_greyed_button_says_why():
+    cars, accts, rows, _ = _cars_and_packs()
+    lucid = {**accts[0], "kind": "lucid", "where": "app", "retry": True, "id": 9, "config": {}, "state": "bad", "text": "Lucid did not accept the sign-in."}
+    ctx = dict(st={}, section="cars", label="Cars and sources", cars=cars, accounts=[lucid], sources=rows, env_sources=[], vault_ready=True, cc_catalogue=[])
+    down = _render("settings_cars.html", connector="CarConnectivity is not answering.", **ctx)
+    assert down.index("cannot sign in or update") < down.index('class="group car"') and "Waiting for CarConnectivity" in down
+    assert "cannot sign in or update" not in _render("settings_cars.html", connector=None, **ctx)
+    assert "cannot sign in or update" not in _render("settings_cars.html", connector="CarConnectivity is not answering.", **{**ctx, "accounts": []}), "no account needs it: no banner"
+    assert 'href="#add-lucid" data-open' in down and "Sign in again" in down and "Uninstall the plugin too" not in down
+    assert "its sign-in token is kept" in down or "Only its sign-in token is kept" in down and "The password is not kept" not in down
+
+
+def test_the_page_foot_does_not_repeat_the_connector_on_cars_and_sources():
+    cars, accts, rows, _ = _cars_and_packs()
+    ctx = dict(st={}, section="cars", label="Cars and sources", cars=cars, accounts=accts, sources=rows, env_sources=[], vault_ready=True, cc_catalogue=[])
+    for active, shown in (("settings-cars", False), ("settings-alerts", True)):
+        page = _render("settings_cars.html", connector="CarConnectivity is not answering.", active=active, **ctx)
+        assert ('<span class="warn">CarConnectivity is not answering.</span>' in page) is shown
+
+
+def test_leaving_a_settings_page_with_unsaved_changes_asks_first():
+    js = (HERE / "static" / "shell.js").read_text()
+    assert 'addEventListener("beforeunload"' in js and "form[data-savebar].sb-dirty:not(.sb-saving)" in js
+    assert 'f.addEventListener("submit", function () { f.classList.add("sb-saving"); });' in js, "Save itself does not trigger the warning"
+    assert "data-autosave" in js.split("function dirty")[1].split("}")[0], "a switch that saves as it is flipped never counts as unsaved"
+
+
+def _brands(**extra):
+    import connectors
+
+    cars, accts, rows, _ = _cars_and_packs()
+    return _render(
+        "settings_cars.html",
+        st={},
+        section="cars",
+        label="Cars and sources",
+        cars=cars,
+        accounts=accts,
+        sources=rows,
+        env_sources=[],
+        vault_ready=True,
+        connector=None,
+        cc_catalogue=connectors.CATALOGUE,
+        cc_groups=connectors.GROUPS,
+        **extra,
+    )
+
+
+def test_volkswagen_is_one_brand_row_with_a_picker_and_other_brands_keep_their_own():
+    html = _brands()
+    rows = [r.split("</span>")[0] for r in html.split('<details class="set-x brand"')[1:]]
+    names = [r.split('<span class="set-l">')[1] for r in rows]
+    assert names == ["Audi", "Cupra", "SEAT", "Škoda", "Tronity", "Volkswagen"]
+    assert "Volkswagen (Europe)" not in html and "VW Group (EU Data Act)" not in html
+    pick = html.split("data-pick>")[1].split("</select>")[0]
+    for key, label in (("volkswagen", "Europe"), ("volkswagen_na", "US and Canada"), ("vw_eu_data_act", "EU Data Act (VW Group)")):
+        assert f'<option value="cc-{key}">{label}</option>' in pick
+        assert f'name="connector" value="{key}"' in html, "the connector key is unchanged"
+    assert html.count('<form class="vwform"') == 3 and html.count(" hidden>") >= 3, "no sign-in shows before a choice"
+
+
+def test_a_refused_volkswagen_add_reopens_the_chosen_connector():
+    html = _brands(source_pane="cc-volkswagen_na", source_error="No.", source_typed={"country": "ca"})
+    group = html.split('id="cc-group-vw"')[1].split("</details>")[0]
+    assert " open data-err" in html.split('id="cc-group-vw"')[1][:40]
+    assert '<option value="cc-volkswagen_na" selected>' in group
+    na = group.split('id="cc-volkswagen_na"')[1].split("</form>")[0]
+    assert " hidden" not in na.split(">")[0] and "No." in na
+    assert 'id="cc-volkswagen"' in group and group.split('id="cc-volkswagen"')[1].split(">")[0].endswith(" hidden")
+
+
+def test_brand_rows_in_a_panel_keep_the_settings_row_padding():
+    css = (Path(__file__).parent / "static" / "style.css").read_text()
+    assert ".set-p .set-x > summary.set-row { padding:var(--s2) var(--s4); }" in css
+
+
+def test_the_time_zone_is_a_searchable_select_of_cities_with_their_offsets_not_a_text_field():
+    html = _render(
+        "settings_look.html",
+        st={"timezone": "America/Los_Angeles"},
+        section="look",
+        label="Units and look",
+        zone_groups=zonelist.with_current("America/Los_Angeles"),
+        tz_key="America/Los_Angeles",
+        tz_default="America/Los_Angeles",
+    )
+    row = html.split('id="tz-find"')[1].split("</select>")[0]
+    assert 'type="search"' in html and "data-tz-find" in html and 'data-tz-find="tz"' in html
+    assert '<select class="sel" id="tz" name="timezone" data-tz required>' in row and '<optgroup label="America">' in row
+    assert re.search(r'<option value="America/Los_Angeles" selected>Los Angeles \(UTC\u2212[78]\)</option>', row)
+    assert 'list="zones"' not in html and "<datalist" not in html.split('id="tz-find"')[0].split("Time zone")[-1], "no free typing of a zone"
+    assert "timezone_was" not in html, "a chosen zone is saved as chosen"

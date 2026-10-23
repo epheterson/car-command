@@ -39,9 +39,10 @@ def house(bare, monkeypatch):  # noqa: F811
 
 def test_the_page_opens_with_nothing_set_up(house, client):  # noqa: F811
     r = client.get("/settings/energy")
-    assert r.status_code == 200 and "<h1>Energy</h1>" in r.text
+    assert r.status_code == 200 and "<h1>Powerwall</h1>" in r.text
     assert "Tesla account" in r.text and "Connect Tesla" in r.text, "no account yet"
     assert "gateway" not in r.text.lower() and "Find it" not in r.text and "CC_POWERWALL" not in r.text
+    assert "needs a Tesla account with a Powerwall" in r.text, "with no Powerwall the page says what it would show and what it needs"
 
 
 def test_the_local_gateway_routes_are_gone(house, client, bare):  # noqa: F811
@@ -70,13 +71,13 @@ def test_the_page_shows_the_last_reading_from_memory(house, client, bare):  # no
     assert "4.2 kW" in page and "61%" in page and "from Tesla" in page
 
 
-def test_the_settings_list_names_energy_and_what_it_reads_from(house, client, bare):  # noqa: F811
-    assert 'href="/settings/energy"' in client.get("/settings").text
+def test_the_powerwall_is_never_a_row_of_its_own_on_the_settings_list(house, client, bare):  # noqa: F811
+    assert 'href="/settings/energy"' not in client.get("/settings").text, "no Tesla and no account: nothing to read"
     assert "Gateway" not in client.get("/settings").text
     cfg = energy.load_config(house.state.get)
     cfg["cloud"].update(enabled=True, site_id="1", name="x")
     energy.save_config(house.state.__setitem__, cfg)
-    assert "Tesla account" in client.get("/settings").text
+    assert 'href="/settings/energy"' not in client.get("/settings").text, "linked, it still opens from the Tesla account in Cars and sources"
 
 
 # ---- the Tesla account

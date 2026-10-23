@@ -134,7 +134,7 @@ def _stream(f: dict) -> tuple[bool, str | None, str]:
     """The streaming step's own result: (done, problem, what to do next)."""
     host = f.get("stream_host")
     if not host:
-        return False, None, "Set TESLA_STREAM_HOST in stack/.env to the Funnel node's name (carcommand-stream.<your tailnet>.ts.net) and start the tesla profile (docs/tesla-stream.md)."
+        return False, None, "Start the stream's Funnel node and set TESLA_STREAM_HOST to its name, carcommand-stream.<your tailnet>.ts.net (docs/tesla-stream.md)."
     if not f.get("stream_host_ok"):
         return False, f"TESLA_STREAM_HOST is {host!r}; it should be a name alone, like carcommand-stream.<your tailnet>.ts.net, with no https:// or port.", ""
     if "tesla" in host.lower():
@@ -238,3 +238,16 @@ class Refresher(threading.Thread):
             except Exception as err:  # noqa: BLE001 - the next page read wakes it again
                 LOG.warning("tesla facts: %s", err)
             self.rounds += 1
+
+
+def site_hints(public_url: str, root: str, env_domain: str = "", env_redirect: str = "") -> dict:
+    """The domain and redirect address Connect Tesla shows for the developer app: what .env already sets (TESLA_DOMAIN), else the
+    public address (CC_PUBLIC_URL). Never the address the page was opened on: that is a home address over plain http, which Tesla
+    refuses, so with neither set the domain is empty and the page asks for the public hostname."""
+    from urllib.parse import urlparse
+
+    pub = urlparse(public_url) if public_url else None
+    domain = env_domain or (pub.hostname if pub and pub.hostname else "")
+    path = (pub.path.rstrip("/") if pub and pub.hostname else root) or ""
+    redirect = env_redirect or (f"https://{domain}{path}/settings/sources/tesla/callback" if domain else "")
+    return {"domain": domain, "redirect": redirect}

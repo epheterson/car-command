@@ -17,6 +17,7 @@ and its result is kept for TTL; a page only ever reads what is kept."""
 
 from __future__ import annotations
 
+import driveedits
 import json
 import logging
 import threading
@@ -32,7 +33,7 @@ LOG = logging.getLogger("carcommand.tesla")
 DAYS = 7
 MAX_DAYS = 14
 LEAD = timedelta(hours=12)  # records read before the window, so a drive under way at its start is whole
-MATCH = timedelta(minutes=5)
+MATCH = timedelta(minutes=5)  # a stream session ending this close to the window's end is still under way
 TTL_S = 900
 MILES_OFF = (0.5, 0.03)  # a drive's miles disagree past 0.5 mi and 3 %
 KWH_OFF = (0.5, 0.03)
@@ -110,29 +111,51 @@ def side(trips: list[dict], sessions: list[dict], ranges: list[tuple], states: l
 
 
 def _off(a: float | None, b: float | None, limits: tuple[float, float]) -> bool:
-    if a is None or b is None:
-        return a is not b
+    """Past both limits. A side with no value counts as none: a drive the writer never saw,
+    a 0.09 kWh charge it read as nothing, are within the limits of zero."""
+    a, b = a or 0.0, b or 0.0
     return abs(a - b) > limits[0] and abs(a - b) > limits[1] * max(abs(a), abs(b))
 
 
-def match(stream: list[dict], stored: list[dict], value: str, limits: tuple[float, float]) -> list[dict]:
-    """Pairs by start time (within MATCH, nearest first), each side's leftovers alone; in time order.
-    `off` marks a row that is missing on one side or whose `value` disagrees past `limits`."""
-    pairs, used = [], set()
-    for s in stream:
-        best = None
-        for j, w in enumerate(stored):
-            dt = abs((w["start"] - s["start"]).total_seconds())
-            if j not in used and dt <= MATCH.total_seconds() and (best is None or dt < best[1]):
-                best = (j, dt)
-        if best is None:
-            pairs.append({"at": s["start"], "stream": s, "stored": None, "off": True})
-            continue
-        used.add(best[0])
-        w = stored[best[0]]
-        pairs.append({"at": s["start"], "stream": s, "stored": w, "dt_s": int((s["start"] - w["start"]).total_seconds()), "off": _off(s[value], w[value], limits)})
-    pairs += [{"at": w["start"], "stream": None, "stored": w, "off": True} for j, w in enumerate(stored) if j not in used]
-    return sorted(pairs, key=lambda p: p["at"])
+def _merged(rows: list[dict], value: str) -> dict | None:
+    """One side of a group as one session: from the first start to the last end, numbers summed."""
+    if not rows:
+        return None
+    m = {**rows[0], "end": max(r["end"] for r in rows), "n": len(rows)}
+    for k, v in rows[0].items():
+        if k not in ("start", "end") and (v is None or isinstance(v, (int, float))):
+            vals = [r[k] for r in rows if r.get(k) is not None]
+            m[k] = round(sum(vals), 2) if vals else None
+    return m
+
+
+def match(stream: list[dict], stored: list[dict], value: str, limits: tuple[float, float], hi: datetime | None = None, joins_splits: bool = False) -> list[dict]:
+    """Sessions grouped by overlap, one row per group, in time order.
+
+    A drive one side has as one and the other as two is one group and one difference, not
+    two. A group is `off` when one side is missing it or its summed `value` disagrees past
+    `limits`; for drives also when the sides split it differently. With `joins_splits`
+    (charges) a split is no difference: a cable out for seconds splits a charge on one side
+    only. A group still under way at `hi` is `under_way`, never off: the writer has not
+    caught up with it yet."""
+    tagged = sorted([(r["start"], 0, r) for r in stream] + [(r["start"], 1, r) for r in stored], key=lambda x: (x[0], x[1]))
+    groups: list[tuple[list, list, datetime]] = []
+    for start, which, r in tagged:
+        if groups and start <= groups[-1][2]:
+            g = groups[-1]
+            groups[-1] = (g[0] + [r] * (which == 0), g[1] + [r] * (which == 1), max(g[2], r["end"]))
+        else:
+            groups.append(([r] * (which == 0), [r] * (which == 1), r["end"]))
+    out = []
+    for mine, theirs, end in groups:
+        s, w = _merged(mine, value), _merged(theirs, value)
+        under_way = hi is not None and s is not None and s["end"] >= hi - MATCH
+        split = s is not None and w is not None and s["n"] != w["n"] and not joins_splits
+        p = {"at": (s or w)["start"], "stream": s, "stored": w, "under_way": under_way, "off": not under_way and (split or _off(s and s[value], w and w[value], limits))}
+        if s and w:
+            p["dt_s"] = int((s["start"] - w["start"]).total_seconds())
+        out.append(p)
+    return out
 
 
 # ---- the evidence of gaps
@@ -204,7 +227,10 @@ def stored(conn, vin: str, lo: datetime, hi: datetime) -> dict:
     trips = [
         dict(zip(("start_date", "destination_date", "start_odometer", "destination_odometer"), _t(r)))
         for r in conn.execute(
-            "SELECT start_date, destination_date, start_odometer, destination_odometer FROM trips WHERE vin = %s AND start_date >= %s AND start_date < %s ORDER BY start_date", (vin, lo, hi)
+            "SELECT start_date, destination_date, start_odometer, destination_odometer FROM trips t WHERE vin = %s AND start_date >= %s AND start_date < %s"
+            + driveedits.ABSORBED
+            + " ORDER BY start_date",
+            (vin, lo, hi),
         ).fetchall()
     ]
     sessions = [
@@ -247,8 +273,8 @@ def compare(conn, vin: str, now: datetime, days: int, tz) -> dict | None:
         "days": round((hi - lo).total_seconds() / 86400, 1),
         "stream": mine["totals"],
         "stored": theirs["totals"],
-        "drives": match(mine["drives"], theirs["drives"], "miles", MILES_OFF),
-        "charges": match(mine["charges"], theirs["charges"], "kwh", KWH_OFF),
+        "drives": match(mine["drives"], theirs["drives"], "miles", MILES_OFF, hi=hi),
+        "charges": match(mine["charges"], theirs["charges"], "kwh", KWH_OFF, hi=hi, joins_splits=True),
         "gaps": gaps(payloads, lo, hi, tz),
         "kwh_per_rated_mi": k,
         "computed_at": now,

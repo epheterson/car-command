@@ -1,26 +1,25 @@
 {% extends "base.html" %}
+{% from "_calsum.html" import calsum %}
 {% block title %}Calendar · {{ year }} · Car Command{% endblock %}
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}
-{# The year as small months: those from the first logged one up to this month, each day shaded
-   by its miles; Month and Year are one control. #}
+{# The year's totals as a switch over a bar a month and a bar a week, then the small months from
+   the first logged one up to this month, each headed by the measure the switch shows and its
+   days shaded by miles, a dot where it charged; Month and Year are one control. #}
 {% set mnow = now.strftime('%Y-%m') %}
-<div class="pbar"><h1>Calendar</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span><span class="sp"></span>
+<div class="pbar"><h1>Calendar</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span><span class="sp"></span>
   <nav class="segmented" aria-label="View"><a href="{{ root }}/calendar?month={{ year }}-{{ '%02d'|format(now.month if year == this_year else 12) }}{{ dq }}">Month</a><a href="{{ root }}/calendar?year={{ year }}{{ dq }}" aria-current="page">Year</a></nav>
   <nav class="stepper" aria-label="Year"><a href="{{ root }}/calendar?year={{ year - 1 }}{{ dq }}" aria-label="{{ year - 1 }}">‹</a><span class="now">{{ year }}</span>{% if year < this_year %}<a href="{{ root }}/calendar?year={{ year + 1 }}{{ dq }}" aria-label="{{ year + 1 }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav></div>
-<div class="tiles pair">
-  <div class="tile"><span class="l">Driven</span><span class="v">{{ totals.miles|dist }}<small>{{ u.dist }}</small></span><span class="d">on {{ totals.days_driven }} day{{ 's' if totals.days_driven != 1 }}</span></div>
-  <div class="tile"><span class="l">Drives</span><span class="v">{{ totals.drives }}</span><span class="d">{% if totals.days_driven %}{{ (totals.drives / totals.days_driven)|num(1) }} a day driven{% endif %}</span></div>
-  <div class="tile"><span class="l">Charged</span><span class="v">{{ totals.kwh|num }}<small>kWh</small></span><span class="d">{{ totals.charges }} charge{{ 's' if totals.charges != 1 }}</span></div>
-  {% if best %}<div class="tile"><span class="l">Longest day</span><span class="v">{{ best.miles|dist }}<small>{{ u.dist }}</small></span><span class="d"><a href="{{ root }}/day?date={{ best.date.isoformat() }}{{ dq }}">{{ best.date.strftime('%b %-d') }}</a></span></div>{% endif %}
-</div>
+{% set quiet %}<span>{{ totals.drives }} drive{{ 's' if totals.drives != 1 }} on {{ totals.days_driven }} day{{ 's' if totals.days_driven != 1 }}{% if totals.days_driven %}, {{ (totals.drives / totals.days_driven)|num(1) }} a day driven{% endif %}</span><span>{{ totals.charges }} charge{{ 's' if totals.charges != 1 }}{% if totals.charges %}, {{ (totals.kwh / totals.charges)|num(1) }} kWh each{% endif %}</span>{% if best %}<span>longest day <a href="{{ root }}/day?date={{ best.date.isoformat() }}{{ dq }}">{{ best.date|dfmt('%b %-d') }}</a>, {{ best.miles|dist }} {{ u.dist }}</span>{% endif %}{% endset %}
+{{ calsum(strips or [], year, quiet) }}
+<div class="cal-legend" aria-hidden="true"><span><i class="lg-shade"></i>shade: distance</span><span><i class="lg-dot"></i>charged</span></div>
 {% set logged = months|selectattr('totals.drives')|list + months|selectattr('totals.charges')|list %}{% set first_ym = (logged|map(attribute='ym')|min) if logged else mnow %}
 <section class="year">
   {% for m in months if m.ym >= first_ym and m.ym <= mnow %}
   <div class="ym{% if not m.totals.drives and not m.totals.charges %} empty{% endif %}">
-    <h3><a href="{{ root }}/calendar?month={{ m.ym }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ m.label }}</a><span class="more">{% if m.totals.drives %}{{ m.totals.miles|dist }} {{ u.dist }} · {{ m.totals.drives }} drives{% endif %}{% if m.totals.charges and m.totals.kwh >= 1 %} · {{ m.totals.kwh|num }} kWh{% endif %}</span></h3>
+    <h3><a href="{{ root }}/calendar?month={{ m.ym }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ m.label }}</a>{% if m.totals.drives or m.totals.charges %}<span class="ym-v"><span class="m-dist">{{ m.totals.miles|dist }} {{ u.dist }}</span><span class="m-kwh">{{ m.totals.kwh|num }} kWh</span><span class="m-cost">{{ cur }}{{ (m.cost or 0)|num(2) }}</span></span>{% endif %}<span class="more">{% if m.totals.drives %}{{ m.totals.drives }} {{ m.totals.drives|plural('drive') }}{% endif %}{% if m.totals.charges %}{{ ' · ' if m.totals.drives }}{{ m.totals.charges }} charge{{ 's' if m.totals.charges != 1 }}{% endif %}</span></h3>
     <div class="ym-head">{% set daynames = ['M','T','W','T','F','S','S'] %}{% for i in range(7) %}<span>{{ daynames[(i + (week_start or 0)) % 7] }}</span>{% endfor %}</div>
-    {% for week in m.weeks %}<div class="ym-week">{% for c in week %}<a class="ym-day{% if c.other %} other{% endif %}{% if c.drives %} busy{% endif %}{% if c.charges %} charged{% endif %}" href="{{ root }}/day?date={{ c.date.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}" style="--heat:{{ (c.miles / max_miles) if max_miles else 0 }}" title="{{ c.date.strftime('%a %b %-d') }}{% if c.drives %}: {{ c.miles|dist }} {{ u.dist }}, {{ c.drives }} drive{{ 's' if c.drives != 1 }}{% endif %}{% if c.charges %}, {{ c.kwh|num }} kWh{% endif %}">{{ c.date.day }}</a>{% endfor %}</div>{% endfor %}
+    {% for week in m.weeks %}<div class="ym-week">{% for c in week %}<a class="ym-day{% if c.other %} other{% endif %}{% if c.drives %} busy{% endif %}{% if c.charges %} charged{% endif %}" href="{{ root }}/day?date={{ c.date.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}" style="--heat:{{ (c.miles / max_miles) if max_miles else 0 }}" title="{{ c.date|dfmt('%a %b %-d') }}{% if c.drives %}: {{ c.miles|dist }} {{ u.dist }}, {{ c.drives }} drive{{ 's' if c.drives != 1 }}{% endif %}{% if c.charges %}, {{ c.kwh|num }} kWh{% endif %}">{{ c.date.day }}</a>{% endfor %}</div>{% endfor %}
   </div>
   {% else %}<div class="empty">Nothing logged in {{ year }}</div>{% endfor %}
 </section>

@@ -3,22 +3,48 @@
 {% import "_info.html" as i %}
 {% block title %}Battery · Car Command{% endblock %}
 {% block body %}
-<div class="pbar"><h1>Battery</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span></div>
+<div class="pbar"><h1>Battery</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span></div>
 {% for b in blocks %}{% set c = b.car %}
 <section class="daycar">
 {% if car.garage %}<h2 class="daycar-h"><span class="dot c{{ colors.get(c.vin, 0) }}"></span>{{ c.name }}</h2>{% endif %}
 <div class="tiles pair">
-  {% if c.get('soc') is not none %}<div class="tile"><span class="l">Now</span><span class="v">{{ c.soc|num }}<small>%</small></span><span class="d">{% if c.get('range_mi') %}{{ c.range_mi|dist }} {{ u.dist }}{% endif %}</span></div>{% endif %}
+  {# the level now leads the 30-day chart; with no readings to chart it keeps its own card #}
+  {% if c.get('soc') is not none and not b.chart.primary.points %}<div class="tile"><span class="l">Now</span><span class="v">{{ c.soc|num }}<small>%</small></span><span class="d">{% if c.get('range_mi') %}{{ c.range_mi|dist }} {{ u.dist }}{% endif %}</span></div>{% endif %}
   {% if c.get('range_full_mi') %}<div class="tile"><span class="l">Range at 100%</span><span class="v">{{ c.range_full_mi|dist }}<small>{{ u.dist }}</small></span></div>{% endif %}
   {# the pack as Settings › Cars and sources has it: one figure, one provenance (carspage.pack) #}
   {% set pk = (packs or {}).get(c.vin) %}{% if pk and pk.kwh %}<div class="tile"><span class="l">Pack</span><span class="v">{{ pk.kwh|num(1) }}<small>kWh</small></span><span class="d">usable, {{ pk.text }}{% if c.get('pack_energy_kwh') is not none %} · {{ c.pack_energy_kwh|num(1) }} kWh in it now{% endif %}</span></div>{% endif %}
   {% if c.get('battery_f') is not none %}<div class="tile"><span class="l">Pack temperature</span><span class="v">{{ c.battery_f|temp }}<small>{{ u.temp }}</small></span></div>{% endif %}
-  {% if c.get('battery_warning') is true %}<div class="tile"><span class="l">Health</span><span class="v warn">Warning</span></div>{% endif %}
+  {# the car's own number, as it sends it; the warning flag beside it #}
+  {% set h = b.get('health') %}{% set hw = c.get('battery_warning') is true %}
+  {% if h or hw %}<div class="tile"><span class="l">Health{% if h %}{% call i.info("The car's own battery health") %}As the car sends it, once a day. Probably a state of health in percent; the car does not say.{% endcall %}{% endif %}</span><span class="v{{ ' warn' if hw }}">{% if h %}{{ h.now|num(0 if h.now == h.now|round else 1) }}{% else %}Warning{% endif %}</span>{% if h %}<span class="d">the car's own figure{% if hw %} · warning{% endif %}</span>{% endif %}</div>{% endif %}
 </div>
 <h2 class="sec">Last 30 days</h2>
-{{ parts.chart('bat-' ~ c.vin, b.chart) }}
-{% if b.full %}<h2 class="sec">Range at 100%, 90 days</h2>{{ parts.chart('full-' ~ c.vin, b.full) }}{% endif %}
-{% if b.tires %}<h2 class="sec">Tire pressure, 30 days {% call i.info('One scale') %}All four share one scale.{% endcall %}</h2><div class="four">{% for w in ['fl', 'fr', 'rl', 'rr'] %}{% if b.tires.get(w) %}<div><h3>{{ {'fl': 'Front left', 'fr': 'Front right', 'rl': 'Rear left', 'rr': 'Rear right'}[w] }}</h3>{{ b.tires[w]|safe }}</div>{% endif %}{% endfor %}</div>{% endif %}
+{# the level now is the chart's headline, the range beside it: no separate Now card #}
+{{ parts.chart('bat-' ~ c.vin, b.chart, ((c.range_mi|dist) ~ ' ' ~ u.dist) if c.get('range_mi') else '', ((c.soc|num) ~ '%') if c.get('soc') is not none else none) }}
+{% if b.life %}{% set L = b.life %}{% set vq = ('&vin=' ~ c.vin) if q else '' %}{% set sq = ('&start=' ~ (L.start|num)) if L.start else '' %}
+{# The pack's whole life: range at 100 % along the odometer (or the calendar), a point per
+   stretch of charges (how many it rests on in the card), the trend through them on the
+   same scale, new years marked and every update a tick on the top edge. Loss leads, read
+   off the trend three ways; the headline follows the row chosen (lifetime.py). #}
+<section class="life" id="lifetime">
+  <h2 class="sec">Range at 100%, lifetime{% call i.info('How the lifetime range is worked out') %}Each point is the median of the charges that ended at {{ L.min_level }}% or more across a stretch of {{ u.distname }} ({{ L.charges|num }} {{ L.charges|plural('charge') }} in all), the range the car estimated for 100% as each charge ended. The trend is a local fit through the points; best, first and now are read off it.{% endcall %}</h2>
+  {% set sel = L.losses[L.loss] %}
+  <div class="life-head">
+    <div class="life-big"><span class="l">{{ {'best': 'Lost since its best', 'first': 'Lost since the first charges', 'start': 'Lost since your start'}[L.loss] }}</span><span class="v">{% if sel and sel.lost > 0 %}−{{ (sel.pct * 100)|num(1) }}{% elif sel %}+{{ ((sel.pct|abs) * 100)|num(1) }}{% else %}0{% endif %}<small>%</small></span><span class="d">{% if sel %}{{ sel['from']|dist }} → {{ sel.to|dist }} {{ u.dist }}, on the trend{% endif %}</span></div>
+    <div class="life-ways">
+      {% set same = L.best.odo == L.points[0].odo %}{# the trend never rose above where it began: best and first are one row #}
+      {% for key, name, when, tip in [('best', 'Best and first' if same else 'Best', L.best.at|local('%b %Y') ~ ' · ' ~ (L.best.odo|dist) ~ ' ' ~ u.dist, 'The highest stretch on its own: ' ~ (L.best_raw.full|dist(1)) ~ ' ' ~ u.dist ~ ', ' ~ (L.best_raw.at|local('%b %Y'))), ('first', 'First', L.first_at|local('%b %Y'), 'The first ten charges on their own: ' ~ (L.first_raw|dist(1)) ~ ' ' ~ u.dist)] %}{% set w = L.losses[key] %}{% if w and not (same and key == 'first') %}
+      <a class="lw{{ ' on' if L.loss == key }}" href="{{ root }}/battery?by={{ L.by }}&loss={{ key }}{{ sq }}{{ vq }}#lifetime"{% if L.loss == key %} aria-current="true"{% endif %} title="{{ tip }}"><span class="lw-n">{{ name }}<small>{{ when }}</small></span><span class="lw-v">{{ w['from']|dist }} {{ u.dist }}<b>{% if w.lost > 0 %}−{{ w.lost|dist(1) }} {{ u.dist }} · −{{ (w.pct * 100)|num(1) }}%{% else %}+{{ (w.lost|abs)|dist(1) }} {{ u.dist }}{% endif %}</b></span></a>{% endif %}{% endfor %}
+      <form method="get" action="{{ root }}/battery#lifetime" class="lw lw-start{{ ' on' if L.loss == 'start' }}"><input type="hidden" name="by" value="{{ L.by }}"><input type="hidden" name="loss" value="start">{% if q %}<input type="hidden" name="vin" value="{{ c.vin }}">{% endif %}
+        <label class="lw-n" for="life-start-{{ c.vin }}">Your start<small>new, or before logging</small></label>
+        <span class="lw-v"><span><input id="life-start-{{ c.vin }}" type="number" name="start" min="1" max="2000" step="1" inputmode="numeric" value="{{ L.start|num if L.start else '' }}" placeholder="e.g. {{ (L.first|round(-1))|dist }}" data-autosubmit> {{ u.dist }}</span>{% set w = L.losses.start %}<b>{% if w %}{% if w.lost > 0 %}−{{ w.lost|dist(1) }} {{ u.dist }} · −{{ (w.pct * 100)|num(1) }}%{% else %}+{{ (w.lost|abs)|dist(1) }} {{ u.dist }}{% endif %}{% endif %}</b></span></form>
+    </div>
+  </div>
+  <div class="life-ctl"><nav class="segmented" aria-label="Along">{% for k, lbl in [('odo', 'Odometer'), ('date', 'Date')] %}<a href="{{ root }}/battery?by={{ k }}&loss={{ L.loss }}{{ sq }}{{ vq }}#lifetime"{% if L.by == k %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}</nav></div>
+  {{ parts.chart('life-' ~ c.vin, L.chart, 'now, on the trend', (L.now|dist) ~ ' ' ~ u.dist) }}
+</section>
+{% elif b.full %}<h2 class="sec">Range at 100%, 90 days</h2>{{ parts.chart('full-' ~ c.vin, b.full) }}{% endif %}
+{% if h and h.chart %}<h2 class="sec">Battery health, {{ h.days }} days</h2>{{ parts.chart('health-' ~ c.vin, h.chart, "the car's own figure", h.now|num(0 if h.now == h.now|round else 1)) }}{% endif %}
 
 </section>
 {% endfor %}

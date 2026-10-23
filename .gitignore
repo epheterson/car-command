@@ -4,6 +4,7 @@ stack/cc/wheels/*.whl
 __pycache__/
 .pytest_cache/
 Makefile.local
+.private-words
 backups/
 .venv/
 .ruff_cache/

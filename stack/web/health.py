@@ -14,6 +14,7 @@ A worker runs them once an hour per car, keeps the answer with its evidence in
 
 from __future__ import annotations
 
+import driveedits
 import json
 import logging
 import threading
@@ -114,19 +115,29 @@ def gather(conn, vin: str, name: str, source: str, now: datetime) -> dict:
     odometer comes out of its raw JSON rows, which are kept for exactly this."""
     week = now - WEEK
     car: dict = {"vin": vin, "name": name, "source": source, "checked_at": now}
+    # Both sums cover the same stretch: from the start of the first whole drive this week to
+    # the end of the newest one. A drive that began before the week's edge, or is still under
+    # way (written when it ends), would otherwise count in the odometer and not in the drives.
+    first_start = _one(conn, "SELECT MIN(start_date) FROM trips t WHERE vin = %s AND start_date > %s" + driveedits.ABSORBED, (vin, week))
+    since = first_start or week
+    until = _one(conn, "SELECT MAX(destination_date) FROM trips WHERE vin = %s AND start_date >= %s", (vin, since)) or now
     if source == "feed":
         car["raw_newest"] = _one(conn, "SELECT MAX(at) FROM cc_teslafi_rows WHERE vin = %s", (vin,))
-        car["odo_7d"] = _one(conn, "SELECT MAX((data->>'odometer')::float) - MIN((data->>'odometer')::float) FROM cc_teslafi_rows WHERE vin = %s AND at > %s AND data->>'odometer' <> ''", (vin, week))
+        car["odo_7d"] = _one(
+            conn,
+            "SELECT MAX((data->>'odometer')::float) - MIN((data->>'odometer')::float) FROM cc_teslafi_rows WHERE vin = %s AND at BETWEEN %s AND %s AND data->>'odometer' <> ''",
+            (vin, since, until),
+        )
         car["rebuild"] = _one(conn, "SELECT value FROM cc_state WHERE key = %s", (f"feed_rebuild:{vin}",))
     elif source in ("live", "teslamate"):
         car["raw_newest"] = _one(conn, "SELECT MAX(last_date) FROM states WHERE vin = %s", (vin,))
-        car["odo_7d"] = _one(conn, "SELECT MAX(odometer) - MIN(odometer) FROM cc_positions WHERE vin = %s AND at > %s", (vin, week))
+        car["odo_7d"] = _one(conn, "SELECT MAX(odometer) - MIN(odometer) FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s", (vin, since, until))
     car["derived_newest"] = _one(
         conn,
         "SELECT GREATEST((SELECT MAX(destination_date) FROM trips WHERE vin = %s), (SELECT MAX(session_end_date) FROM charging_sessions WHERE vin = %s))",
         (vin, vin),
     )
-    car["trips_7d"] = _one(conn, "SELECT COALESCE(SUM(destination_odometer - start_odometer), 0) FROM trips WHERE vin = %s AND start_date > %s", (vin, week))
+    car["trips_7d"] = _one(conn, "SELECT COALESCE(SUM(destination_odometer - start_odometer), 0) FROM trips t WHERE vin = %s AND start_date >= %s" + driveedits.ABSORBED, (vin, since))
     if source == "feed" and car["derived_newest"] is not None:
         car["active_since_derived"] = bool(
             _one(conn, "SELECT 1 FROM cc_teslafi_rows WHERE vin = %s AND at > %s AND data->>'carState' IN ('Driving', 'Charging') LIMIT 1", (vin, car["derived_newest"]))

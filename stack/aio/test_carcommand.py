@@ -2,6 +2,7 @@
 restarts with backoff, a clean stop, bounded logs, one container per volume."""
 
 import fcntl
+import json
 import logging
 import os
 import re
@@ -25,8 +26,8 @@ import carcommand as cc  # noqa: E402
 def test_the_first_start_generates_each_secret_into_its_own_private_file(tmp_path):
     d = tmp_path / "secrets"
     got = cc.ensure_secrets(d, {})
-    assert set(got) == {"DB_PASSWORD", "WEBUI_PASSWORD", "REST_PASSWORD", "CC_SECRET_KEY"}
-    assert len(set(got.values())) == 4, "every secret is its own"
+    assert set(got) == {"DB_PASSWORD", "WEBUI_PASSWORD", "REST_PASSWORD", "CC_SECRET_KEY", "CC_SECRET"}
+    assert len(set(got.values())) == 5, "every secret is its own"
     assert stat.S_IMODE(d.stat().st_mode) == 0o700
     for name, value in got.items():
         assert stat.S_IMODE((d / name).stat().st_mode) == 0o600
@@ -68,6 +69,39 @@ def test_an_emptied_file_is_refused_rather_than_used(tmp_path):
     (tmp_path / "DB_PASSWORD").write_text("")
     with pytest.raises(SystemExit, match="empty"):
         cc.ensure_secrets(tmp_path, {})
+
+
+def test_a_volume_from_before_the_signing_key_file_keeps_the_key_in_its_database(tmp_path):
+    """Its sessions are signed with the key the site keeps in the database; a new one here would sign everyone out."""
+    first = cc.ensure_secrets(tmp_path, {})
+    (tmp_path / "CC_SECRET").unlink()
+    again = cc.ensure_secrets(tmp_path, {})
+    assert "CC_SECRET" not in again and not (tmp_path / "CC_SECRET").exists()
+    assert {k: v for k, v in first.items() if k != "CC_SECRET"} == again
+    assert cc.ensure_secrets(tmp_path, {"CC_SECRET": "moved-from-compose"})["CC_SECRET"] == "moved-from-compose", "the environment seeds it"
+    (tmp_path / "CC_SECRET").write_text("written-by-hand")
+    assert cc.ensure_secrets(tmp_path, {})["CC_SECRET"] == "written-by-hand", "a file put there by hand is used"
+
+
+@pytest.mark.parametrize("name", ["DB_PASSWORD", "WEBUI_PASSWORD", "REST_PASSWORD", "CC_SECRET"])
+def test_a_placeholder_from_the_example_env_is_refused(tmp_path, name):
+    with pytest.raises(SystemExit, match="CHANGE_ME"):
+        cc.ensure_secrets(tmp_path, {name: "CHANGE_ME"})
+
+
+def test_the_site_gets_the_signing_key_when_there_is_one():
+    assert cc.web_env({}, dict(S, CC_SECRET="sig"))["CC_SECRET"] == "sig"
+    assert "CC_SECRET" not in cc.web_env({}, S)
+    assert cc.web_env({}, S)["CC_INSTALL"] == "one-container", "the welcome page shows docker exec, not make"
+    assert "CC_SECRET" not in cc.cc_env({}, dict(S, CC_SECRET="sig")), "the connector never needs it"
+
+
+def test_commands_run_in_the_site_read_the_signing_key_too(tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "DATA", tmp_path)
+    made = cc.ensure_secrets(tmp_path / "secrets", {})
+    assert cc.read_secrets()["CC_SECRET"] == made["CC_SECRET"], "setup_code.py must see the key the site signs with"
+    (tmp_path / "secrets" / "CC_SECRET").unlink()
+    assert "CC_SECRET" not in cc.read_secrets()
 
 
 # ---------------------------------------------------------------- environments
@@ -402,6 +436,18 @@ def test_the_build_context_keeps_host_secrets_out():
     assert not any(x.startswith("!") and (".env" in x or "secrets" in x) for x in lines)
 
 
+def test_both_images_install_connectors_from_the_same_local_wheels_and_pypi():
+    """stack/cc/wheels/ holds a connector build CC_CONNECTORS may pin before it is on PyPI; the
+    folder is tracked (its .gitkeep) so the COPY never fails, and the wheels never are."""
+    cc_image, one = (HERE.parent / "cc" / "Dockerfile").read_text(), (HERE / "Dockerfile").read_text()
+    assert "COPY wheels/ /tmp/wheels/" in cc_image and "COPY cc/wheels/ /tmp/wheels/" in one
+    for text in (cc_image, one):
+        assert "pip install --no-cache-dir --find-links /tmp/wheels -r /tmp/connectors.txt" in text
+    assert (HERE.parent / "cc" / "wheels" / ".gitkeep").exists()
+    assert "cc/wheels" not in (HERE / "Dockerfile.dockerignore").read_text(), "the one-container build needs the folder in its context"
+    assert "stack/cc/wheels/*.whl" in (HERE.parents[1] / ".gitignore").read_text().splitlines()
+
+
 def test_the_image_ships_whole_source_directories_so_new_modules_come_along():
     text = (HERE / "Dockerfile").read_text()
     for line in ("COPY cc/ /app/", "COPY config/ /config/", "COPY web/ /srv/web/"):
@@ -421,5 +467,254 @@ def test_the_volume_lets_each_part_through_to_its_own_directory_and_no_further(t
     os.chmod(tmp_path, 0o755)
     cc.prepare_dirs()
     assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o711
-    for name in ("postgres", "plugins", "connector"):
+    for name in ("postgres", "plugins", "connector", "terrain", "imports"):
         assert stat.S_IMODE((tmp_path / name).stat().st_mode) == 0o700, name
+
+
+def test_the_site_is_told_where_to_keep_terrain_tiles():
+    assert cc.web_env({}, S)["TERRAIN_DIR"] == str(cc.DATA / "terrain")
+
+
+# ---------------------------------------------------------------- Tesla's live stream
+
+
+def test_the_auth_key_comes_from_the_environment_a_file_it_names_or_the_volume(tmp_path):
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    assert cc.tailscale_key({}, secrets) is None
+    assert cc.tailscale_key({"TS_AUTHKEY": " tskey-auth-env\n"}, secrets) == "tskey-auth-env"
+    assert cc.tailscale_key({"TS_AUTH_KEY": "tskey-auth-alias"}, secrets) == "tskey-auth-alias"
+    given = tmp_path / "given"
+    given.write_text("tskey-auth-file\n")
+    assert cc.tailscale_key({"TS_AUTHKEY": f"file:{given}"}, secrets) == "tskey-auth-file", "as compose passes it"
+    (secrets / "tailscale-authkey").write_text("tskey-auth-volume\n")
+    assert cc.tailscale_key({}, secrets) == "tskey-auth-volume"
+    assert cc.tailscale_key({"TS_AUTHKEY": "tskey-auth-env"}, secrets) == "tskey-auth-env", "the run line wins"
+    with pytest.raises(SystemExit, match="cannot be read"):
+        cc.tailscale_key({"TS_AUTHKEY": f"file:{tmp_path / 'missing'}"}, secrets)
+
+
+def test_the_stream_runs_with_a_key_or_a_node_that_signed_in_before_and_not_otherwise(tmp_path):
+    assert not cc.stream_wanted(None, tmp_path / "net"), "no key, no node: nothing extra runs"
+    assert cc.stream_wanted("tskey-auth-x", tmp_path / "net")
+    (tmp_path / "net").mkdir()
+    (tmp_path / "net" / "tailscaled.state").write_text("{}")
+    assert cc.stream_wanted(None, tmp_path / "net"), "the key is spent once; the node's state carries it after"
+
+
+def test_the_auth_key_never_reaches_the_site():
+    env = cc.web_env({"TS_AUTHKEY": "tskey-auth-x", "TS_AUTH_KEY": "tskey-auth-y"}, S)
+    assert "TS_AUTHKEY" not in env and "TS_AUTH_KEY" not in env
+    assert "tskey" not in repr(cc.cc_env({"TS_AUTHKEY": "tskey-auth-x"}, S))
+
+
+def test_the_site_is_pointed_at_the_receiver_and_its_name(tmp_path):
+    certs = tmp_path / "certs"
+    certs.mkdir()
+    got = cc.stream_web_settings({}, certs)
+    assert got == {"TESLA_STREAM_ZMQ": cc.STREAM_ZMQ}, "no name until the node has its certificate"
+    (certs / "host").write_text("carcommand-stream.tail0000.ts.net\n")
+    got = cc.stream_web_settings({"TESLA_STREAM_ZMQ": "tcp://elsewhere:5284"}, certs)
+    assert got == {"TESLA_STREAM_ZMQ": cc.STREAM_ZMQ, "TESLA_STREAM_HOST": "carcommand-stream.tail0000.ts.net"}
+    got = cc.stream_web_settings({"TESLA_STREAM_HOST": "mine.tail0000.ts.net"}, certs)
+    assert got["TESLA_STREAM_HOST"] == "mine.tail0000.ts.net", "a name on the run line is kept"
+    env = cc.web_env({"TESLA_STREAM_ZMQ": "tcp://elsewhere:5284"}, S, got)
+    assert env["TESLA_STREAM_ZMQ"] == cc.STREAM_ZMQ and env["TESLA_STREAM_HOST"] == "mine.tail0000.ts.net"
+    assert cc.web_env({"TESLA_STREAM_ZMQ": "tcp://elsewhere:5284"}, S)["TESLA_STREAM_ZMQ"] == "tcp://elsewhere:5284", "with the stream off, nothing changes"
+
+
+def test_the_node_is_set_up_as_compose_sets_it_with_its_state_in_the_volume(tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "DATA", tmp_path)
+    env = cc.net_env(Path("/run/tesla-net/authkey"))
+    compose = (HERE.parent / "docker-compose.yml").read_text()
+    for name in ("TS_HOSTNAME", "TS_EXTRA_ARGS", "TS_AUTH_ONCE", "TS_USERSPACE"):
+        assert f"- {name}={env[name]}" in compose, name
+    assert env["TS_STATE_DIR"] == str(tmp_path / "tesla" / "net"), "the node's identity survives an upgrade"
+    assert env["TS_AUTHKEY"] == "file:/run/tesla-net/authkey", "a path on tailscale up's command line, never the key"
+    assert env["TS_SERVE_CONFIG"] == "/srv/tesla/serve.json" and env["TS_SOCKET"].startswith(str(cc.NET_RUN))
+    assert env["TS_CERT_DIR"] == str(tmp_path / "tesla" / "certs") and env["RECEIVER_UID"] == ""
+    assert not any(k.startswith(("DB_", "CC_", "REST_", "WEBUI_")) for k in env)
+    assert "TS_AUTHKEY" not in cc.net_env(None), "a node that signed in before needs no key"
+
+
+def test_the_receiver_runs_as_its_own_user_once_it_has_a_certificate(tmp_path, monkeypatch):
+    monkeypatch.setattr(cc, "DATA", tmp_path)
+    net, receiver = cc.stream_procs(None)
+    assert (net.name, net.user, net.argv) == ("tesla-net", "tsnet", ["/bin/sh", "/srv/tesla/net.sh"])
+    assert (receiver.name, receiver.user) == ("receiver", "telemetry")
+    assert receiver.argv == ["/usr/local/bin/fleet-telemetry", "-config", "/srv/tesla/telemetry.json"]
+    assert receiver.umask == 0o007, "the site reaches its socket through the group"
+    assert set(receiver.env) <= {"PATH", "HOME"}
+    assert receiver.state == "waiting" and not receiver.due(10**9), "held until the certificate is there"
+    certs = tmp_path / "tesla" / "certs"
+    certs.mkdir(parents=True)
+    (certs / "tls.crt").write_text("crt")
+    assert not receiver.due(10**9), "the key too"
+    (certs / "tls.key").write_text("key")
+    assert receiver.due(10**9)
+    assert {"tsnet", "telemetry"}.isdisjoint({"postgres", "carcommand", "web"})
+
+
+def test_the_receivers_config_and_the_funnel_match_the_supervisors_paths():
+    tel = json.loads((HERE / "tesla-telemetry.json").read_text())
+    assert tel["host"] == "127.0.0.1", "reached through Funnel, never from the network"
+    assert tel["zmq"]["addr"] == cc.STREAM_ZMQ and cc.STREAM_ZMQ.startswith("ipc://")
+    assert tel["tls"] == {"server_cert": "/data/tesla/certs/tls.crt", "server_key": "/data/tesla/certs/tls.key"}
+    compose_tel = json.loads((HERE.parent / "tesla" / "telemetry.json").read_text())
+    assert {k: v for k, v in tel.items() if k not in ("host", "zmq", "tls")} == {k: v for k, v in compose_tel.items() if k not in ("host", "zmq", "tls")}
+    serve = json.loads((HERE / "tesla-serve.json").read_text())
+    compose_serve = json.loads((HERE.parent / "tesla" / "serve.json").read_text())
+    assert serve["TCP"]["8443"] == {"TCPForward": f"127.0.0.1:{tel['port']}"}
+    (site,) = serve["Web"].values()
+    assert [h["Proxy"] for h in site["Handlers"].values()] == [f"http://127.0.0.1:{cc.PORT}/.well-known/appspecific/com.tesla.3p.public-key.pem"]
+    assert serve["AllowFunnel"] == compose_serve["AllowFunnel"] and serve["TCP"]["443"] == compose_serve["TCP"]["443"]
+    assert list(site["Handlers"]) == list(next(iter(compose_serve["Web"].values()))["Handlers"]), "the key's path alone"
+
+
+def test_the_image_takes_the_binaries_from_the_images_compose_runs():
+    compose = (HERE.parent / "docker-compose.yml").read_text()
+    docker = (HERE / "Dockerfile").read_text()
+    for image in ("tailscale/tailscale", "tesla/fleet-telemetry"):
+        ref = re.search(rf"image: ({re.escape(image)}:\S+@sha256:[0-9a-f]{{64}})", compose).group(1)
+        assert f"FROM {ref} AS" in docker, f"{image}: the same tag and digest in both, or one moved without the other"
+
+
+def test_the_stream_directories_belong_to_their_parts(tmp_path, monkeypatch):
+    me = (os.getuid(), os.getgid())
+    monkeypatch.setattr(cc, "DATA", tmp_path)
+    monkeypatch.setattr(cc, "NET_RUN", tmp_path / "run-net")
+    monkeypatch.setattr(cc, "STREAM_RUN", tmp_path / "run-stream")
+    monkeypatch.setattr(cc, "ids", lambda name: me)
+    key = cc.prepare_stream("tskey-auth-x")
+    modes = {p: stat.S_IMODE(p.stat().st_mode) for p in (tmp_path / "tesla", tmp_path / "tesla" / "net", tmp_path / "tesla" / "certs", tmp_path / "run-net", tmp_path / "run-stream")}
+    assert list(modes.values()) == [0o711, 0o700, 0o2750, 0o700, 0o2750]
+    assert key == tmp_path / "run-net" / "authkey" and key.read_text() == "tskey-auth-x"
+    assert stat.S_IMODE(key.stat().st_mode) == 0o600
+    assert cc.prepare_stream(None) is None and not key.exists(), "no key given: none left lying about"
+
+
+def stream_sup(tmp_path, monkeypatch, web_env=None):
+    monkeypatch.setattr(cc, "DATA", tmp_path)
+    certs = tmp_path / "tesla" / "certs"
+    certs.mkdir(parents=True)
+    sup, children = make(("web",))
+    web = sup.get("web")
+    web.env = dict(web_env or {})
+    _, receiver = cc.stream_procs(None)
+    sup.procs.append(receiver)
+    sup.watchers.append(cc.StreamWatch(receiver, web, certs))
+    return sup, web, receiver, certs
+
+
+def write_cert(certs, body):
+    for name in ("tls.key", "tls.crt"):  # in net.sh's order: the certificate last
+        tmp = certs / f"new.{name}"
+        tmp.write_text(body)
+        os.replace(tmp, certs / name)
+
+
+def test_a_renewed_certificate_restarts_the_receiver(tmp_path, monkeypatch):
+    sup, web, receiver, certs = stream_sup(tmp_path, monkeypatch, {"TESLA_STREAM_HOST": "carcommand-stream.tail0000.ts.net"})
+    sup.tick(1)
+    assert receiver.state == "waiting", "no certificate yet"
+    write_cert(certs, "one")
+    sup.tick(2)
+    sup.tick(3)
+    assert receiver.state == "running"
+    first = receiver.child
+    sup.tick(100)
+    assert first.signals == [], "nothing changed, nothing restarted"
+    write_cert(certs, "two, a little longer")
+    sup.tick(200)
+    assert first.signals == [signal.SIGTERM]
+    sup.tick(201)
+    sup.tick(203)
+    assert receiver.state == "running" and receiver.child is not first
+    assert web.child.signals == [], "the site already knew the name"
+
+
+def test_the_site_learns_the_streams_name_once_the_node_has_it(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    sup, web, receiver, certs = stream_sup(tmp_path, monkeypatch)
+    sup.tick(1)
+    assert web.child.signals == []
+    (certs / "host").write_text("carcommand-stream.tail0000.ts.net\n")
+    write_cert(certs, "one")
+    sup.tick(2)
+    assert web.env["TESLA_STREAM_HOST"] == "carcommand-stream.tail0000.ts.net"
+    assert web.child.signals == [signal.SIGTERM], "restarted once, to read it"
+    assert "carcommand-stream.tail0000.ts.net" in caplog.text
+
+
+def test_a_name_on_the_run_line_that_is_not_the_nodes_is_said(tmp_path, monkeypatch, caplog):
+    sup, web, receiver, certs = stream_sup(tmp_path, monkeypatch, {"TESLA_STREAM_HOST": "carcommand-stream.tail0000.ts.net"})
+    (certs / "host").write_text("carcommand-stream-1.tail0000.ts.net\n")
+    write_cert(certs, "one")
+    sup.tick(1)
+    assert web.env["TESLA_STREAM_HOST"] == "carcommand-stream.tail0000.ts.net" and web.child.signals == []
+    assert "carcommand-stream-1.tail0000.ts.net" in caplog.text
+
+
+def test_status_says_what_the_receiver_waits_for(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "RUN", tmp_path)
+    sup, web, receiver, certs = stream_sup(tmp_path, monkeypatch)
+    sup.status_path = tmp_path / "status.json"
+    sup.tick(1)
+    assert cc.status() == 0
+    out = capsys.readouterr().out
+    assert re.search(r"receiver\s+waiting\s+for its certificate", out), out
+
+
+# ---------------------------------------------------------------- Tesla's signing proxy
+
+
+def test_the_proxy_runs_unless_the_owner_has_one_and_the_site_is_told_where_it_is():
+    # a Tesla app may be entered on the Connect Tesla page, not only in the environment: the proxy runs and waits for its key
+    assert cc.proxy_env({}) == {"TESLA_PROXY_URL": "https://localhost:4443", "TESLA_PROXY_CERT": str(cc.PROXY_DIR / "tls.crt")}
+    env = cc.proxy_env({"TESLA_CLIENT_ID": "client-alpha"})
+    assert env == {"TESLA_PROXY_URL": "https://localhost:4443", "TESLA_PROXY_CERT": str(cc.PROXY_DIR / "tls.crt")}
+    assert cc.proxy_env({"TESLA_CLIENT_ID": "x", "TESLA_PROXY_URL": "https://elsewhere:4443"}) == {}, "a proxy of the owner's own is left alone"
+    s = {"DB_PASSWORD": "d", "WEBUI_PASSWORD": "w", "REST_PASSWORD": "r", "CC_SECRET_KEY": "k"}
+    assert cc.web_env({"TESLA_CLIENT_ID": "client-alpha"}, s)["TESLA_PROXY_URL"] == "https://localhost:4443"
+    assert cc.tesla_proxy_proc({"TESLA_PROXY_URL": "https://elsewhere:4443"}, s) is None
+
+
+def test_the_proxy_listens_on_localhost_with_its_own_tls_key():
+    argv = cc.proxy_argv(Path("/run/aio/tesla-proxy"))
+    assert argv[0] == cc.PROXY_BIN
+    opts = dict(zip(argv[1::2], argv[2::2]))
+    assert opts == {"-key-file": "/run/aio/tesla-proxy/key.pem", "-cert": "/run/aio/tesla-proxy/tls.crt", "-tls-key": "/run/aio/tesla-proxy/tls.key", "-host": "localhost", "-port": "4443"}
+
+
+def test_the_proxy_waits_for_the_key_then_writes_it_private_and_becomes_the_proxy(tmp_path, monkeypatch, capsys):
+    import json
+
+    monkeypatch.setattr(cc, "PROXY_DIR", tmp_path / "tesla-proxy")
+    answers = [(3, ""), (3, ""), (0, json.dumps({"key.pem": "APP KEY", "tls.key": "TLS KEY", "tls.crt": "CERT"}))]
+    slept, ran = [], []
+    cc.tesla_proxy({}, export=lambda env: answers.pop(0), sleep=slept.append, execve=lambda *a: ran.append(a))
+    assert slept == [cc.PROXY_WAIT_S] * 2
+    assert capsys.readouterr().out.count("waiting for Connect Tesla") == 1, "said once, not every minute"
+    d = tmp_path / "tesla-proxy"
+    modes = {p.name: stat.S_IMODE(p.stat().st_mode) for p in d.iterdir()}
+    assert modes == {"key.pem": 0o600, "tls.key": 0o600, "tls.crt": 0o644}
+    assert stat.S_IMODE(d.stat().st_mode) == 0o711
+    assert (d / "key.pem").read_text() == "APP KEY"
+    assert ran and ran[0][0] == cc.PROXY_BIN and ran[0][2] == {"PATH": cc.BASE_PATH, "HOME": "/tmp"}, "the proxy gets no secret from the environment"
+
+
+def test_the_image_carries_the_pinned_proxy_and_its_own_user():
+    text = (HERE / "Dockerfile").read_text()
+    assert re.search(r"COPY --from=tesla/vehicle-command:\d+\.\d+\.\d+@sha256:[0-9a-f]{64} /usr/local/bin/tesla-http-proxy", text)
+    assert "useradd -r -u 10005 -g 10005 -d /tmp teslaproxy" in text
+
+
+def test_status_keeps_a_space_after_the_longest_name(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cc, "RUN", tmp_path)
+    procs = {n: {"state": "running", "up_s": 5, "restarts": 0, "last_exit": None} for n in ("web", "tesla-net", "tesla-proxy")}
+    (tmp_path / "status.json").write_text(json.dumps({"at": int(time.time()), "processes": procs}))
+    assert cc.status() == 0
+    lines = capsys.readouterr().out.splitlines()
+    for name in procs:
+        assert any(re.match(rf"{re.escape(name)} +running", line) for line in lines), lines
+    assert len({line.index("running") for line in lines if "running" in line}) == 1, "one column"

@@ -20,6 +20,8 @@ import threading
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
+import fleet_usage
+
 LOG = logging.getLogger("carcommand.identity")
 
 DDL = """
@@ -31,6 +33,8 @@ CREATE TABLE IF NOT EXISTS cc_car_identity (
     detected   JSONB NOT NULL DEFAULT '{}'::jsonb,
     checked_at TIMESTAMPTZ
 );
+-- The colour a car was first given when it had no choice of its own: kept, so adding another car never recolours it.
+ALTER TABLE cc_car_identity ADD COLUMN IF NOT EXISTS chart_auto SMALLINT;
 """
 
 # ---- the model year, from the VIN ------------------------------------------------------
@@ -416,18 +420,25 @@ def valid_chart(i) -> bool:
     return isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(PALETTE)
 
 
-def chart_colors(vins: list[str], chosen: dict[str, int | None], paints: dict[str, str | None] | None = None) -> dict[str, int]:
+def chart_colors(vins: list[str], chosen: dict[str, int | None], paints: dict[str, str | None] | None = None, kept: dict[str, int | None] | None = None) -> dict[str, int]:
     """vin -> PALETTE index, for every page. No two cars' colours sit too close (MIN_DISTINCT)
     while the palette has room. A car's own choice comes first, in the garage's order (a later
     car whose choice sits on or beside an earlier one's is picked for as if it had none). A car
     with no choice takes the free colour nearest its paint, as the owner set it or the car
     reports it; with no paint known, the colour its place in the garage gives it (from Violet on,
-    never Gold), else the first one free."""
+    never Gold), else the first one free. `kept` is what such a car was given before: it keeps that
+    (after the hand-picked ones) while it is free, so a car joining the garage never recolours one
+    already drawn; only a car without one is picked for, around those."""
     out: dict[str, int] = {}
     paints = paints or {}
+    kept = kept or {}
     for vin in vins:
         c = chosen.get(vin)
         if valid_chart(c) and c not in blocked(out.values()):
+            out[vin] = c
+    for vin in vins:
+        c = kept.get(vin)
+        if vin not in out and valid_chart(c) and c not in blocked(out.values()):
             out[vin] = c
     for i, vin in enumerate(vins):
         if vin in out:
@@ -511,6 +522,8 @@ def describe(vin: str, make: str | None, model: str | None, row: dict | None, se
         "detected_paint": detected_paint,
         "body": row.get("body") if row.get("body") in BODIES else body_for(make, model),
         "body_set": row.get("body") in BODIES,
+        # True, False or None (not said): what the car's maker says it is fitted with
+        "fitted": {ours: det.get(ours) for ours in FITTED.values()},
     }
 
 
@@ -520,10 +533,20 @@ TESLA_KEYS = ("car_type", "trim_badging", "exterior_color", "wheel_type", "roof_
 STREAM_KEYS = {"CarType": "car_type", "Trim": "trim_badging", "ExteriorColor": "exterior_color", "WheelType": "wheel_type", "RoofColor": "roof_color"}
 
 
+# What the car is fitted with, for the controls it is offered: vehicle_config's name -> ours
+FITTED = {"has_seat_cooling": "seat_cooling", "rear_seat_heaters": "rear_seat_heaters"}
+
+
 def tesla_config(body: dict | None) -> dict:
-    """The few identity fields of a vehicle_data answer, and nothing else of it."""
+    """The few identity fields of a vehicle_data answer, what it is fitted with, and nothing else of it."""
     r = (body or {}).get("response") or {}
     out = {}
+    for k, ours in FITTED.items():
+        v = (r.get("vehicle_config") or {}).get(k)
+        if isinstance(v, bool):
+            out[ours] = v
+        elif isinstance(v, int):
+            out[ours] = v > 0
     for part in ("vehicle_config", "vehicle_state"):
         got = r.get(part) or {}
         for k in TESLA_KEYS:
@@ -543,7 +566,7 @@ def from_stream(fields: dict) -> dict:
 
 # ---- storage -----------------------------------------------------------------------------
 def load(conn) -> dict[str, dict]:
-    rows = conn.execute("SELECT vin, paint, chart, body, detected, checked_at FROM cc_car_identity").fetchall()
+    rows = conn.execute("SELECT vin, paint, chart, chart_auto, body, detected, checked_at FROM cc_car_identity").fetchall()
     out = {}
     for r in rows:
         r = dict(r)
@@ -554,10 +577,20 @@ def load(conn) -> dict[str, dict]:
 
 
 def save_choice(conn, vin: str, paint: str | None, chart: int | None, body: str | None) -> None:
+    """The owner's look for a car. Editing it forgets the colour kept for it, so a new paint is matched afresh."""
     conn.execute(
-        "INSERT INTO cc_car_identity (vin, paint, chart, body) VALUES (%s, %s, %s, %s) ON CONFLICT (vin) DO UPDATE SET paint = EXCLUDED.paint, chart = EXCLUDED.chart, body = EXCLUDED.body",
+        "INSERT INTO cc_car_identity (vin, paint, chart, body) VALUES (%s, %s, %s, %s) ON CONFLICT (vin) DO UPDATE SET paint = EXCLUDED.paint, chart = EXCLUDED.chart, body = EXCLUDED.body, chart_auto = NULL",
         (vin, paint, chart, body),
     )
+
+
+def keep_colors(conn, picked: dict[str, int]) -> None:
+    """Remember the colours first given to cars with none kept (only ever fills a blank)."""
+    for vin, index in picked.items():
+        conn.execute(
+            "INSERT INTO cc_car_identity (vin, chart_auto) VALUES (%s, %s) ON CONFLICT (vin) DO UPDATE SET chart_auto = COALESCE(cc_car_identity.chart_auto, EXCLUDED.chart_auto)",
+            (vin, index),
+        )
 
 
 def save_detected(conn, vin: str, found: dict, checked_at: datetime | None = None) -> None:
@@ -668,7 +701,7 @@ class Worker(threading.Thread):
             if not is_tesla(vin):
                 continue
             last = (rows.get(vin) or {}).get("checked_at")
-            if last and now - last < DAY:
+            if last and now - last < DAY * fleet_usage.METER.factor():
                 continue
             self.failed[vin] = [t for t in self.failed.get(vin, []) if now - t < DAY]
             if len(self.failed[vin]) >= TRIES_A_DAY:
@@ -683,7 +716,7 @@ class Worker(threading.Thread):
         if not due:
             return []  # nothing to read: the account's list is not asked for either
         fleet = self.fleet()
-        if fleet is None or (self.listed_at and now - self.listed_at < LIST_GAP):
+        if fleet is None or (self.listed_at and now - self.listed_at < timedelta(seconds=fleet_usage.slowed(LIST_GAP.total_seconds()))):
             return []
         got = self.access()
         if not got:

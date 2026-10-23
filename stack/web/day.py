@@ -13,18 +13,20 @@ MIN_PARKED = timedelta(minutes=10)
 MIN_SPLIT = timedelta(minutes=10)  # an idle or sleep shorter than this folds into its neighbour
 
 
-def split_parked(states: list[tuple[datetime, datetime, str]], start: datetime, end: datetime) -> list[tuple[datetime, datetime, str]]:
-    """Cut a parked stretch into alternating awake and asleep pieces from the state rows, dropping
-    pieces under MIN_SPLIT into their neighbour. Returns (start, end, 'idle'|'sleep') runs."""
+def split_parked(states: list[tuple[datetime, datetime, str]], start: datetime, end: datetime, car_on: list[tuple[datetime, datetime, object]] | None = None) -> list[tuple[datetime, datetime, str]]:
+    """Cut a parked stretch into alternating awake, car-on and asleep pieces from the state rows
+    and the car-on stretches (cc_car_on), dropping pieces under MIN_SPLIT into their neighbour.
+    Returns (start, end, 'idle'|'caron'|'sleep') runs."""
+    car_on = car_on or []
     cuts = {start, end}
-    for a, b, _ in states:
+    for a, b, _ in list(states) + list(car_on):
         for t in (a, b):
             if start < t < end:
                 cuts.add(t)
     points = sorted(cuts)
     pieces: list[list] = []
     for a, b in zip(points, points[1:]):
-        label = "sleep" if any(x <= a < y and s == "OFFLINE" for x, y, s in states) else "idle"
+        label = "sleep" if any(x <= a < y and s == "OFFLINE" for x, y, s in states) else "caron" if any(x <= a < y for x, y, _ in car_on) else "idle"
         if pieces and pieces[-1][2] == label:
             pieces[-1][1] = b
         else:
@@ -129,6 +131,23 @@ def since_charge(t0, when, charge_end_level, lv0, lv1, r0, r1, miles, last_move,
     }
 
 
+def bought(b: dict, cost: float | None, kwh_charged: float | None, capacity_kwh: float | None) -> dict:
+    """What a charge paid for, from since_charge's figures up to the next charge: the energy
+    used (rated range × kWh per rated mile, else the battery points × the pack), Wh a mile
+    over the miles driven, and what a mile cost at this charge's price a kWh."""
+    used = b.get("kwh")
+    if used is None and b.get("battery_used") is not None and capacity_kwh:
+        used = b["battery_used"] / 100 * capacity_kwh
+    miles = b.get("miles") or 0.0
+    per_kwh = (cost / kwh_charged) if cost is not None and kwh_charged else None
+    return dict(
+        b,
+        used_kwh=used,
+        wh_per_mi=(used * 1000 / miles) if used and used > 0 and miles >= 1 else None,
+        cost_per_mi=(per_kwh * used / miles) if per_kwh is not None and used and used > 0 and miles >= 1 else None,
+    )
+
+
 def day_sessions(
     drives: list[dict],
     charges: list[dict],
@@ -140,6 +159,7 @@ def day_sessions(
     inside: list[tuple[datetime, float]] | None = None,
     modes: list[tuple[datetime, datetime, tuple]] | None = None,
     kwh_per_rated_mi: float | None = None,
+    car_on: list[tuple[datetime, datetime, object]] | None = None,
 ) -> list[dict]:
     """Drives, charges and parked stretches (10 min or longer) inside [start, end), in order.
     A parked row carries how much of it was asleep, the battery and rated range lost across
@@ -207,6 +227,8 @@ def day_sessions(
                 "charging_type": c.get("charging_type"),
                 "range_added": c.get("range_added"),
                 "rate_plan": c.get("rate_plan"),
+                # begun the day before: shown, counted in that day's totals (as Stats counts it)
+                "carried": a < start,
             }
         )
         busy.append((a, b))
@@ -215,7 +237,7 @@ def day_sessions(
     for a, b in busy + [(end, end)]:
         gap_end = min(a, end)
         if gap_end - cursor >= MIN_PARKED:
-            for p0, p1, label in split_parked(states, cursor, gap_end):
+            for p0, p1, label in split_parked(states, cursor, gap_end, car_on):
                 share = asleep_share(states, p0, p1)
                 l0, l1 = at(p0), at(p1)
                 r0, r1 = range_at(p0), range_at(p1)
@@ -228,7 +250,7 @@ def day_sessions(
                         "end": p1,
                         "id": None,
                         "vin": None,
-                        "title": "Asleep" if label == "sleep" else "Idle",
+                        "title": {"sleep": "Asleep", "caron": "Car on"}.get(label, "Idle"),
                         "duration": p1 - p0,
                         "asleep_share": share,
                         "level_start": l0,
@@ -242,6 +264,7 @@ def day_sessions(
                         "inside_end": inside_at(p1),
                         "sentry_h": awake_hours(modes, states, p0, p1, lambda m: m[0]),
                         "climate_h": awake_hours(modes, states, p0, p1, lambda m: m[1]),
+                        "on_h": overlap_hours(car_on or [], p0, p1, lambda v: True),  # the car on, no drive: the states say on, not that anyone was in it
                     }
                 )
         cursor = max(cursor, b)
@@ -284,8 +307,9 @@ def place_parked(rows: list[dict]) -> None:
 
 def day_totals(rows: list[dict], capacity_kwh: float | None, kwh_per_rated_mi: float | None = None) -> dict:
     drives = [r for r in rows if r["kind"] == "drive"]
-    charges = [r for r in rows if r["kind"] == "charge"]
-    parked = [r for r in rows if r["kind"] == "parked"]
+    charges = [r for r in rows if r["kind"] == "charge" and not r.get("carried")]
+    # a stretch the car drove out of reach (daypage.unlogged) is not parked, nor its battery drop phantom drain
+    parked = [r for r in rows if r["kind"] == "parked" and not r.get("moved_mi")]
     miles = sum(r.get("miles") or 0 for r in drives)
     used = sum(
         r["kwh_used"] if r.get("kwh_used") is not None else (drive_kwh(r.get("level_start"), r.get("level_end"), capacity_kwh, r.get("range_start"), r.get("range_end"), kwh_per_rated_mi) or 0.0)
@@ -320,25 +344,47 @@ def day_totals(rows: list[dict], capacity_kwh: float | None, kwh_per_rated_mi: f
         "phantom_mi_per_h": (range_loss / parked_h) if parked_h > 0 and range_loss else None,
         "sentry_h": sum(r.get("sentry_h") or 0 for r in parked),
         "climate_h": sum(r.get("climate_h") or 0 for r in parked),
+        "on_h": sum(r.get("on_h") or 0 for r in parked),
         "battery_used": sum(drops) if drops else None,
     }
 
 
+TURN_M = 8.0  # a reversal of height counts only past this: GPS height wanders 3–10 m between readings
+
+
 def elevation_profile(track: list[dict]) -> tuple[list[tuple[datetime, float]], float, float]:
-    """(series in feet, climb ft, descent ft) from positions that carry elevation in metres. Deltas under 2 m are noise."""
-    series, climb, descent, last = [], 0.0, 0.0, None
+    """(series in feet, climb ft, descent ft) from positions that carry elevation in metres.
+
+    Counted between turning points: the road is climbing or descending until the height
+    has come back more than TURN_M from the highest (or lowest) point since the last turn,
+    and only then does that leg count, from turn to turn. Noise smaller than TURN_M never
+    makes a turn, so a flat road with ±4 m of GPS wander climbs nothing, and a long slow
+    climb counts in full. The last leg counts once it has gone past TURN_M."""
+    series, climb, descent = [], 0.0, 0.0
+    turn = peak = None
+    way = 0  # 1 climbing, -1 descending, 0 not yet either
     for p in track:
         e = p.get("elevation")
         if e is None:
             continue
         series.append((p["at"], e * 3.28084))
-        if last is not None:
-            d = e - last
-            if d >= 2:
-                climb += d
-            elif d <= -2:
-                descent += -d
-        last = e
+        if turn is None:
+            turn = peak = e
+        elif way == 0:
+            if abs(e - turn) > TURN_M:
+                way, peak = (1 if e > turn else -1), e
+        elif (e - peak) * way > 0:
+            peak = e  # still going the same way
+        elif abs(peak - e) > TURN_M:
+            if way > 0:
+                climb += peak - turn
+            else:
+                descent += turn - peak
+            turn, peak, way = peak, e, -way
+    if way > 0:
+        climb += peak - turn
+    elif way < 0:
+        descent += turn - peak
     return series, climb * 3.28084, descent * 3.28084
 
 

@@ -53,8 +53,16 @@ to Tesla's Fleet API. Before: 1 or True means on (the fan ran 100 % of the time
 `is_climate_on` was 1). After: Sentry on is 3 (1 is idle, 4 to 6 are rarer
 states), climate on is 2 (the fan ran 7 % of the time it read 1, 98 % when 2).
 TeslaFi's own day page counts only the 3 and the 2. replay() flips to the new
-reading the first time it sees a 3 or a 2 for the car, and under the new
-reading a 1 with the fan running still counts as climate on.
+reading the first time it sees a 3 or a 2 for the car. Under the new reading a 1
+is never climate, fan or not: on both cars' feeds (60 days, 2026-10) the 1s with
+the fan running were Cabin Overheat Protection (95 % with the cabin over 35 °C,
+a median 43 °C on one car and 37 °C on the other) or the fan running down just
+after a 2, never someone's climate.
+
+Sentry's new codes, read beside the same car's own stream on the same minutes: 0 off,
+1 idle, 3 armed, 4 aware (something came near). 5 and 6 are taken as the stream's next
+two, panic and quiet; neither has been seen. Aware is Sentry at work: read as off, a car
+on Sentry all day showed a one-minute gap at every person who walked past.
 
 ## Fields that look useful and are not
 
@@ -209,7 +217,6 @@ def sample_from_row(row: dict, tz=DEFAULT_TZ, when: datetime | None = None) -> d
             # raw, decided in replay(): the encoding changed in 2025 (see MODE ERAS below)
             "sentry_raw": (_clean(row.get("sentry_mode")) or "").lower(),
             "climate_raw": (_clean(row.get("is_climate_on")) or "").lower(),
-            "fan_on": (_clean(row.get("fan_status")) or "0") not in ("0", "0.0"),
             # TeslaFi's own session ids: 0 or blank means "not in one".
             "drive_no": _i(row.get("driveNumber")) or 0,
             "charge_no": _i(row.get("chargeNumber")) or 0,
@@ -304,7 +311,15 @@ def vehicle_state(s: dict) -> str:
 MOVED_M = 15.0
 
 DRIVE_GAP = timedelta(hours=1)
+# A drive's first and last minutes fall between two polls: the reading just before its first
+# driving row, and just after its last, are where it really began and ended, when this close.
+DRIVE_EDGE = timedelta(minutes=5)
+EDGE_MI = 3.0  # more than this between the two readings is not the same drive's edge
 CHARGE_GAP = timedelta(hours=6)
+# A "charge" that added under this, over less than BLIP_TIME, with the level not rising, is
+# the car reading Charging for a moment (woken for a scheduled charge, a cable nudged).
+BLIP_KWH = 0.05
+BLIP_TIME = timedelta(minutes=5)
 
 FOLD = timedelta(hours=1)
 # A fold shows as a step back of one hour less a poll interval. One export
@@ -321,7 +336,21 @@ def _moved(a, b) -> bool:
     return (dlat * dlat + dlon * dlon) ** 0.5 > MOVED_M
 
 
-def replay(samples) -> dict:
+def _continues(trip: dict, odo) -> bool:
+    """Whether a reading at `odo` carries on from where `trip` had got to (EDGE_MI at most further)."""
+    end = trip["destination_odometer"]
+    return odo is None or end is None or 0 <= odo - end <= EDGE_MI
+
+
+def _blip(ch: dict) -> bool:
+    rose = ch["start_level"] is not None and ch["end_level"] is not None and ch["end_level"] > ch["start_level"]
+    return (ch["real_charged"] or 0.0) < BLIP_KWH and ch["session_end_date"] - ch["session_start_date"] < BLIP_TIME and not rose
+
+
+SENTRY_ON_CODES = ("3", "4", "5", "6")  # MODE ERAS: armed, aware, panic, quiet
+
+
+def replay(samples, new_modes: bool = False, edges: bool = False) -> dict:
     """Rebuild the interval tables, trips, charging sessions, positions and
     software history in one pass over any iterable of samples.
 
@@ -331,7 +360,12 @@ def replay(samples) -> dict:
     second occurrence (PST) and belongs one hour later in UTC, as does every
     following row until the clock passes where the first pass ended. Anything else
     out of order (clock jitter of a few seconds) is clamped so no interval
-    runs backwards."""
+    runs backwards.
+
+    `new_modes` reads sentry and climate the 2025 way from the first row (MODE ERAS): the
+    live feed is all from then, and a day and a half with no 3 or 2 in it is not the old
+    encoding come back. `edges` gives each drive the readings either side of it (DRIVE_EDGE):
+    for TeslaFi's once-a-minute rows, not for a logger that records its own drives densely."""
     runs = {
         k: _Runs()
         for k in (
@@ -353,14 +387,18 @@ def replay(samples) -> dict:
     charges: dict[int, dict] = {}
     vehicle: dict = {}
     first = last = None
-    new_sentry = new_climate = False  # MODE ERAS: flip once a 3 (sentry) or 2 (climate) has been seen
+    new_sentry = new_climate = new_modes  # MODE ERAS: flip once a 3 or more (sentry) or 2 (climate) has been seen
     fold_until = None  # while set, rows converting earlier than this are the second pass through a fold
     n = 0
     last_pos = None
+    parked = None  # (time, odometer, lat, lon) of the newest reading outside a drive: where the next one starts
+    ended = None  # the drive the last driving row belonged to, until a reading outside it closes its tail
 
+    prev_tr = None  # the drive the sample just before this one was in, when it was in one
     for s in samples:
         n += 1
         t = s["time"]
+        before, prev_tr = prev_tr, None
         if fold_until is not None and t < fold_until:
             t = t + FOLD
         elif last is not None and t < last:
@@ -393,15 +431,19 @@ def replay(samples) -> dict:
         runs["inside_temperatures"].add(t, s.get("inside_f"))
         if s["charging"] and (s.get("volts") or s.get("amps")):
             runs["charging_electrics"].add(t, (s.get("volts") or 0.0, s.get("amps") or 0.0))
-        # Sentry and cabin conditioning as one run of (sentry, climate) while the car is awake
-        if not s["asleep"]:
+        # Sentry and cabin conditioning as one run of (sentry, climate). A sleeping car has neither (each
+        # keeps it awake), so sleep ends a run: carried over a night, one Sentry run had a parked night's
+        # drain counted as Sentry's, and one climate run lasted 25 hours.
+        if s["asleep"]:
+            runs["modes"].add(t, (False, False))
+        else:
             sr, cr = s.get("sentry_raw", ""), s.get("climate_raw", "")
-            if sr == "3":
+            if sr in SENTRY_ON_CODES:
                 new_sentry = True
             if cr == "2":
                 new_climate = True
-            sentry_on = sr in ("true", "3") or (sr == "1" and not new_sentry)
-            climate_on = cr in ("true", "2") or (cr == "1" and (not new_climate or bool(s.get("fan_on"))))
+            sentry_on = sr == "true" or sr in SENTRY_ON_CODES or (sr == "1" and not new_sentry)
+            climate_on = cr in ("true", "2") or (cr == "1" and not new_climate)
             runs["modes"].add(t, (sentry_on, climate_on))
 
         lat, lon = s["latitude"], s["longitude"]
@@ -409,8 +451,22 @@ def replay(samples) -> dict:
             positions.append((t, lat, lon, s["heading"], s["level"], s["odometer"], s["speed"], vehicle_state(s), s.get("elevation"), s.get("power_kw")))
             last_pos = (lat, lon)
 
+        odo = s["odometer"]
+        if edges and not s["drive_no"] and odo is not None:
+            # the first reading after a drive is where it stopped: the tail the last driving row missed
+            if ended is not None and t - ended["destination_date"] <= DRIVE_EDGE and ended["destination_odometer"] is not None and 0 <= odo - ended["destination_odometer"] <= EDGE_MI:
+                ended["destination_odometer"] = odo
+                if lat is not None and lon is not None:
+                    ended["destination_position_latitude"], ended["destination_position_longitude"] = lat, lon
+            ended = None
+            parked = (t, odo, lat, lon)
+
         if s["drive_no"]:
             tr = trips.get(s["drive_no"])
+            if tr is None and edges and before is not None and t - before["destination_date"] <= DRIVE_EDGE and _continues(before, s["odometer"]):
+                # the feed's number stepped between two driving polls with nothing between them: one drive, as the
+                # stream would count it (a pause in park is a poll outside a drive, and ends it)
+                tr = trips[s["drive_no"]] = before
             if tr is not None and t - tr["destination_date"] > DRIVE_GAP:
                 trips[(s["drive_no"], tr["start_date"])] = tr  # the stuck number's earlier drive, kept under its own key
                 tr = None
@@ -427,6 +483,12 @@ def replay(samples) -> dict:
                     "destination_position_latitude": lat,
                     "destination_position_longitude": lon,
                 }
+                # the first minute's miles, and the place it left, from the reading just before
+                if edges and parked is not None and odo is not None and t - parked[0] <= DRIVE_EDGE and 0 <= odo - parked[1] <= EDGE_MI:
+                    tr["start_odometer"] = parked[1]
+                    if parked[2] is not None and parked[3] is not None:
+                        tr["start_position_latitude"], tr["start_position_longitude"] = parked[2], parked[3]
+            ended, parked, prev_tr = tr, None, tr
             tr["destination_date"] = t
             if s["odometer"] is not None:
                 if tr["start_odometer"] is None:
@@ -476,18 +538,18 @@ def replay(samples) -> dict:
 
     out = {k: r.done() for k, r in runs.items()}
     out["positions"] = positions
-    for tr in trips.values():
+    for tr in {id(t): t for t in trips.values()}.values():
         # FSD miles in the drive: the FSD trip meter's rise, when it rose and by no more than the drive itself
         a, b = tr.pop("fsd_start", None), tr.pop("fsd_end", None)
         miles = (tr["destination_odometer"] - tr["start_odometer"]) if tr["destination_odometer"] is not None and tr["start_odometer"] is not None else None
         d = (b - a) if a is not None and b is not None else None
         tr["fsd_miles"] = d if d is not None and 0 <= d <= (miles + 1 if miles is not None else 10**6) else None
-    out["trips"] = sorted((tr for tr in trips.values() if tr["destination_date"] > tr["start_date"]), key=lambda x: x["start_date"])
+    out["trips"] = sorted((tr for tr in {id(t): t for t in trips.values()}.values() if tr["destination_date"] > tr["start_date"]), key=lambda x: x["start_date"])
     for ch in charges.values():
         ch.pop("_last_added", None)
         if ch["real_charged"] == 0.0:
             ch["real_charged"] = None
-    out["charging_sessions"] = sorted(charges.values(), key=lambda x: x["session_start_date"])
+    out["charging_sessions"] = sorted((ch for ch in charges.values() if not _blip(ch)), key=lambda x: x["session_start_date"])
     if vehicle.get("vin") and (not vehicle.get("model") or vehicle["model"].lower() in ("model", "tesla")):
         vehicle["model"] = model_from_vin(vehicle["vin"]) or vehicle.get("model")
     out["vehicle"] = vehicle

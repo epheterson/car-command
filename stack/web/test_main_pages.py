@@ -135,10 +135,11 @@ def test_a_place_has_one_count_and_it_is_called_visits():
 
 def test_gold_is_the_battery_and_the_mark_alone():
     """Gold was every switch, chip, chart fill and bar, so it meant nothing. Now only the
-    battery (its spark, its gauge, a chart whose line is the battery, the ready state) and the
+    battery (its spark, its gauge, a chart whose line is the battery, the battery a charge
+    paid for, the ready state) and the
     money heatmap, a picture of price the review kept, may use it; the mark carries its own."""
     css = (HERE / "static" / "style.css").read_text()
-    allowed = (".spark polyline", ".gauge i", ".chartbox.p-level", ".state.ready", ".status.ready", ".chip-v i", "table.tou td", ".tou-key")
+    allowed = (".spark polyline", ".gauge i", ".chartbox.p-level", ".chartbox .s-level", ".state.ready", ".status.ready", ".chip-v i", "table.tou td", ".tou-key", ".bt-used")
     for line in css.splitlines():
         for rule in re.findall(r"([^{}]+)\{[^}]*var\(--gold\)", line):
             assert any(a in rule for a in allowed), rule.strip()
@@ -194,7 +195,9 @@ def test_service_and_software_are_rows_with_forms_folded_and_one_button_style():
     )
     assert_plain(html)
     main = html[html.index("<main") :]
-    assert main.count('class="empty"') == 4 and "No service logged" in main, "an empty car is four lines, each with its action beneath"
+    assert main.count('class="empty"') == 3 and "No service logged" in main, "an empty car is three lines, each with its action beneath"
+    assert ".svc .set-v { flex:none; }" in (HERE / "static" / "style.css").read_text(), "a tire set's miles never truncate to 1,366…"
+    assert 'class="tiles' not in main and "Nothing due" not in main and main.count("Log service") == 1, "nothing logged: no zero tiles and no Due, one empty line and one button"
     assert 'name="vin" value="V1"' in main and '<select id="svc-car"' not in main, "the page's car, no Car select"
 
 
@@ -206,7 +209,7 @@ def test_battery_axes_compare_like_with_like():
     lo, hi = steady([384.0, 388.0])
     assert hi - lo >= 0.1 * 386 and lo < 384 and hi > 388
     app = (HERE / "app.py").read_text()
-    assert '"scale": "steady"' in app and "y_min=lo, y_max=hi" in app
+    assert '"scale": "steady"' in app and "calview.tire_chart(" in app, "the four tires on one scale (test_calview)"
     js = (HERE / "static" / "chart.js").read_text()
     assert "if (left < lastRight + 8) return;" in js, "a tick label that would touch the one before it is left out"
     src = (HERE / "templates" / "charging.html").read_text()
@@ -219,7 +222,7 @@ def test_a_drive_opens_on_its_map_and_its_battery_axis_comes_from_the_readings()
     assert level_scale([86.0, 85.0]) == (80.0, 90.0), "a 1-point drive is a line across ten points, not a stroke on a 0–100 slab"
     assert level_scale([62.0, 18.0]) == (15.0, 65.0) and level_scale([99.5, 97.0]) == (90.0, 100.0) and level_scale([0.5, 3.0]) == (0.0, 10.0)
     src = (HERE / "templates" / "drive.html").read_text()
-    assert src.index('id="map"') < src.index('<div class="tiles') < src.index("parts.chart("), "map, then the line and tiles, then the chart"
+    assert src.index('class="drv-sum"') < src.index('id="drv-maps"') < src.index('<div class="tiles') < src.index("parts.chart("), "the line, the maps, the tiles, then the chart"
     tiles = src[src.index('<div class="tiles') : src.index("parts.chart(")]
     for footnote in ("average, moving and stopped", "from the car's positions", "odometer ", "at home rates", "of the drive"):
         assert footnote not in tiles, footnote

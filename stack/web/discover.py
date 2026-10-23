@@ -95,57 +95,57 @@ def specificity(name: str | None, display_name: str | None = None) -> int:
 
 
 US_STATES = {
-    "Alabama",
-    "Alaska",
-    "Arizona",
-    "Arkansas",
-    "California",
-    "Colorado",
-    "Connecticut",
-    "Delaware",
-    "Florida",
-    "Georgia",
-    "Hawaii",
-    "Idaho",
-    "Illinois",
-    "Indiana",
-    "Iowa",
-    "Kansas",
-    "Kentucky",
-    "Louisiana",
-    "Maine",
-    "Maryland",
-    "Massachusetts",
-    "Michigan",
-    "Minnesota",
-    "Mississippi",
-    "Missouri",
-    "Montana",
-    "Nebraska",
-    "Nevada",
-    "New Hampshire",
-    "New Jersey",
-    "New Mexico",
-    "New York",
-    "North Carolina",
-    "North Dakota",
-    "Ohio",
-    "Oklahoma",
-    "Oregon",
-    "Pennsylvania",
-    "Rhode Island",
-    "South Carolina",
-    "South Dakota",
-    "Tennessee",
-    "Texas",
-    "Utah",
-    "Vermont",
-    "Virginia",
-    "Washington",
-    "West Virginia",
-    "Wisconsin",
-    "Wyoming",
-    "District of Columbia",
+    "Alabama": "AL",
+    "Alaska": "AK",
+    "Arizona": "AZ",
+    "Arkansas": "AR",
+    "California": "CA",
+    "Colorado": "CO",
+    "Connecticut": "CT",
+    "Delaware": "DE",
+    "Florida": "FL",
+    "Georgia": "GA",
+    "Hawaii": "HI",
+    "Idaho": "ID",
+    "Illinois": "IL",
+    "Indiana": "IN",
+    "Iowa": "IA",
+    "Kansas": "KS",
+    "Kentucky": "KY",
+    "Louisiana": "LA",
+    "Maine": "ME",
+    "Maryland": "MD",
+    "Massachusetts": "MA",
+    "Michigan": "MI",
+    "Minnesota": "MN",
+    "Mississippi": "MS",
+    "Missouri": "MO",
+    "Montana": "MT",
+    "Nebraska": "NE",
+    "Nevada": "NV",
+    "New Hampshire": "NH",
+    "New Jersey": "NJ",
+    "New Mexico": "NM",
+    "New York": "NY",
+    "North Carolina": "NC",
+    "North Dakota": "ND",
+    "Ohio": "OH",
+    "Oklahoma": "OK",
+    "Oregon": "OR",
+    "Pennsylvania": "PA",
+    "Rhode Island": "RI",
+    "South Carolina": "SC",
+    "South Dakota": "SD",
+    "Tennessee": "TN",
+    "Texas": "TX",
+    "Utah": "UT",
+    "Vermont": "VT",
+    "Virginia": "VA",
+    "Washington": "WA",
+    "West Virginia": "WV",
+    "Wisconsin": "WI",
+    "Wyoming": "WY",
+    "District of Columbia": "DC",
 }
 
 
@@ -161,6 +161,43 @@ def name_from(address: dict, fallback_name: str | None = None, display_name: str
     if road and town:
         return f"{road}, {town}"
     return road or town or address.get("state") or "Unnamed"
+
+
+def locality_of(name: str | None, display_name: str | None) -> str | None:
+    """A named cell's town, with its state's two letters in the US: "Springfield, IL".
+    The town is what name_from put after the road; a cell named for a POI or a town alone
+    takes it from the display name."""
+    if not name or name == "Unnamed":
+        return None
+    town = name.rsplit(",", 1)[1].strip() if "," in name else town_from_display(display_name)
+    if not town:
+        return None
+    state = next((US_STATES[p.strip()] for p in (display_name or "").split(",") if p.strip() in US_STATES), None)
+    return f"{town}, {state}" if state and state != town else town
+
+
+def locality_index(rows) -> dict[tuple[float, float], str]:
+    """(lat3, lon3, name, display_name) cells -> {about-1-km square: its commonest town},
+    so a spot no cell has named yet still reads as the town it is in."""
+    counts: dict[tuple[float, float], Counter] = {}
+    for lat, lon, name, display in rows:
+        town = locality_of(name, display)
+        if town:
+            counts.setdefault((round(float(lat), 2), round(float(lon), 2)), Counter())[town] += 1
+    return {k: c.most_common(1)[0][0] for k, c in counts.items()}
+
+
+def locality_at(lat: float | None, lon: float | None, index: dict) -> str | None:
+    """The town of the square a position is in, else of a square next to it; None when
+    nothing named is that close."""
+    if lat is None or lon is None:
+        return None
+    la, lo = round(lat, 2), round(lon, 2)
+    for dla, dlo in ((0, 0), (0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+        town = index.get((round(la + dla / 100, 2), round(lo + dlo / 100, 2)))
+        if town:
+            return town
+    return None
 
 
 def geocoder_url(maps_url: str | None, maps_up: bool, public_allowed: bool) -> str | None:
@@ -200,12 +237,18 @@ def geocoder_route(maps_url: str | None, up: bool, public_ok: bool, down_streak:
     return "public", streak
 
 
-def reverse_geocode(lat: float, lon: float, client, url: str = NOMINATIM) -> tuple[str, str | None]:
+def reverse_body(lat: float, lon: float, client, url: str = NOMINATIM) -> dict:
+    """One reverse lookup, the position rounded to about 100 m, the answer as Nominatim gives it."""
     r = client.get(url, params={"lat": f"{lat:.3f}", "lon": f"{lon:.3f}", "format": "jsonv2", "zoom": 17}, headers={"User-Agent": USER_AGENT}, timeout=20)
     r.raise_for_status()
     body = r.json()
     if body.get("error"):
         raise ValueError(f"unable: {body['error']}")
+    return body
+
+
+def reverse_geocode(lat: float, lon: float, client, url: str = NOMINATIM) -> tuple[str, str | None]:
+    body = reverse_body(lat, lon, client, url)
     address = body.get("address") or {}
     return name_from(address, body.get("name"), body.get("display_name")), body.get("display_name")
 
@@ -307,16 +350,22 @@ def requeue_public_geocells(conn) -> None:
 
 
 def pending_cells(conn, limit: int) -> list[tuple[float, float]]:
-    """Endpoint cells (100 m) with no name yet, busiest first: never tried, tried and
-    failed more than RETRY_AFTER_H hours ago, or flagged `requeue` (a public name waiting
-    for the local pass to take over) and not retried within RETRY_AFTER_H. The table is
+    """Endpoint cells (100 m), and the cell each car is in now, with no name yet, busiest
+    first: never tried, tried and failed more than RETRY_AFTER_H hours ago, or flagged
+    `requeue` (a public name waiting for the local pass to take over) and not retried
+    within RETRY_AFTER_H. A stopped car's own cell is what Now reads its street from, so
+    one parked where no drive has ended yet is named within a minute too; a moving car's
+    is never asked for. The table is
     created at startup (apply_schema); this never runs the DDL itself."""
     rows = conn.execute(
         """
         WITH ends AS (
             SELECT ROUND(start_position_latitude::numeric, 3) AS la, ROUND(start_position_longitude::numeric, 3) AS lo FROM trips
             UNION ALL SELECT ROUND(destination_position_latitude::numeric, 3), ROUND(destination_position_longitude::numeric, 3) FROM trips
-            UNION ALL SELECT ROUND(session_position_latitude::numeric, 3), ROUND(session_position_longitude::numeric, 3) FROM charging_sessions)
+            UNION ALL SELECT ROUND(session_position_latitude::numeric, 3), ROUND(session_position_longitude::numeric, 3) FROM charging_sessions
+            UNION ALL SELECT ROUND(p.latitude::numeric, 3), ROUND(p.longitude::numeric, 3) FROM vehicles v
+              CROSS JOIN LATERAL (SELECT latitude, longitude, state FROM cc_positions WHERE vin = v.vin ORDER BY at DESC LIMIT 1) p
+             WHERE UPPER(p.state) IS DISTINCT FROM 'DRIVING')
         SELECT e.la, e.lo, COUNT(*) AS n FROM ends e LEFT JOIN cc_geocells g ON g.lat3 = e.la AND g.lon3 = e.lo
         WHERE e.la IS NOT NULL
           AND (g.lat3 IS NULL

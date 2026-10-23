@@ -144,6 +144,20 @@ def test_idle_periods_split_on_driving_and_charging_and_measure_drop():
     assert ps[1]["drop_per_day"] == pytest.approx(2.0 / 9 * 24)
 
 
+def test_a_stop_with_a_charge_in_it_or_a_short_one_gives_no_daily_rate():
+    """A stop whose charge began after its parked row did read "47→57 % · -112.3 %/day", and a
+    1.1-hour one turned a point of rounding into 21 %/day."""
+    h = timedelta(hours=1)
+    states = [(T0, T0 + 2.1 * h, "PARKED"), (T0 + 2.1 * h, T0 + 3 * h, "DRIVING"), (T0 + 3 * h, T0 + 4.1 * h, "PARKED"), (T0 + 4.1 * h, T0 + 5 * h, "DRIVING")]
+    charging = [(T0 + 0.5 * h, T0 + 1.5 * h, "CHARGING")]
+    levels = [(T0, 47.0), (T0 + 1.5 * h, 57.0), (T0 + 3 * h, 50.0), (T0 + 4 * h, 49.0)]
+    late, early = idle_periods(states, levels, charging, T0 + 5 * h)
+    assert early["charged"] and early["drop_per_day"] is None and early["drop_pct"] == -10.0
+    assert not late["charged"] and late["drop_pct"] == 1.0 and late["drop_per_day"] is None, "1.1 hours is too short for a daily rate"
+    rose = idle_periods([(T0, T0 + 8 * h, "PARKED")], [(T0, 50.0), (T0 + 7 * h, 51.0)], [], T0 + 8 * h)[0]
+    assert rose["charged"] and rose["drop_per_day"] is None, "a level that rose with no charge logged is a charge"
+
+
 def test_idle_periods_ignore_short_stops():
     h = timedelta(hours=1)
     states = [(T0, T0 + 0.5 * h, "PARKED"), (T0 + 0.5 * h, T0 + 1 * h, "DRIVING"), (T0 + 1 * h, T0 + 5 * h, "OFFLINE")]
@@ -286,3 +300,22 @@ def test_humanize_duration_reads_like_a_person_would_say_it():
     assert humanize_duration(timedelta(hours=47, minutes=59)) == "47 h 59 min", "under two days stays in hours"
     assert humanize_duration(timedelta(days=7, hours=8)) == "7 days 8 h", "a week reads in days, not 176 h"
     assert humanize_duration(timedelta(days=3, minutes=5)) == "3 days"
+
+
+def test_a_wake_counts_across_the_short_unlogged_gap_between_asleep_and_awake_readings():
+    """An asleep car is polled every few minutes, so its last asleep reading and its first
+    awake one have a gap between them; the wake happened inside it, and still counts. A long
+    stretch with nothing logged is not a wake."""
+    h, m = timedelta(hours=1), timedelta(minutes=1)
+    d0 = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+    states = [(d0, d0 + 8 * h, "OFFLINE"), (d0 + 8 * h + 12 * m, d0 + 9 * h, "DRIVING"), (d0 + 9 * h, d0 + 12 * h, "OFFLINE"), (d0 + 18 * h, d0 + 19 * h, "PARKED")]
+    rows = daily_breakdown(states, [], days=1, tz=PT, now=d0 + 23 * h)
+    assert rows[0]["wakeups"] == 1, "12 minutes unlogged, then driving: a wake; 6 hours unlogged: not one"
+
+
+def test_wakes_a_day_count_by_the_hours_logged_so_a_morning_is_not_a_quiet_day():
+    from units import wakes_per_day
+
+    days = [{"wakeups": 4, "known_h": 24.0}, {"wakeups": 4, "known_h": 24.0}, {"wakeups": 1, "known_h": 6.0}]
+    assert wakes_per_day(days) == 9 / 54 * 24, "today's 6 hours count as a quarter day, not a whole one with one wake"
+    assert wakes_per_day([]) is None and wakes_per_day([{"wakeups": 0, "known_h": 0.0}]) is None

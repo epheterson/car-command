@@ -111,7 +111,7 @@ def test_bars_stack_by_car_in_display_units_with_an_average_line():
     sep = g["bars"][-1]
     assert [s["vin"] for s in sep["segs"]] == ["V1", "V2"] and round(sep["value"]) == 241, "150 mi is 241 km"
     assert g["avg"]["value"] is not None and round(g["avg"]["value"]) == round(300 * 1.609344), "the average is of the months before the focus"
-    assert [x["vin"] for x in g["legend"]] == ["V1", "V2"] and round(g["legend"][0]["total"]) == round(200 * 1.609344), "Alpha's August, the one month before the focus"
+    assert [x["vin"] for x in g["legend"]] == ["V1", "V2"] and round(g["legend"][0]["total"]) == round(300 * 1.609344), "Alpha's two bars added up, the focus month included"
     assert all(s["h"] >= 0 for x in g["bars"] for s in x["segs"]) and g["bars"][0]["x"] < g["bars"][1]["x"]
 
 
@@ -254,3 +254,37 @@ def test_months_before_the_car_arrived_are_not_averaged_or_drawn():
     assert [x["label"] for x in b["bars"]] == ["Aug", "Sep", "Oct"], "no empty bars for the months before it"
     parked = by_month([row(2026, 6, 300, 10), row(2026, 9, 900, 30), row(2026, 10, 120, 4)])
     assert history_start(parked, focus) == (2026, 6), "two empty months in a row are a car parked, still zeros"
+
+
+def test_a_thin_baseline_gives_its_figure_not_a_percent():
+    """A car's first fortnight: 376 mi against Sep 1–14's 21 read "▲ 1,659 %", and its cents a
+    mile on 21 miles read "▼ 87 %". Past five times the baseline, the percent says nothing."""
+    from statspage import change
+
+    young = by_month([row(2026, 10, 376.0, 52, 120.0, 30.0), row(2026, 9, 21.0, 19, 70.0, 22.0)])
+    c = {x["key"]: x for x in compare(young, (2026, 10), 1.0, (2026, 9))}
+    assert c["miles"]["vs_last"] is None and c["miles"]["thin_last"] and c["miles"]["last"] == 21.0
+    assert c["cost_per_mi"]["vs_last"] is None and c["cost_per_mi"]["thin_last"], "a rate over 21 miles is as thin as the miles"
+    assert round(c["drives"]["vs_last"], 2) == round(52 / 19 - 1, 2) and not c["drives"]["thin_last"], "2.7 times the drives is a real change"
+    assert c["cost"]["vs_last"] is not None, "the money is not thin"
+    assert change("miles", {"miles": 100.0}, {"miles": 200.0}) == -0.5, "a fall is never thin"
+    assert change("miles", {"miles": 100.0}, {"miles": 0.0}) is None
+
+
+def test_miles_the_odometer_moved_between_drives_are_counted_once():
+    from datetime import timedelta
+
+    from statspage import unlogged_miles
+
+    t = datetime(2026, 3, 1, 9, 0, tzinfo=ZoneInfo("America/Chicago"))
+    legs = [(100.0, 112.0), (112.0, 130.0), (134.5, 140.0), (139.9, 150.0), (9000.0, 9010.0)]
+    drives = [{"start_date": t + timedelta(hours=i), "start_odometer": a, "destination_odometer": b} for i, (a, b) in enumerate(legs)]
+    assert unlogged_miles(list(reversed(drives))) == 4.5, "a hop the logger missed counts; a step back and a jump of thousands do not"
+    assert unlogged_miles([]) == 0 and unlogged_miles(drives[:1]) == 0
+
+
+def test_the_legend_carries_the_value_when_the_only_month_is_the_focus():
+    """A new install has one month: the legend said 0 beside a 151 mi bar."""
+    a = by_month([row(2026, 9, 151)])
+    g = bars({"V1": a}, ["V1"], (2026, 9), (2026, 9), Units(), n=6)
+    assert g["bars"][-1]["value"] == 151 and g["legend"][0]["total"] == 151

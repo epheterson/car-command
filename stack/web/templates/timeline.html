@@ -5,19 +5,19 @@
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}
 <div class="pbar">
-  <h1>Timeline</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span>
+  <h1>Timeline</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span>
   <span class="sp"></span>
   <nav class="stepper" aria-label="Month"><a href="{{ root }}/timeline?month={{ window.prev }}&kind={{ kind }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/timeline?month={{ window.next }}&kind={{ kind }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav>
 </div>
 {% if days %}
 {% for day in days %}
 <section class="tday">
-<h2 class="day-h"><a href="{{ root }}/day?date={{ day.date.isoformat() }}{{ dq }}">{{ day.date.strftime('%A, %B %-d') }}</a><span>{% if day.miles %}{{ day.miles|dist }} {{ u.dist }}{% endif %}{% if day.kwh %}{% if day.miles %} · {% endif %}{{ day.kwh|num(1 if day.kwh < 10 else 0) }} kWh{% endif %}</span></h2>
+<h2 class="day-h"><a href="{{ root }}/day?date={{ day.date.isoformat() }}{{ dq }}">{{ day.date|dfmt('%A, %B %-d') }}</a><span>{% if day.miles %}{{ day.miles|dist }} {{ u.dist }}{% endif %}{% if day.kwh %}{% if day.miles %} · {% endif %}{{ day.kwh|num(1 if day.kwh < 10 else 0) }} kWh{% endif %}</span></h2>
 <div class="rows">{% for e in day.events %}{% set dot = colors.get(e.vin, 0) if car.garage else none %}
-  {% if e.kind == 'parked' %}{{ parts.gap_row(day_gap(dict(e, drop=e.get('lost')), e.title), dot, e.get('refs')) }}
+  {% if e.kind == 'parked' %}{{ parts.gap_row(day_gap(dict(e, drop=e.get('lost')), e.title), dot, e.get('refs'), root ~ '/parked/' ~ (e.at.timestamp()|int) ~ '?vin=' ~ e.vin) }}
   {% elif e.kind == 'software' %}{{ parts.row(root ~ '/software' ~ q, e.at|local('%-I:%M %p'), e.title, [], '', '', icon('update'), dot) }}
   {% else %}{% set rp = day_row(e, cur) %}{% set thumb = (thumbs or {}).get(e.id) if e.kind == 'drive' else '' %}
-  {{ parts.row(root ~ ('/drives/' if e.kind == 'drive' else '/charges/') ~ e.id ~ q, e.at|local('%-I:%M %p'), e.title, rp.pills + ([e.tag] if e.get('tag') else []), rp.big, rp.sub, thumb, dot, none, e.get('refs'), e.kind) }}
+  {{ parts.row(root ~ ('/drives/' if e.kind == 'drive' else '/charges/') ~ e.id ~ q, e.at|local('%-I:%M %p'), e.title, rp.pills + ([e.tag] if e.get('tag') else []), rp.big, rp.sub, thumb, dot, none, e.get('refs'), e.kind, garage=e.get('garage')) }}
   {% endif %}
 {% endfor %}</div>
 </section>

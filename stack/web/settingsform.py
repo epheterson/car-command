@@ -9,16 +9,20 @@ route brings the form, the settings in force and the alert channels."""
 
 from __future__ import annotations
 
+import re
 from datetime import time as dtime
 
+import charge_hold
+import clockfmt
 import cost
 import settings as settings_mod
 
 SECTIONS: tuple[tuple[str, str], ...] = (
     ("cars", "Cars and sources"),
     ("money", "Money"),
-    ("energy", "Energy"),
+    ("energy", "Powerwall"),
     ("alerts", "Alerts"),
+    ("commands", "Commands"),
     ("look", "Units and look"),
     ("maps", "Maps"),
     ("data", "Data"),
@@ -27,14 +31,25 @@ SECTIONS: tuple[tuple[str, str], ...] = (
 LABELS = dict(SECTIONS)
 # The Settings landing: every section once, in groups, each row with a glance at its value.
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Your cars", ("cars", "money", "energy", "alerts")),
+    ("Your cars", ("cars", "money", "energy", "alerts", "commands")),
     ("This site", ("look", "maps", "data")),
     ("Access", ("access",)),
 )
-CHANNEL_NAMES = {"discord": "Discord", "telegram": "Telegram", "email": "Email", "pushover": "Pushover"}
+CHANNEL_NAMES = {"discord": "Discord", "telegram": "Telegram", "email": "Email", "pushover": "Pushover", "webhook": "Webhook"}
 
 
-def index(st: dict, cars: int, channels, sign_in: bool, energy: str = "") -> list[dict]:
+def hidden_rows(st: dict, *, tesla: bool, commandable: bool, energy_on: bool = False) -> set[str]:
+    """Settings sections kept off the landing and the sidebar. Powerwall always: it belongs to
+    the Tesla account and opens from that account's row in Cars and sources (no
+    Powerwall at the top of Settings). Commands needs a Tesla or a connector car. Both stay
+    open at their URL."""
+    out = {"energy"}
+    if not (tesla or commandable or st.get("commands_on")):
+        out.add("commands")
+    return out
+
+
+def index(st: dict, cars: int, channels, sign_in: bool, energy: str = "", hide=()) -> list[dict]:
     """The Settings landing's groups of rows. Pure: the route brings what each row previews."""
     plan = st.get("rate_plan") if cost.valid_plan(st.get("rate_plan")) else None
     preview = {
@@ -42,21 +57,23 @@ def index(st: dict, cars: int, channels, sign_in: bool, energy: str = "") -> lis
         "money": plan["name"] if plan else "No plan",
         "energy": energy,
         "alerts": ", ".join(CHANNEL_NAMES.get(c, c) for c in channels) or "Off",
+        "commands": "On" if st.get("commands_on") else "Off",
         "look": f"{'km' if st.get('units') == 'metric' else 'mi'} · {st.get('clock') or '12'}-hour",
         "maps": "",
         "data": "",
         "access": "Sign-in on" if sign_in else "Sign-in off",
     }
-    return [{"title": title, "rows": [{"key": k, "label": LABELS[k], "value": preview[k]} for k in keys]} for title, keys in GROUPS]
+    return [{"title": title, "rows": [{"key": k, "label": LABELS[k], "value": preview[k]} for k in keys if k not in hide]} for title, keys in GROUPS]
 
 
 OWNS: dict[str, tuple[str, ...]] = {
-    "cars": (),  # pack sizes live on the drives table, beside the car
+    "cars": ("car_names",),  # renames have their own route; pack sizes live on the drives table, beside the car
     "money": ("rate_plan", "manual_plan", "dc_price", "dc_per_min", "sc_price", "sc_per_min", "gas_mpg", "gas_price"),
     "energy": (),  # the Tesla site and the backfill have their own forms and state
-    "alerts": ("alert_routes", "tire_low_psi", "tire_high_psi", "plug_reminder_at", "plug_reminder_below", "summary_at"),
+    "alerts": ("alert_routes", "alert_routed", "tire_low_psi", "tire_high_psi", "plug_reminder_at", "plug_reminder_below", "summary_at"),
     "look": ("currency", "units", "theme", "week_start", "clock", "date_order", "timezone"),
-    "maps": ("public_tiles", "public_geocoder"),
+    "commands": ("commands_on", "command_tiers", "charge_hold", "fleet_credit", "fleet_rates", "fleet_budget_on"),
+    "maps": ("public_tiles", "public_geocoder", "satellite", "terrain", "maps_offer"),  # maps_offer: the one-time offer after the first import, see mapsoffer.py
     "data": ("min_drive_mi", "min_charge_kwh", "weather"),
     "access": (),  # the password and the API tokens have their own tables
 }
@@ -73,14 +90,13 @@ FAST_KEYS = ("dc_price", "dc_per_min", "sc_price", "sc_per_min")
 KM = 1.609344
 LITRES = 3.78541  # per US gallon
 L100 = 235.215  # mpg <-> L/100 km
+PSI_PER_BAR = 14.5037738
 
 
 def hhmm(value) -> dtime | None:
-    try:
-        h, m = str(value).strip().split(":")
-        return dtime(int(h), int(m))
-    except (ValueError, AttributeError):
-        return None
+    """A time of day as typed on the page: "21:00", "9:30 pm", "9pm" (clockfmt.parse_tod)."""
+    got = clockfmt.parse_tod(value)
+    return dtime(*got) if got else None
 
 
 def number(text) -> float | None:
@@ -104,6 +120,8 @@ def converted(st: dict) -> dict[str, str]:
     return {
         "gas_l100": f"{L100 / st['gas_mpg']:.1f}" if st.get("gas_mpg") else "",
         "gas_ppl": f"{st['gas_price'] / LITRES:.2f}" if st.get("gas_price") else "",
+        "tire_low_bar": f"{st['tire_low_psi'] / PSI_PER_BAR:.2f}" if st.get("tire_low_psi") else "",
+        "tire_high_bar": f"{st['tire_high_psi'] / PSI_PER_BAR:.2f}" if st.get("tire_high_psi") else "",
         "min_drive_km": f"{(0.1 if mi is None else mi) * KM:.1f}",
     }
 
@@ -144,10 +162,18 @@ def parse(section: str, form, was: dict, channels=(), kinds=()) -> dict:
                 out[key] = bounded(form.get(key), lo, hi)
     elif section == "alerts":
         if channels and on_page("routes_shown"):  # the routing table is on the page only when a channel is set up; unticked boxes post nothing, so the table sends a marker
-            out["alert_routes"] = {k: [c for c in channels if form.get(f"route_{k}_{c}") == "on"] for k in kinds}
-        for key in ("tire_low_psi", "tire_high_psi"):
-            if on_page(key):
-                out[key] = bounded(form.get(key), 10, 90)
+            listed = set(form["routes_kinds"].split(",")) if "routes_kinds" in form else None  # a kind the page left out keeps its routing
+            kept = was.get("alert_routes") if isinstance(was.get("alert_routes"), dict) else {}
+            out["alert_routes"] = {k: [c for c in channels if form.get(f"route_{k}_{c}") == "on"] for k in kinds if listed is None or k in listed}
+            out["alert_routes"].update({k: v for k, v in kept.items() if listed is not None and k in kinds and k not in listed})
+            out["alert_routed"] = sorted(set(was.get("alert_routed") or []) | set(channels))  # every channel on the page was seen, so chosen
+        # Kept in psi; a metric install's page shows bar, and the field name says which was typed.
+        for key in ("tire_low", "tire_high"):
+            if changed(f"{key}_bar"):
+                bar = number(form.get(f"{key}_bar"))
+                out[f"{key}_psi"] = bounded(f"{bar * PSI_PER_BAR:.2f}", 10, 90) if bar else None
+            if on_page(f"{key}_psi"):
+                out[f"{key}_psi"] = bounded(form.get(f"{key}_psi"), 10, 90)
         if on_page("plug_reminder_at"):
             at = hhmm(form.get("plug_reminder_at"))
             out["plug_reminder_at"] = at.strftime("%H:%M") if at else None
@@ -156,6 +182,8 @@ def parse(section: str, form, was: dict, channels=(), kinds=()) -> dict:
         if on_page("summary_at"):
             sat = hhmm(form.get("summary_at"))
             out["summary_at"] = sat.strftime("%H:%M") if sat else "07:00"
+    elif section == "commands":
+        out.update(commands_form(form, was))
     elif section == "look":
         if on_page("currency"):
             out["currency"] = (form.get("currency") or "$").strip()[:4] or "$"
@@ -170,7 +198,9 @@ def parse(section: str, form, was: dict, channels=(), kinds=()) -> dict:
         if on_page("date_order"):
             out["date_order"] = "dmy" if form.get("date_order") == "dmy" else "mdy"
         if on_page("timezone"):
-            out["timezone"] = settings_mod.valid_zone(form.get("timezone"))
+            # the page shows the zone in force; one left as the page showed it (timezone_was) stays blank, following the container
+            zone = settings_mod.valid_zone(form.get("timezone"))
+            out["timezone"] = None if zone and zone == settings_mod.valid_zone(form.get("timezone_was")) else zone
     elif section == "data":
         if on_page("min_drive_mi"):
             v = bounded(form.get("min_drive_mi"), 0.0, 50.0)
@@ -189,6 +219,10 @@ def parse(section: str, form, was: dict, channels=(), kinds=()) -> dict:
             out["public_tiles"] = form.get("public_tiles") == "on"
         if on_page("public_geocoder_shown"):
             out["public_geocoder"] = form.get("public_geocoder") == "on"
+        if on_page("satellite_shown"):
+            out["satellite"] = form.get("satellite") == "on"
+        if on_page("terrain_shown"):
+            out["terrain"] = form.get("terrain") == "on"
     return out
 
 
@@ -301,3 +335,51 @@ def fast_rate_changed(values: dict, was: dict) -> bool:
 def fast_rates(st: dict) -> dict[str, float | None]:
     """The four fast-charging prices as numbers (None for blank), as the pricers take them."""
     return {k: (float(st[k]) if st.get(k) else None) for k in FAST_KEYS}
+
+
+VIN_FIELD = re.compile(r"^[A-Za-z0-9]{1,32}$")
+
+
+def money_field(value) -> float | None:
+    """A non-negative amount of dollars, or None for blank or anything else."""
+    try:
+        v = float(str(value).strip().lstrip("$"))
+    except ValueError:
+        return None
+    return round(v, 6) if 0 <= v < 100000 else None
+
+
+def commands_form(form, was: dict) -> dict:
+    """Settings › Commands: the switch, each car's tier and each car's charging hold. Each part
+    only when its marker was on the page (an unticked box posts nothing); cars are named by
+    the fields' suffixes, and a suffix that is not a VIN's shape is ignored."""
+    out: dict = {}
+    if "commands_shown" in form:
+        out["commands_on"] = form.get("commands_on") == "on"
+    if "tiers_shown" in form:
+        tiers = {}
+        for field in form:
+            vin = field[5:] if field.startswith("tier_") else ""
+            if VIN_FIELD.match(vin) and str(form.get(field)) in ("2", "3"):
+                tiers[vin] = int(form.get(field))
+        out["command_tiers"] = tiers
+    if "hold_shown" in form:
+        holds = {}
+        for field in form:
+            vin = field[5:] if field.startswith("hold_") and not field.startswith(("hold_from_", "hold_until_", "hold_shown")) else ""
+            if VIN_FIELD.match(vin) and form.get(field) == "on":
+                start, end = hhmm(form.get(f"hold_from_{vin}")), hhmm(form.get(f"hold_until_{vin}"))
+                holds[vin] = {"from": start.strftime("%H:%M") if start else charge_hold.DEFAULTS["from"], "until": end.strftime("%H:%M") if end else "00:00"}
+        out["charge_hold"] = holds
+    if "fleet_shown" in form:
+        out["fleet_budget_on"] = form.get("fleet_budget_on") == "on"
+        credit = money_field(form.get("fleet_credit"))
+        if credit is not None:
+            out["fleet_credit"] = credit
+        rates = dict(was.get("fleet_rates") or DEFAULTS["fleet_rates"])
+        for k in DEFAULTS["fleet_rates"]:
+            v = money_field(form.get(f"fleet_rate_{k}"))
+            if v is not None:
+                rates[k] = v / 1000 if k == "signals" else v  # signals are priced and shown per thousand
+        out["fleet_rates"] = rates
+    return out

@@ -20,3 +20,8 @@ def test_api_health_answers_for_the_one_car_asked_about(monkeypatch):
 def test_the_outer_app_serves_no_docs_of_its_own():
     """/docs, /redoc and /openapi.json fall through to the site, behind sign-in."""
     assert (app.app.docs_url, app.app.redoc_url, app.app.openapi_url) == (None, None, None)
+
+
+def test_the_site_has_no_generated_docs_page():
+    assert (app.site.docs_url, app.site.redoc_url, app.site.openapi_url) == (None, None, None)
+    assert app.site.version == app.version.VERSION

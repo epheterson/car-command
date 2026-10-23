@@ -4,9 +4,12 @@
 [tool.black]
 line-length = 200
 skip-string-normalization = true
+# docs/ holds prose and archived sketches, not code the project runs.
+extend-exclude = '^/docs/'
 
 [tool.ruff]
 line-length = 200
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 # F catches a name used but never imported: a call like that raises on every tick of a

@@ -22,7 +22,7 @@ Speed, tires, cabin temperature, Halo Secure, plug state, pack health and the up
 
 Pick one route per car.
 
-- **Direct.** **Settings › Cars and sources › Connect Tesla** walks through it: your own app at developer.tesla.com, its key published on your domain and registered with Tesla, Sign in with Tesla, and the key added to each car from your phone. [Making the Tesla app](tesla-app.md) covers each field. It needs the site on HTTPS at a hostname you control, `TESLA_CLIENT_ID`, `TESLA_CLIENT_SECRET` and `TESLA_DOMAIN` in `stack/.env` (one container: `-e`, then recreate it), and the key's path open to the internet with no sign-in in front of it. Tesla bills its API per use and asks for a card; see developer.tesla.com for prices. Drives and charges come only from the [live stream](tesla-stream.md), which needs Docker Compose for now and one public address, with no port opened at home. Without the stream, this route gives the car list, what Tesla billed for each Supercharger session ([costs](costs.md)) and the Powerwall, but no drives or charges.
+- **Direct.** **Settings › Cars and sources › Connect Tesla** walks through it: your own app at developer.tesla.com, its key published on your domain and registered with Tesla, Sign in with Tesla, and the key added to each car from your phone. [Making the Tesla app](tesla-app.md) covers each field. It needs the site on HTTPS at a hostname you control, the app's Client ID, secret and domain, entered on that page (no restart; `.env` still works), and the key's path open to the internet with no sign-in in front of it. Tesla bills its API per use and asks for a card; see developer.tesla.com for prices. Drives and charges come only from the [live stream](tesla-stream.md), which needs Docker Compose for now and one public address, with no port opened at home. Without the stream, this route gives the car list, what Tesla billed for each Supercharger session ([costs](costs.md)) and the Powerwall, but no drives or charges.
 - **TeslaMate, live.** Add its Postgres address (or `TESLAMATE_DB_URL` in `stack/.env`). Car Command reads positions, drives, charges, sleeps and software updates: the newest position every minute, and a rolling window replayed every ten minutes. It writes nothing to TeslaMate. Its database must be reachable from this stack: publish its port, or join the two compose networks.
 - **TeslaFi feed.** A TeslaFi API token per car (TeslaFi › Settings › Advanced › API). It polls once a minute and replays the last 36 hours every hour through the same code as the export.
 - **History only.** Import a TeslaFi export or a TeslaMate database once; add live data later.
@@ -83,6 +83,16 @@ While a site is on, Tesla's `live_status` is read every five minutes: it is the 
 The Powerwall's own part is then split by what went into it over the seven days before the charge: its solar share is the solar-charged energy over all that went in. Costs count the sun as free, price the grid's part at the home plan's rate for each minute, and price the Powerwall's grid-charged part at the weighted rate that energy went in at; that part is marked ≈ because it is a seven-day average. Five-minute readings are the resolution there is, so they are not marked as an estimate; a figure is ≈ only where the readings have gaps (under 95% of the charge covered) or the Powerwall has no history to read its mix from. A charge with under half of it covered shows no split. The result is stored beside the charge facts, so no page works anything out; it does not replace the charge's cost, which stays what the plan prices it at. When the way a split is worked out changes, every stored one is deleted once at startup and the recorder works them out again.
 
 ## Importing history
+
+**In the browser.** Settings › Cars and sources › Bring history in.
+
+- *TeslaFi:* choose one or more exports (`.csv` or `.csv.gz`, up to 1 GB each; `CC_IMPORT_MAX_MB` changes the limit), then Import. Each file is checked on arrival: a file that is not a TeslaFi export is turned away before anything starts. Uploads are kept on the data volume (`CC_IMPORT_DIR`, `/data/imports`) only while the import runs.
+- *TeslaMate:* paste the database address (or use the saved one) and Import; every car in it comes in, read-only, up to where Car Command's own logging of that car began.
+- The import runs in the site's background, one at a time, and shows the file it is on, its progress and, at the end, the drives, charges and days loaded and any file it skipped. Reload the page or come back later; it carries on. A restart interrupts it: the page offers Resume (TeslaFi) or Start over, and a TeslaMate import is started again from its form.
+- Loading the same file again replaces what it loaded; nothing doubles. When it ends, the places in the history are named by whatever Settings › Maps allows.
+- Behind a proxy that caps request size (Cloudflare's free plan allows 100 MB), upload from the LAN address.
+
+The command line does the same, for a host without a browser or a file too large to upload.
 
 **TeslaFi.** Export your history (TeslaFi › Settings › Account › Data Export, a `.csv.gz`), then load it:
 

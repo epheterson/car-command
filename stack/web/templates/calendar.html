@@ -1,46 +1,47 @@
 {% extends "base.html" %}
 {% import "_info.html" as i %}
+{% import "_parts.html" as parts %}
+{% from "_calsum.html" import calsum %}
 {% block title %}Calendar · {{ window.label }} · Car Command{% endblock %}
 {% macro chip(vin) %}<span class="chip c{{ colors.get(vin, 0) }}">{{ names.get(vin, vin) }}</span>{% endmacro %}
-{% block head %}
+{% block head %}{% if totals.drives %}
 {% include "_maphead.html" %}
-{% endblock %}
+{% endif %}{% endblock %}
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}
-{# A month: the grid first, then its figures, its driving and charging, and the map. #}
-<div class="pbar"><h1>Calendar</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span><span class="sp"></span>
+{# A month: its totals as a switch over a bar a day, the grid, the battery line, its driving
+   and charging, and the map. #}
+<div class="pbar"><h1>Calendar</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span><span class="sp"></span>
   <nav class="segmented" aria-label="View"><a href="{{ root }}/calendar?month={{ window.ym }}{{ dq }}" aria-current="page">Month</a><a href="{{ root }}/calendar?year={{ window.ym[:4] }}{{ dq }}">Year</a></nav>
   <nav class="stepper" aria-label="Month"><a href="{{ root }}/calendar?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/calendar?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav></div>
+{% set quiet %}{% if month %}<span>{{ month.drives }} drive{{ 's' if month.drives != 1 }} on {{ month.days_driven }} day{{ 's' if month.days_driven != 1 }}</span>{% if month.wh_per_mi %}<span>{{ month.wh_per_mi|econ }} {{ u.econ }}</span>{% endif %}{% if month.drive_cost and month.miles > 1 %}<span>{{ cur }}{{ (month.drive_cost / month.miles)|num(3) }} a {{ u.dist }}</span>{% endif %}<span>{{ month.charges }} charge{{ 's' if month.charges != 1 }}{% if month.charges %}, {{ (month.added_kwh / month.charges)|num(1) }} kWh each{% endif %}</span>{% if month.best_day %}<span>longest day <a href="{{ root }}/day?date={{ month.best_day.date.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ month.best_day.date|dfmt('%b %-d') }}</a>, {{ month.best_day.miles|dist }} {{ u.dist }}</span>{% endif %}{% endif %}{% endset %}
+{{ calsum(strips, window.label, quiet) }}
 <section class="cal">
-  <div class="cal-head">{% set daynames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}{% for i in range(7) %}<span>{{ daynames[(i + (week_start or 0)) % 7] }}</span>{% endfor %}</div>
-  {% for week in weeks %}<div class="cal-week">{% for c in week %}
+  <div class="cal-head">{% set daynames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] %}{% for i in range(7) %}<span>{{ daynames[(i + (week_start or 0)) % 7] }}</span>{% endfor %}{% if not car.garage %}<span class="cal-key">{% call i.info('A day') %}Distance; drives · {{ u.econ }} (dark when 10% off the month's) · cost to drive; ⚡ kWh charged · its cost; the outside temperature at its drives.{% endcall %}</span>{% endif %}</div>
+  {% set today = now.date() %}{% set mwh = month.wh_per_mi if month else none %}
+  {% for week in weeks %}<div class="cal-week{% if week[0].date > today %} fut{% endif %}">{% for c in week %}
     <a class="cal-day{% if c.other %} other{% endif %}{% if c.drives or c.charges %} busy{% endif %}" href="{{ root }}/day?date={{ c.date.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}" style="--heat:{{ (c.miles / max_miles) if max_miles else 0 }}">
-      <span class="d">{{ c.date.day }}</span>
+      {% set dt = (day_temps or {}).get(c.date) if not c.other else none %}<span class="d">{{ c.date.day }}{% if dt is not none and not car.garage %}<span class="xt">{{ dt|temp }}°</span>{% endif %}</span>
       {% if car.garage %}{% for vin, k in c.cars.items() %}<span class="carline"><span class="dot c{{ colors.get(vin, 0) }}"></span>{{ names.get(vin, vin) }} {% if k.drives %}{{ k.miles|dist }} {{ u.dist }}{% endif %}{% if k.charges and k.kwh >= 1 %} ⚡{{ k.kwh|num }}{% endif %}</span>{% endfor %}
-      {% else %}{% if c.drives %}<span class="mi{% if c.miles >= 100 %} long{% endif %}">{{ c.miles|dist }} {{ u.dist }}</span><span class="sub">{{ c.drives }} drive{{ 's' if c.drives != 1 }}</span>{% endif %}
-      {% if c.charges and c.kwh >= 1 %}<span class="kwh">⚡ {{ c.kwh|num }} kWh</span>{% endif %}{% endif %}
+      {% else %}{% set dr = (day_rows or {}).get(c.date) if not c.other else none %}{% if c.drives %}<span class="mi{% if c.miles >= 100 %} long{% endif %}">{{ c.miles|dist }} {{ u.dist }}</span>
+      <span class="sub" title="{{ c.drives }} drive{{ 's' if c.drives != 1 }}{% if dr and dr.wh_per_mi %}, {{ dr.wh_per_mi|econ }} {{ u.econ }}{% endif %}{% if dr and dr.drive_cost %}, {{ cur }}{{ dr.drive_cost|num(2) }} to drive{% endif %}">{{ c.drives }} drive{{ 's' if c.drives != 1 }}{% if dr and dr.wh_per_mi %}<span class="xw{% if mwh and (dr.wh_per_mi - mwh)|abs > mwh * 0.1 %} odd{% endif %}"> · {{ dr.wh_per_mi|econ }}</span>{% endif %}{% if dr and dr.drive_cost %}<span class="xc"> · {{ est(dr.drive_cost_estimate, 'at a home rate partly priced at the regional average') }}{{ cur }}{{ dr.drive_cost|num(2) }}</span>{% endif %}</span>{% endif %}
+      {% if c.charges and c.kwh >= 1 %}<span class="kwh" title="{{ c.kwh|num(1) }} kWh charged{% if dr and dr.cost %}, {{ cur }}{{ dr.cost|num(2) }}{% endif %}">⚡{{ c.kwh|num }}<span class="xu"> kWh</span>{% if dr and dr.cost %}<span class="xc"> · {{ cur }}{{ dr.cost|num(2) }}</span>{% endif %}</span>{% endif %}{% endif %}
     </a>{% endfor %}</div>{% endfor %}
 </section>
-<div class="tiles">
-  <div class="tile"><span class="l">Driven</span><span class="v">{{ totals.miles|dist }}<small>{{ u.dist }}</small></span><span class="d">{% if month and month.get('days_driven') %}on {{ month.days_driven }} day{{ 's' if month.days_driven != 1 }}{% endif %}</span></div>
-  <div class="tile"><span class="l">Drives</span><span class="v">{{ totals.drives }}</span><span class="d">{% if month and month.get('best_day') %}longest day {{ month.best_day.miles|dist }} {{ u.dist }}{% endif %}</span></div>
-  <div class="tile"><span class="l">Charges</span><span class="v">{{ totals.charges }}</span><span class="d">{% if totals.charges %}{{ (totals.kwh / totals.charges)|num(1) }} kWh each{% endif %}</span></div>
-  <div class="tile"><span class="l">Charged</span><span class="v">{{ totals.kwh|num }}<small>kWh</small></span><span class="d">{% if month and month.get('cost') %}{{ est(month.get('avg_cost'), 'part priced at the regional average') }}{{ cur }}{{ month.cost|num(2) }}{% endif %}</span></div>
-</div>
+{% for b in battery %}
+<h2 class="sec">{% if car.garage %}<span class="dot c{{ colors.get(b.vin, 0) }}"></span>{{ names.get(b.vin, b.vin) }} · {% endif %}Battery {% call i.info('The battery line') %}Drives shaded blue, charges green; the dashed line is the month's average level.{% endcall %}</h2>
+<div class="calbat">{{ parts.chart('calbat-' ~ b.vin, b.chart, now_text='average' if b.chart.avg else '', big=((b.chart.avg.value|num(1)) ~ '%') if b.chart.avg else none, sync='calbat') }}</div>
+{% endfor %}
 {% if month %}
 <div class="two">
   <section>
     <h2 class="sec">Driving</h2>
     <div class="ovx"><table class="bins">
       <tbody>
-        <tr><td>Drives</td><td class="r">{{ month.drives }} on {{ month.days_driven }} day{{ 's' if month.days_driven != 1 }}</td></tr>
-        <tr><td>Distance</td><td class="r">{{ month.miles|dist }} {{ u.dist }}</td></tr>
         <tr><td>Behind the wheel</td><td class="r">{{ month.drive_h|num(1) }} h</td></tr>
         {% if month.used_kwh %}<tr><td>Energy</td><td class="r">{{ month.used_kwh|num(1) }} kWh</td></tr>{% endif %}
-        {% if month.wh_per_mi %}<tr><td>Efficiency</td><td class="r">{{ month.wh_per_mi|econ }} {{ u.econ }}</td></tr>{% endif %}
         {% if month.drive_cost %}<tr><td>Cost to drive</td><td class="r">{{ est(month.get('drive_cost_estimate'), 'at a home rate partly priced at the regional average') }}{{ cur }}{{ month.drive_cost|num(2) }}{% if month.miles > 1 %} · {{ cur }}{{ (month.drive_cost / month.miles)|num(3) }} a {{ u.dist }}{% endif %}</td></tr>{% endif %}
         {% if month.fsd_miles %}<tr><td>On FSD</td><td class="r">{{ month.fsd_miles|dist }} {{ u.dist }}{% if month.miles %} · {{ (month.fsd_miles / month.miles * 100)|num }}%{% endif %}</td></tr>{% endif %}
-        {% if month.best_day %}<tr><td>Longest day</td><td class="r"><a href="{{ root }}/day?date={{ month.best_day.date.isoformat() }}{% if q %}&vin={{ car.vin }}{% endif %}">{{ month.best_day.date.strftime('%b %-d') }}</a>, {{ month.best_day.miles|dist }} {{ u.dist }}</td></tr>{% endif %}
       </tbody>
     </table></div>
   </section>
@@ -52,6 +53,8 @@
         <tr><td>Added</td><td class="r">{{ month.added_kwh|num(1) }} kWh</td></tr>
         {% if month.cost %}<tr><td>Cost</td><td class="r">{{ est(month.get('avg_cost'), 'part priced at the regional average') }}{{ cur }}{{ month.cost|num(2) }}</td></tr>{% endif %}
         {% if month.cost and month.added_kwh > 1 %}<tr><td>Paid per kWh</td><td class="r">{{ est(month.get('avg_cost'), 'part priced at the regional average') }}{{ cur }}{{ (month.cost / month.added_kwh)|num(3) }}</td></tr>{% endif %}
+        {% for k in split or [] %}<tr><td class="sub-r">{{ k.label }}</td><td class="r">{{ k.n }} · {{ k.kwh|num(1) }} kWh{% if k.cost %} · {{ cur }}{{ k.cost|num(2) }}{% endif %}</td></tr>{% endfor %}
+        {% if petrol and petrol.ok %}<tr><td>Against petrol {% call i.info('Against petrol') %}The energy these charges added, as miles at the car's measured efficiency, burnt by a {% if u.dist == 'km' %}{{ petrol.l_per_100km|num(1) }} L/100 km{% else %}{{ petrol.mpg|num }} mpg{% endif %} car at {% if petrol.own_price %}your price on Settings{% else %}the {{ petrol.areas|join(', ') }} average{% endif %}: {{ cur }}{{ petrol.petrol|num(2) }}.{% endcall %}</td><td class="r">≈{{ '−' if petrol.saved < 0 }}{{ cur }}{{ petrol.saved|abs|num(2) }} {{ 'saved' if petrol.saved >= 0 else 'more' }}</td></tr>{% endif %}
         {% if month.added_kwh and month.used_kwh %}<tr><td>Put in vs taken out</td><td class="r">{{ month.added_kwh|num(1) }} in, {{ month.used_kwh|num(1) }} out</td></tr>{% endif %}
       </tbody>
     </table></div>
@@ -61,9 +64,9 @@
 {% if totals.drives %}
 <section class="group"><h2 class="sec">Where it went {% call i.info('The map') %}Drives as lines. Charges as circles sized by kWh, red where fast.{% endcall %}</h2><div id="map" class="map"></div></section>
 <script>
-// the map starts at once; it never waits for the brand's arrival
-(function () {
-  var map = CCMap.base("map");
+// the map starts once its deferred scripts have run (DOMContentLoaded); it never waits for the brand's arrival
+document.addEventListener("DOMContentLoaded", function () {
+  var map = CCMap.base("map", { zoomSnap: 0.25 });  // a quarter step, so the month's routes fill the map
   fetch("{{ root }}/api/month-routes?month={{ window.ym }}&vin={{ car.vin }}").then(function (r) { return r.json(); }).then(function (routes) {
     var all = [];
     routes.forEach(function (r) { CCMap.route(map, r.pts, CCMap.palette[r.c], 3); all = all.concat(r.pts); });
@@ -74,9 +77,9 @@
         .addTo(map);
       all.push([p.lat, p.lon]);
     });
-    if (all.length) { map.fitBounds(all, { padding: [20, 20] }); } else { map.setView([{{ center[0] }}, {{ center[1] }}], 10); }
+    if (all.length) { map.invalidateSize(); map.fitBounds(all, { padding: [20, 20], maxZoom: 15 }); } else { map.setView([{{ center[0] }}, {{ center[1] }}], 10); }
   });
-})();
+});
 </script>
 {% endif %}
 {% endblock %}

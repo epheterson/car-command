@@ -25,6 +25,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+import fleet_usage
 from places import distance_m
 
 LOG = logging.getLogger("carcommand.billed")
@@ -309,4 +310,4 @@ class BilledWorker(threading.Thread):
                 self.round()
             except Exception as err:  # noqa: BLE001 - a bad pass waits for the next one
                 LOG.warning("tesla bills: %s", err)
-            self.stop.wait(self.interval_s)
+            self.stop.wait(fleet_usage.slowed(self.interval_s))

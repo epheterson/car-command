@@ -24,6 +24,7 @@ def drive(**over):
         "temperatureAVG": "71.40",
         "tag": "Commute",
         "noOutsideTemperatureReported": 0,
+        "driveKwh": 3.42,
     }
     d.update(over)
     return d
@@ -59,6 +60,8 @@ def test_a_drive_summary_is_a_trip_with_its_figures():
     assert t["destination_date"] == t["start_date"] + timedelta(minutes=20)
     assert t["start_odometer"] == 95408.96 and t["destination_odometer"] == 95420.37, "thousands separators are read"
     assert t["max_mph"] == 84 and t["temp_f"] == 71.4 and t["tag"] == "Commute"
+    assert t["kwh"] == 3.42, "the summary's own energy: it has no battery line to work one out from"
+    assert trip_from(drive(driveKwh=0))["kwh"] is None
     z = trip_from(drive(dayDriveMinutes=0, miles="0.01", temperatureAVG="0.00", noOutsideTemperatureReported=1, tag=""))
     assert z["destination_date"] == z["start_date"] + timedelta(minutes=1) and z["temp_f"] is None and z["tag"] is None
     assert trip_from({"date": "garbage"}) is None

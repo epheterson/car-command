@@ -2,12 +2,13 @@
 # image copies goes in; tests and caches stay out.
 *
 !aio/carcommand.py
+!aio/tesla-*.json
+!tesla/net.sh
 !cc
 !config
 !shared
 !web
 cc/test_*.py
-cc/wheels
 web/test_*.py
 web/conftest.py
 **/__pycache__

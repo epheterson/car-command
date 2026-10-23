@@ -26,7 +26,9 @@ import os
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import feed_gaps
 import history_writer
+import sources
 from history import _t, fill_after_import, write_history
 from recorder import should_record
 from teslafi_import import USABLE_KWH, DEFAULT_TZ, model_from_vin, replay, sample_from_row, vehicle_state
@@ -99,15 +101,19 @@ class TeslaFiPoller:
         self.task: asyncio.Task | None = None
 
     def _parse(self, tokens: list[str]) -> None:
+        """Bare tokens and VIN:token entries; one that is neither (Name:token) is logged by position and left out."""
         parsed, vins = [], {}
-        for t in tokens:
-            t = (t or "").strip()
-            if not t:
+        for n, t in enumerate(tokens, 1):
+            if not (t or "").strip():
                 continue
-            if ":" in t:
-                vin, t = t.rsplit(":", 1)
-                vins[t] = vin.strip()
-            parsed.append(t)
+            got = sources.split_token(t)
+            if got is None:
+                LOG.warning("TESLAFI_TOKENS: entry %s is not a token or VIN:token (the part before the colon must be the car's VIN); ignored", n)
+                continue
+            vin, tok = got
+            if vin:
+                vins[tok] = vin
+            parsed.append(tok)
         self.tokens, self.vin_for_token = parsed, vins
 
     def use(self, tokens: list[str]) -> None:
@@ -200,16 +206,35 @@ class TeslaFiPoller:
             samples = [s for s in (sample_from_row(row, self.tz, when=at) for at, row in raw if at >= start) if s]
             if not samples:
                 return None
-            out = replay(samples)
+            samples, gaps = self.fill_blind(conn, vin, samples, now)
+            out = replay(samples, new_modes=True, edges=True)  # the feed is the 2025 encoding throughout
             veh = out["vehicle"]
             model = veh.get("model") or model_from_vin(vin)
             counts = write_history(conn, vin, veh.get("name") or vin, "Tesla", model, USABLE_KWH.get(model or ""), out, import_id(vin), "teslafi feed", self.tz, rolling=True)
             fill_after_import(conn, vin, self.tz)
             # the raw rows stay for good: they are what a replay (`make replay`) reads, see raw.py
-            self.note(conn, vin, f"ok {now.isoformat()} trips={counts['trips']} from={start.isoformat()}")
+            self.note(conn, vin, f"ok {now.isoformat()} trips={counts['trips']} from={start.isoformat()}" + (f" stream_gaps={gaps}" if gaps else ""))
             conn.commit()
         self.last_rebuild[vin] = now
         return counts
+
+    @staticmethod
+    def fill_blind(conn, vin: str, samples: list[dict], now: datetime) -> tuple[list[dict], int]:
+        """Where the feed answered awake but told nothing for 10 minutes or more, the stream's samples
+        stand in (feed_gaps). Reads the raw stream only when there is such a span, so the usual
+        rebuild gains nothing; a stream that cannot be read leaves the feed's own samples."""
+        spans = feed_gaps.blind_spans(samples)
+        if not spans:
+            return samples, 0
+        try:
+            # a day's lead-in: the stream sends a field when it changes, so the odometer is older than the span
+            rows = conn.execute("SELECT record FROM cc_tesla_raw WHERE vin = %s AND at >= %s AND kind IN ('V', 'connectivity') ORDER BY at", (vin, spans[0][0] - timedelta(hours=24))).fetchall()
+            payloads = [r["record"] if isinstance(r, dict) else r[0] for r in rows]
+            stream = feed_gaps.stream_samples([p if isinstance(p, dict) else json.loads(p) for p in payloads], until=now)
+            return feed_gaps.splice(samples, stream, spans), len(spans)
+        except Exception as err:  # noqa: BLE001 - the feed's rebuild must not depend on the stream
+            LOG.warning("stream fill for %s failed: %s", vin, err)
+            return samples, 0
 
     @staticmethod
     def note(conn, vin: str, text: str, key: str = "feed_rebuild") -> None:

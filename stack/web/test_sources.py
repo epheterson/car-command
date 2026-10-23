@@ -277,3 +277,38 @@ def test_an_unclaimed_sign_in_is_cleared():
     assert expire_pending(conn) == 1
     row = conn.rows[0]
     assert row["secret"] is None and "did not sign in" in row["last_error"]
+
+
+def test_tokens_in_env_are_a_bare_token_or_vin_colon_token_and_nothing_else():
+    from sources import env_token_problems, env_tokens, parse_tokens, split_token
+
+    assert split_token("tok-a") == (None, "tok-a") and split_token(f" {ALPHA}:tok-a ") == (ALPHA, "tok-a")
+    for bad in ("Comet:faketoken0000", "My Car:tok", f"{ALPHA}:", ":tok", "a b", "", "   "):
+        assert split_token(bad) is None, bad
+    good, bad = parse_tokens(f"Comet:faketoken0000, tok-b ,{ALPHA}:tok-c,,{ALPHA}:")
+    assert good == [(None, "tok-b"), (ALPHA, "tok-c")] and len(bad) == 2
+    assert bad[0].startswith("entry 1 of 4") and bad[1].startswith("entry 4 of 4"), bad
+    assert all("faketoken" not in line and "Comet" not in line for line in bad), "the line names the place, never the value"
+    env = {"TESLAFI_TOKENS": "Comet:faketoken0000"}
+    assert env_tokens(env) == [] and len(env_token_problems(env)) == 1 and env_tokens({}) == [] and env_token_problems({}) == []
+
+
+def test_the_poller_refuses_a_malformed_entry_with_a_log_line_and_makes_no_car_of_it(caplog):
+    import logging
+
+    from teslafi_live import TeslaFiPoller
+
+    with caplog.at_level(logging.WARNING, logger="carcommand.teslafi"):
+        p = TeslaFiPoller(["Comet:faketoken0000", f"{ALPHA}:tok-a", "tok-b"], connect=None)
+    assert p.tokens == ["tok-a", "tok-b"] and p.vin_for_token == {"tok-a": ALPHA}
+    assert [r.getMessage() for r in caplog.records if "TESLAFI_TOKENS" in r.getMessage()] == [
+        "TESLAFI_TOKENS: entry 1 is not a token or VIN:token (the part before the colon must be the car's VIN); ignored"
+    ]
+    assert "faketoken" not in caplog.text
+
+
+def test_env_example_says_the_token_format_plainly():
+    from pathlib import Path
+
+    text = (Path(__file__).parent.parent / ".env.example").read_text()
+    assert "the token alone" in text and "VIN, a colon, then the token" in text and "Name:abc123 is refused" in text

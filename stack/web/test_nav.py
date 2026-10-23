@@ -63,3 +63,15 @@ def test_the_shell_draws_settings_pages_where_timeline_draws_its_pages():
 
     base = (Path(__file__).parent / "templates" / "base.html").read_text()
     assert "nav_settings[3]" in base, "the sidebar indents Settings' pages and the phone bar lists them"
+
+
+def test_phone_sub_page_pills_show_there_are_more_and_bring_the_current_one_into_view():
+    """Stats has six pills; at 390 px the last two sat past the edge with only a clipped "S" as a cue."""
+    from pathlib import Path
+
+    here = Path(__file__).parent
+    js, css = (here / "static" / "shell.js").read_text(), (here / "static" / "style.css").read_text()
+    block = js[js.index('document.querySelector(".subpages")') :]
+    assert "nav.scrollLeft = on.offsetLeft" in block and "scrollIntoView" not in block, "scrolls the strip only, never the page"
+    assert 'toggle("more-l"' in block and 'toggle("more-r"' in block
+    assert ".subpages.more-r {" in css and ".subpages.more-l {" in css and ".subpages.more-l.more-r {" in css

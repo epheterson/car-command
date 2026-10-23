@@ -274,3 +274,12 @@ def test_the_now_hero_shows_the_places_own_address(bare, monkeypatch):  # noqa: 
     assert v["place"] == "Home" and v["address"] == "12 Elm Street, Springfield"
     here["user_address"] = None
     assert bare.live_vehicle("V1")["address"] == "Evergreen Terrace, Springfield", "without one, the car's own lookup"
+
+
+def test_a_place_named_by_its_coordinates_has_no_town_to_show():
+    """The row subtitle repeated only the longitude: "-89.575 · 13 visits"."""
+    from placespage import city_of
+
+    assert city_of({"auto": True, "name": "39.765, -89.575"}) == ""
+    assert city_of({"auto": True, "name": "39.765, -89.575", "street": "Pine Road, Springfield"}) == "Springfield"
+    assert city_of({"auto": True, "name": "Maple Street, Capital City"}) == "Capital City"

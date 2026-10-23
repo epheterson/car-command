@@ -51,7 +51,9 @@ def test_the_row_is_drawn_in_neutral_ink_with_a_fill_bar_and_nothing_without_a_r
 
 def test_the_row_css_never_reaches_for_gold():
     css = (__import__("pathlib").Path(__file__).parent / "static" / "style.css").read_text()
-    block = css[css.index("/* The house's energy") :]
+    start = css.index("/* The house's energy")
+    end = css.find("\n\n/* ", start)  # up to the next block of the stylesheet, if one follows
+    block = css[start : end if end > 0 else None]
     assert "var(--gold)" not in block and "var(--mark)" not in block
 
 
@@ -61,6 +63,9 @@ def test_the_row_css_never_reaches_for_gold():
 def charge(**over):
     return {
         "at_home": True,
+        "off_peak_kwh": 8.2,
+        "part_peak_kwh": 1.0,
+        "peak_kwh": 0.8,
         "src_status": "ok",
         "src_solar_kwh": 6.0,
         "src_battery_kwh": 2.0,
@@ -101,6 +106,25 @@ def test_bar_macro_on_a_row_says_the_sun_share_and_in_detail_the_kwh_and_cost(en
     assert "Grid</b> 2.0 kWh" in cheap and "None" not in cheap, "no plan, no cost"
 
 
+def test_the_rate_bar_leads_with_the_off_peak_share_and_names_the_sun_only_when_there_was_some():
+    home = charge(at_home=True, off_peak_kwh=8.2, part_peak_kwh=1.0, peak_kwh=0.8, src_status=None)
+    bar = energypage.rate_bar(home)
+    assert bar["note"] == "82% off-peak" and bar["grad"] == "--s:82.0%;--b:92.0%"
+    assert [p["key"] for p in bar["parts"]] == ["off", "part", "peak"] and bar["label"] == "Off-peak 82%, Part-peak 10%, Peak 8%"
+    assert energypage.rate_bar({**home, "off_peak_kwh": 10.0, "part_peak_kwh": 0.0, "peak_kwh": 0.0})["note"] == "all off-peak"
+    assert (
+        energypage.rate_bar({**home, "off_peak_kwh": 10.0, "part_peak_kwh": 0.0, "peak_kwh": 0.0, "src_status": "ok", "src_solar_kwh": 0.0, "src_battery_kwh": 0.0, "src_grid_kwh": 5.0})["note"]
+        == "all off-peak"
+    )
+    assert energypage.rate_bar({**home, "src_status": "ok"})["note"] == "82% off-peak · 70% sun"
+
+
+def test_no_plan_split_or_away_from_home_shows_no_rate_bar():
+    assert energypage.rate_bar(charge(at_home=False, off_peak_kwh=5.0, part_peak_kwh=0.0, peak_kwh=0.0)) is None
+    assert energypage.rate_bar(charge(at_home=True, off_peak_kwh=None, part_peak_kwh=None, peak_kwh=None)) is None
+    assert energypage.rate_bar(charge(at_home=True, off_peak_kwh=0.0, part_peak_kwh=0.0, peak_kwh=0.0)) is None
+
+
 def base():
     car = {"name": "Alpha", "vin": "V1", "live": True, "garage": False, "updated_age": "", "model": ""}
     return {"root": "", "now": NOW, "car": car, "active": "charges", "vehicles": [car], "q": "", "colors": {"V1": 0}, "names": {"V1": "Alpha"}, "cur": "$", "csrf": "t", "auth_on": False}
@@ -128,6 +152,7 @@ def session(**over):
         "range_added": 120.0,
         "at_home": True,
         "mix": energypage.mix_bar(charge()),
+        "rate": energypage.rate_bar(charge()),
         **over,
     }
 
@@ -142,8 +167,8 @@ def charges_html(env, rows):  # noqa: F811
 
 
 def test_a_home_charge_row_carries_the_bar_and_a_charge_without_a_split_does_not(env):  # noqa: F811
-    html = charges_html(env, [session(), session(id=2, mix=None, where="Elm Street Supercharger", at_home=False)])
-    assert html.count('class="mixbar"') == 1 and "70% sun" in html
+    html = charges_html(env, [session(), session(id=2, mix=None, rate=None, where="Elm Street Supercharger", at_home=False)])
+    assert html.count('class="mixbar"') == 1 and "82% off-peak · 70% sun" in html
     row = html[html.index('class="row-b') :]
     assert row.index('class="mixbar"') < row.index("</a>"), "inside the row it belongs to"
 
@@ -152,9 +177,10 @@ def test_the_charge_page_shows_the_split_under_the_summary(env):  # noqa: F811
     chart = {"t0": 0, "t1": 7200, "primary": {"key": "power", "label": "Power", "unit": " kW", "lo": 0, "hi": 30, "points": []}, "extras": [], "lane": [], "events": [], "ticks": []}
     args = dict(stats={"kwh": 10.0, "peak_kw": 7.2}, chart=chart, hidden=False, samples=[], every=1, readings=0, bill=None)
     html = env.get_template("charge.html").render(**base(), session=session(), **args)
+    assert "Off-peak</b> 8.2 kWh" in html and 'class="mix rate"' in html and html.index('class="mix rate"') < html.index('class="mix"')
     assert 'class="mix"' in html and "Sun</b> 6.0 kWh" in html and "Powerwall</b> 2.0 kWh · ≈$0.10" in html and html.index('class="mix"') < html.index('class="tiles')
-    plain = env.get_template("charge.html").render(**base(), session=session(mix=None), **args)
-    assert 'class="mix"' not in plain and "mixbar" not in plain
+    plain = env.get_template("charge.html").render(**base(), session=session(mix=None, rate=None), **args)
+    assert 'class="mix"' not in plain and 'class="mix rate"' not in plain and "mixbar" not in plain
 
 
 def test_now_and_the_garage_draw_the_row_only_with_a_reading(env):  # noqa: F811

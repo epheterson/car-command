@@ -3,12 +3,12 @@
 {% block title %}Charging · Car Command{% endblock %}
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}
-<div class="pbar"><h1>Charging</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span><span class="sp"></span>
+<div class="pbar"><h1>Charging</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span><span class="sp"></span>
 <nav class="segmented" aria-label="Period">{% for d, lbl in [(90, "90 days"), (365, "Year"), (None, "All")] %}<a href="{{ root }}/charging{% if d %}?days={{ d }}{{ dq }}{% else %}{{ q }}{% endif %}"{% if days == d %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}</nav></div>
-{% if s.total_charges %}
+{% if s.total_charges or s.total_topups %}
 <div class="tiles pair">
-  <div class="tile"><span class="l">Charged</span><span class="v">{{ s.total_kwh|num }}<small>kWh</small></span><span class="d">{{ s.total_charges|num }} charges · {{ (s.total_kwh / s.total_charges)|num(1) }} each</span></div>
-  {% if not s.priced %}<div class="tile"><span class="l">Cost</span><span class="v"><small>No price yet</small></span><span class="d"><a href="{{ root }}/settings/money">Set a plan in Settings › Money</a></span></div>
+  <div class="tile"><span class="l">Charged</span><span class="v">{{ s.total_kwh|num }}<small>kWh</small></span><span class="d">{{ s.total_charges|num }} charge{{ 's' if s.total_charges != 1 }}{% if s.total_charges %} · {{ ((s.total_kwh - s.get('topup_kwh', 0)) / s.total_charges)|num(1) }} each{% endif %}{% if s.get('total_topups') %} · {{ s.total_topups|num }} top-up{{ 's' if s.total_topups != 1 }}{% endif %}{% if s.get('charging_now') %} · charging now{% endif %}</span>{% if s.get('total_topups') %}{% call i.info('Top-ups') %}A session that added under 1 {{ u.energy }}: its energy and cost count, not its number.{% endcall %}{% endif %}</div>
+  {% if not s.priced %}<div class="tile"><span class="l">Cost</span>{% if rate_plan %}<span class="v"><small>Not priced</small></span><span class="d"><a href="{{ root }}/places{{ q }}">Away charges · price a place</a></span>{% else %}<span class="v"><small>No price yet</small></span><span class="d"><a href="{{ root }}/settings/money">Set a plan in Settings › Money</a></span>{% endif %}</div>
   {% else %}<div class="tile"><span class="l">Cost</span><span class="v">{{ '≈' if s.estimate_cost }}{{ cur }}{{ s.total_cost|num }}</span><span class="d">{% if s.estimate_cost %}{{ 'estimate' if s.estimate_cost >= s.total_cost - 0.005 else 'part estimate' }}{% endif %}{% if s.priced < s.total_charges %}{{ ' · ' if s.estimate_cost }}{{ s.total_charges - s.priced }} with no price{% endif %}</span>{% call i.info('How the cost is worked out') %}{% if s.estimate_cost %}At the {{ s.estimate_areas|join(', ') }} average where no plan covers a home charge.{% else %}Home charges at the home plan; fast charges at their own rates.{% endif %}{% endcall %}</div>{% endif %}
   {% if s.superchargers %}<div class="tile"><span class="l">Fast charging</span><span class="v">{{ s.superchargers|map(attribute='charges')|sum }}</span><span class="d">{{ s.superchargers|length }} station{{ 's' if s.superchargers|length != 1 }} · {{ s.superchargers|map(attribute='kwh')|sum|num }} kWh</span></div>{% endif %}
   {% if s.places %}<div class="tile"><span class="l">Most energy</span><span class="v small-v">{{ s.places[0].where|places }}</span><span class="d">{{ s.places[0].charges|num }} charges · {{ s.places[0].kwh|num }} kWh</span></div>{% endif %}
@@ -27,30 +27,37 @@
   <p class="muted small">{{ (s.tou.off_peak_share * 100)|num }}% off-peak{% if s.tou.excess and s.tou.excess > 0.01 %} · ≈{{ cur }}{{ s.tou.excess|num(2) }} more than all off-peak{% endif %}</p>
 </section>
 {% endif %}
-<section class="group">
-  <h2 class="sec">Where</h2>
-  <div class="group-b">
-    {% for p in s.places[:12] %}<div class="set-row"><span class="set-l">{{ p.where|places }}{% if p.dc %}<span class="badge kind">DC</span>{% endif %}<span class="set-s">{{ p.charges|num }} charge{{ 's' if p.charges != 1 }} · {{ p.kwh_per_charge|num(1) }} kWh each{% if p.mi_per_kwh %} · {{ p.mi_per_kwh|dist(2) }} {{ u.dist }}/kWh{% endif %}</span></span><span class="set-v"><b>{{ p.kwh|num }}</b> kWh{% if p.cost %}<br>{{ '≈' if p.estimate }}{{ cur }}{{ p.cost|num }}{% endif %}</span></div>{% endfor %}
-    {% if s.places|length > 12 %}<details class="set-x"><summary class="set-row"><span class="set-l">{{ s.places|length - 12 }} more</span></summary>
-      {% for p in s.places[12:] %}<div class="set-row"><span class="set-l">{{ p.where|places }}<span class="set-s">{{ p.charges|num }} charge{{ 's' if p.charges != 1 }}</span></span><span class="set-v"><b>{{ p.kwh|num }}</b> kWh</span></div>{% endfor %}
-    </details>{% endif %}
-  </div>
+{# Where: one row a place (home, work, named places, each fast-charging station), its energy
+   leading with a bar of its share; the energy a charge, time and the average session a step
+   quieter; the rows past twelve fold into one, so the columns still add up to the total. A
+   Saved figure resting on only some of its charges is marked, and says which and why. #}
+{% macro hours(h) %}{% if not h %}—{% elif h < 1 %}{{ (h * 60)|round|int }} min{% else %}{{ h|num(1 if h < 10 else 0) }} h{% endif %}{% endmacro %}
+{% macro saved_td(cell) %}{% set note = (cell.note if cell else none) if s.saved_ready else 'Worked out in the background; here in a few minutes' %}{% set v = cell.saved if cell and s.saved_ready else none %}
+<td class="r st-v{{ ' part' if v is not none and note }}"{% if note %} title="{{ note }}"{% elif v is not none and v < 0 %} title="{{ cur }}{{ v|abs|num }} more than petrol"{% endif %}>{% if v is not none %}{{ '−' if v < 0 }}{{ cur }}{{ v|abs|num }}{% elif note %}<span class="st-nil">—</span>{% endif %}</td>{% endmacro %}
+{% macro site_row(name, dc, n, kwh, h, avg, cost, est, saving, cls="", tn=0, tk=0) %}<tr{% if cls %} class="{{ cls }}"{% endif %}>
+  <td class="st-p"><span class="st-n">{{ name }}{% if dc %}<span class="badge kind">DC</span>{% endif %}</span><span class="st-s">{{ n|num }} charge{{ 's' if n != 1 }} · {{ ((kwh - tk) / n)|num(1) if n else '—' }} {{ u.energy }} each{% if tn %} · {{ tn|num }} top-up{{ 's' if tn != 1 }}{% endif %}{% if avg %} · {{ avg|duration }} a session{% endif %}</span></td>
+  <td class="r st-o">{{ n|num }}</td>
+  <td class="r st-k"><b>{{ kwh|num }}</b><span class="st-bar" aria-hidden="true"><i style="width:{{ '%.0f'|format(kwh / s.total_kwh * 100 if s.total_kwh else 0) }}%"></i></span></td>
+  <td class="r st-o">{{ ((kwh - tk) / n)|num(1) if n else '—' }}</td>
+  <td class="r st-o">{{ hours(h) }}</td>
+  <td class="r st-o">{{ avg|duration if avg else ('' if cls else '—') }}</td>
+  <td class="r">{% if cost %}{{ '≈' if est }}{{ cur }}{{ cost|num }}{% endif %}</td>
+  {{ saved_td(saving) }}
+</tr>{% endmacro %}
+{% set head = s.places[:12] %}{% set tail = s.places[12:] %}
+<section class="group" id="where">
+  <h2 class="sec">Where {% call i.info('Saved') %}Against a petrol car covering the miles each place's charges added, at petrol's price where and when. A dotted figure rests on some of the charges; hover it for which.{% endcall %}</h2>
+  <table class="sites">
+    <thead><tr><th>Place</th><th class="r st-o">Charges</th><th class="r">{{ u.energy }}</th><th class="r st-o">{{ u.energy }} each</th><th class="r st-o">Time</th><th class="r st-o" title="The average session">Session</th><th class="r">Cost</th><th class="r">Saved</th></tr></thead>
+    <tbody>{% for p in head %}{{ site_row(p.where|places, p.dc, p.charges, p.kwh, p.hours, p.avg_time, p.cost, p.estimate, p.saving, tn=p.get('topups', 0), tk=p.get('topup_kwh', 0)) }}{% endfor %}
+    {% if tail %}{{ site_row(tail|length ~ ' more places', false, tail|sum(attribute='charges'), tail|sum(attribute='kwh'), tail|sum(attribute='hours'), none, tail|sum(attribute='cost'), tail|selectattr('estimate')|list|length > 0, s.saving_tail, "st-more", tn=tail|sum(attribute='topups'), tk=tail|sum(attribute='topup_kwh')) }}{% endif %}</tbody>
+    {% if s.places|length > 1 %}<tfoot>{{ site_row('All', false, s.total_charges, s.total_kwh, s.places|sum(attribute='hours'), none, s.total_cost, s.estimate_cost, s.saving_all, "st-all", tn=s.get('total_topups', 0), tk=s.get('topup_kwh', 0)) }}</tfoot>{% endif %}
+  </table>
 </section>
 <section class="group">
   <h2 class="sec">Charged to</h2>
   <div class="ovx"><table class="bins"><thead><tr><th>Level</th><th class="r">Charges</th><th>Share</th></tr></thead>
-    <tbody>{% for e in s.ends %}<tr><td>{{ e.level }}%</td><td class="r">{{ e.charges|num }}</td><td class="bar-cell"><span class="bar" style="width: {{ '%.0f'|format(e.share * 70) }}%"></span><span class="bar-n">{{ (e.share * 100)|num }}%</span></td></tr>{% endfor %}</tbody></table></div>
+    <tbody>{% for e in s.ends %}<tr><td>{{ e.level }}%</td><td class="r">{{ e.charges|num }}</td><td class="bar-cell"><span class="bar" style="width: {{ '%.0f'|format(e.bar * 70) }}%"></span><span class="bar-n">{{ (e.share * 100)|num }}%</span></td></tr>{% endfor %}</tbody></table></div>
 </section>
-{% if s.superchargers %}
-<section class="group">
-  <h2 class="sec">Fast charging</h2>
-  <div class="group-b">
-    {% for x in s.superchargers[:12] %}<div class="set-row"><span class="set-l">{{ x.where }}<span class="set-s">{{ x.charges }} session{{ 's' if x.charges != 1 }} · {{ x.minutes|num }} min</span></span><span class="set-v"><b>{{ x.kwh|num }}</b> kWh</span></div>{% endfor %}
-    {% if s.superchargers|length > 12 %}<details class="set-x"><summary class="set-row"><span class="set-l">{{ s.superchargers|length - 12 }} more</span></summary>
-      {% for x in s.superchargers[12:] %}<div class="set-row"><span class="set-l">{{ x.where }}<span class="set-s">{{ x.charges }} session{{ 's' if x.charges != 1 }}</span></span><span class="set-v"><b>{{ x.kwh|num }}</b> kWh</span></div>{% endfor %}
-    </details>{% endif %}
-  </div>
-</section>
-{% endif %}
 {% else %}<div class="empty">No charges in this period</div>{% endif %}
 {% endblock %}

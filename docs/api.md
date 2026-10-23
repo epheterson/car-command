@@ -8,7 +8,7 @@ Mint a token on **Settings › Sign-in and API**. It is shown once and kept only
 curl -H "Authorization: Bearer $TOKEN" http://your-host:3044/api/now
 ```
 
-**Read tokens** open the `/api/` endpoints below and nothing else: no page, no form. **Status tokens** (made by connecting an app, or as a third kind in Settings) open `/api/now` and `/api/stream` only, without the car's location (see Connecting an app). A token scoped to one car answers for that car only, and must name it with `?vin=`. Tokens minted before admin tokens existed are read tokens.
+**Read tokens** open the `/api/` endpoints below and nothing else: no page, no form. **Control tokens** read what a read token reads and may also send the car commands (see Commands); no other kind ever can. **Status tokens** (made by connecting an app, or as a third kind in Settings) open `/api/now` and `/api/stream` only, without the car's location (see Connecting an app). **MCP tokens** open `/mcp` and nothing else, and `/mcp` opens for no other kind (see MCP). A token scoped to one car answers for that car only, and must name it with `?vin=`. Tokens minted before admin tokens existed are read tokens.
 
 **Admin tokens** also drive setup under `/api/admin/`: the same actions as the buttons on Connect Tesla, Cars and sources, Places and Money, through the same code. An admin token covers every car. Only a bearer admin token opens `/api/admin/`; a browser session doesn't, so those routes need no cross-site form token.
 
@@ -33,7 +33,7 @@ A code is kept in the database, bound to nothing but its PKCE challenge and its 
 
 **Sharing the place.** A status token can also be allowed to see where each car is, coarsely: `place`, the name of a place you gave (never a street address; `null` at a spot the site named itself or on the road) and `at_home`, true or false (`null` when the car's position is unknown). Nothing finer is added: no coordinates, address, heading or speed. It is off by default and per token. Turn it on in Settings › Sign-in and API (the switch on the token, which takes effect at once with no reconnect), or tick the box on the Allow page when connecting; an app that skips the Allow page keeps the choice it was allowed with. An alert goes out when it is turned on. A token cannot turn it on for itself.
 
-**Tokens do not expire.** Revoking one in Settings is the only thing that stops it. Any `/api/` call with a token that is not valid answers `401 {"error": …}`: **401 means reconnect**. A stream that is open when its token is revoked closes.
+**Tokens do not expire.** Revoking one in Settings is the only thing that stops it. Any `/api/` call with a token that is not valid, with no token at all, or with the token in the URL (which is never read) answers `401 {"error": …}` as JSON, never the sign-in page: **401 means send a token, or reconnect**. A method the path does not take answers `405` with an `Allow` header, and a parameter that makes no sense (`month=xx`) answers `400` naming what it should be. A stream that is open when its token is revoked closes.
 
 The app keeps the token in its secure storage and sends it as `Authorization: Bearer …`, which works with sign-in on like every other `/api/` call.
 
@@ -57,20 +57,49 @@ Each bearer token may hold four streams open at once (sessions and the sign-in-o
 
 ## Endpoints
 
-Car endpoints take `?vin=` for one car or `?vin=all` for the garage; without it, the answer is about the live car. `/api/whoami` takes no `?vin=`; `/api/health` answers for every car, or one with `?vin=` (a single-car token must name it).
+Car endpoints take `?vin=` for one car or `?vin=all` for the garage; without it, `/api/now` answers about the live car (the first car the connector reports, else the first imported car by name), and the answer's `vin` and `name` say which; with several cars, `?vin=all` lists every one. `/api/whoami` takes no `?vin=`; `/api/health` answers for every car, or one with `?vin=` (a single-car token must name it).
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/whoami` | the token's label, its car (`null` for the whole garage) and its kind (`read` or `admin`) |
+| `GET /api/whoami` | the token's label, its car (`null` for the whole garage) and its kind (`read`, `control` or `admin`) |
 | `GET /api/now` | the car's state now: battery, range, position, what it is doing; a list for `?vin=all` |
-| `GET /api/drives` | the 50 most recent drives, newest first |
-| `GET /api/charges` | the 50 most recent charges, newest first, with cost and its source (`cost_source`); a home charge whose energy has been split adds `src_status` (`ok`), `src_solar_kwh`, `src_battery_kwh`, `src_grid_kwh`, `src_sun_frac` (the share of the Powerwall's part that was solar), `src_grid_cost`, `src_battery_cost` and `src_approx` |
+| `GET /api/drives` | the 50 most recent drives, newest first; `?since=YYYY-MM-DD&until=YYYY-MM-DD` (local days, `until` excluded, either optional) lists that range instead, up to 5,000 |
+| `GET /api/charges` | the 50 most recent charges, newest first (the same `since` and `until` as drives), with cost and its source (`cost_source`); a home charge whose energy has been split adds `src_status` (`ok`), `src_solar_kwh`, `src_battery_kwh`, `src_grid_kwh`, `src_sun_frac` (the share of the Powerwall's part that was solar), `src_grid_cost`, `src_battery_cost` and `src_approx` |
 | `GET /api/stream` | server-sent events: a `now` event per car when its state changes (see Live stream) |
 | `GET /api/energy` | the house's Powerwall now and its kWh today (see Energy) |
 | `GET /api/energy/hours?since=YYYY-MM-DD&until=YYYY-MM-DD` | the house's kWh per clock hour for those local days, `until` defaulting to tomorrow, at most 400 days (see Energy) |
 | `GET /api/health` | the hourly data checks per car |
 | `GET /api/driveprint` | every 100 m cell the car has reported from, as `[lat, lon, readings, car index]` |
 | `GET /api/month-routes?month=YYYY-MM` | each drive's route that month, downsampled |
+
+## Commands
+
+`POST /api/cars/{vin}/command` sends one command to one car, with a **control token** (or a signed-in browser with its form token). The body is JSON, `{"command": "...", "value": ...}`; `value` only for the commands that take one. What a car takes, the tiers and the safety rules are in [commands.md](commands.md); commands must be on in Settings › Commands.
+
+```sh
+curl -X POST -H "Authorization: Bearer $CONTROL" -H "Content-Type: application/json" \
+  -d '{"command": "charge_limit", "value": 80}' http://your-host:3044/api/cars/$VIN/command
+```
+
+```json
+{"ok": true, "said": "Charge limit set to 80% 9:14 PM"}
+```
+
+| `command` | `value` | Tier |
+|---|---|---|
+| `charge_start`, `charge_stop` | | 1 |
+| `charge_limit` | 50 to 100 (%) | 1 |
+| `charge_amps` | 5 to 48 (A), Tesla | 1 |
+| `climate_on`, `climate_off` | | 1 |
+| `climate_temp` | 15 to 28 (°C, halves), Tesla | 1 |
+| `defrost_on`, `defrost_off` | Tesla | 1 |
+| `seat_heat` | 0 to 3, the driver's seat, Tesla | 1 |
+| `lock`, `flash`, `honk`, `wake` | | 1 |
+| `sentry_on`, `sentry_off` | Tesla | 2 |
+| `sched_charge` | minutes after midnight, 0 to 1439, Tesla | 2 |
+| `sched_charge_off` | Tesla | 2 |
+
+Answers: 200 sent; 400 an unknown command or a value out of range; 403 refused (commands off, the car's tier, no way to reach the car, a command the car doesn't take, a token for another car, or a read or status token); 409 a tier 3 command, which needs the password entered again in a browser and is never sent with a token; 429 over the limit (10 a car a minute); 502 the car or Tesla said no. Every answer carries `said`, one sentence fit to show. Every call is in the car's command log, under the token's label.
 
 ## Energy
 
@@ -91,7 +120,7 @@ Times are ISO 8601 with their offset. Field names carry units where it matters (
 
 **Network.** An admin token answers only from the local network or the tailnet: the connection's own address, and every address in `X-Forwarded-For` or `X-Real-IP`, must be private (`10/8`, `172.16/12`, `192.168/16`), on the tailnet (`100.64/10`), unique-local IPv6 (`fc00::/7`) or this machine. A request through Cloudflare (with `CF-Connecting-IP` or a `Cf-Access-*` header) is refused even when the tunnel's address is on the LAN. A request from the Tesla stream's network (`CC_TESLA_SUBNET`, `192.168.62.0/24` by default) is always refused. **Allow admin tokens from anywhere** in Settings lifts the rest of the rule; it is off by default. Docker's published port can hand the site its own gateway as the address (Docker Desktop on a Mac does), so a request forwarded from the internet to port 3044 can look local: don't forward that port. Read tokens work from anywhere.
 
-**Audit log.** Every admin call, and every refused call from a known token, is logged: time, the token's label and last four characters, method and path, status, and client address. Settings shows the last 50; the log keeps 90 days. Refusals are capped at ten rows per token per minute, the rest counted into one row. The address is what the proxy path reports (Cloudflare's `CF-Connecting-IP`, else the first `X-Forwarded-For`); a request that reaches the port another way can write any address there, so treat it as a claim.
+**Audit log.** Every admin call, and every refused call from a known token, is logged: time, the token's label and last four characters, method and path, status, and client address. Settings shows the last 50; the log keeps 90 days. Refusals are capped at ten rows per token per minute, the rest counted into one row. The address is one the caller cannot choose: the connection's own, or, when that is a proxy on the local network or the tailnet, the address that proxy reported in `X-Forwarded-For`, followed by `via` and the proxy's address. A proxy that sets no `X-Forwarded-For` shows up as its own address.
 
 Errors come back as `{"error": "…"}`: 400 for a request that makes no sense, 401 without an admin token, 403 for a read token or the wrong network, 404 for no such thing, 409 when an earlier step is missing. No answer carries a token, key, password or database address.
 
@@ -126,6 +155,42 @@ curl -X PATCH -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/js
 curl -H "Authorization: Bearer $TOKEN" $CC/api/admin/money
 curl -X POST -H "Authorization: Bearer $TOKEN" $CC/api/admin/money/averages/refresh
 ```
+
+## MCP
+
+`POST /mcp` is a read-only [Model Context Protocol](https://modelcontextprotocol.io) server (Streamable HTTP, JSON replies, no session), so Claude or any MCP client can answer "how far did we drive last month", "what did charging cost", "battery health" or "where did Alpha park last night" from your own data. It only reads: no tool sends a command or changes anything, and no token kind but MCP opens it. It speaks both the current protocol revision (2026-07-28: the version in every request's `_meta` and an `MCP-Protocol-Version` header, `Mcp-Method` and `Mcp-Name` headers that must match the body, `server/discover`) and the earlier ones (`initialize`, 2025-11-25 down to 2024-11-05); a client picks whichever it speaks. Batches are refused (400).
+
+Make the token in Settings › Sign-in and API › New token › MCP. The page then shows, once, the URL and the config to paste for Claude Code, Claude Desktop (through `mcp-remote`, which needs Node: Desktop's config file only starts local programs, and its connectors want OAuth) and `.mcp.json` or Cursor. Send the token as `Authorization: Bearer …` like every token. A browser session does not open `/mcp`, and a browser request whose `Origin` is not this site's is refused (403): the configured public address (`CC_PUBLIC_URL` in `stack/.env`, e.g. `https://your-host/carcommand`, which is also the address the snippets use), `localhost`, a private address, or a bare or `.local` name. The bearer is what actually keeps a web page out. Behind Cloudflare Access the client needs a service token (or use the LAN address).
+
+```bash
+export CC_TOKEN=…
+claude mcp add --transport http car-command https://your-host/mcp --header "Authorization: Bearer $CC_TOKEN"
+```
+
+```json
+{"mcpServers": {"car-command": {"type": "http", "url": "https://your-host/mcp", "headers": {"Authorization": "Bearer TOKEN"}}}}
+```
+
+Every tool call leaves a row (tool, token, time; never the arguments), and Settings › Sign-in and API lists the last 20 under the tokens, kept 90 days.
+
+**What a token sees.** A token for one car sees that car only: the other cars are not listed, and asking for one by name is an error. By default an answer names a place only when you named it, otherwise the city; no VIN, latitude, longitude, street address, speed or heading, and `list_cars` gives names only (a VIN typed as `car` still finds the car). A token made with **Coordinates** on also gets all of those: street addresses, latitude and longitude, speed and heading, and the VIN. Notes you wrote on a drive pass through as written. That choice is made when the token is made; to change it, make another. Distances are miles, energy kWh, temperatures °F, times local to the box.
+
+| Tool | Answers |
+| --- | --- |
+| `list_cars` | the name of each car the token sees (with the VIN, on a Coordinates token) |
+| `current_status` | state, battery %, range, plugged in, charge progress, locked, odometer, outside temperature, software and the place (`car?`) |
+| `list_drives` | drives in a period, newest first, one line each: when, minutes, miles, from, to, kWh, Wh/mile, battery before and after, cost (`car?`, `period?` or `since?`/`until?`, `limit?` up to 40, `offset?`) |
+| `list_charges` | charges the same way: where, AC or DC, battery before and after, kWh, cost and whether it is an estimate |
+| `get_drive`, `get_charge` | one by `id` (required), with top speed, weather, elevation, the rate plan and the sun/Powerwall/grid split |
+| `stats` | miles, drives, energy used, Wh/mile, charged kWh and charging cost for a period (default this month); `by` = day, week or month adds a breakdown of up to 60 buckets |
+| `battery_health` | range at 100 % now, first and best, and the loss in miles and per cent |
+| `records` | the period's records, each with the drive or charge that set it |
+| `top_routes`, `top_places` | the most-driven routes and most-visited places (`span` = all, year or 90d) |
+| `software_versions` | versions run, when each arrived, days kept, range at 100 % on it, and how often updates come |
+
+`period` is `today`, `yesterday`, `this_week`, `last_week`, `this_month`, `last_month`, `this_year`, `last_year`, `last_7_days`, `last_30_days`, `last_90_days`, `last_12_months`, `all`, a month (`2026-03`) or a year (`2025`). `since` and `until` take `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM`; a bare `until` date includes that day. Lists page with `offset`: an answer holds `next_offset` while there is more. A car's position at a past moment is the `to` of the newest drive before it: `list_drives` with `until` set and `limit` 1.
+
+Errors a model can fix (an unknown car, a bad date, an argument out of range) come back as a tool result with `isError`, in a sentence. A bad token is `401` with `WWW-Authenticate: Bearer`; another kind of token is `403`; `GET` and `DELETE` on `/mcp` are `405`; a body over 64 KB is `413`.
 
 ## CSV
 

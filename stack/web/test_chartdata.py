@@ -121,13 +121,16 @@ def test_drive_chart_leads_with_battery_and_offers_the_rest():
         Units(),
         tz,
     )
-    assert p["primary"]["key"] == "level" and [x["key"] for x in p["extras"]] == ["speed", "elevation", "power", "temp"]
+    assert p["primary"]["key"] == "level" and [x["key"] for x in p["extras"]] == ["speed", "power", "temp"]
+    assert p["strip"]["key"] == "elevation" and p["strip"]["draw"] == "line", "height is a profile under the lane, on the same clock"
+    assert next(x for x in p["extras"] if x["key"] == "speed")["draw"] == "line" and "draw" not in p["primary"], "sampled series are lines; the battery stays steps"
     power = next(x for x in p["extras"] if x["key"] == "power")
     assert power["lo"] < 0 < power["hi"], "regeneration below zero stays on the scale"
-    assert p["lane"] == [[a.timestamp(), b.timestamp(), "driving"]] and p["events"] == [ev] and p["ticks"]
+    assert p["lane"] == [] and p["events"] == [ev] and p["ticks"], "one drive is one state: no lane bar, the card names the drive"
+    assert p["strip"]["tone"] == "data", "the height strip is neutral, its dot and card row too"
     km = drive_chart(a, b, [], [(at(5), 62.0)], [(at(0), 1000.0)], [], [], [], ev, Units(metric=True), tz)
     assert km["primary"]["key"] == "speed" and km["primary"]["unit"] == " km/h" and round(km["primary"]["points"][-1][1]) == 100, "no battery readings: speed leads, in km/h"
-    assert km["extras"][0]["unit"] == " m" and round(km["extras"][0]["points"][0][1]) == 305
+    assert km["strip"]["unit"] == " m" and round(km["strip"]["points"][0][1]) == 305
     empty = drive_chart(a, b, [], [], [], [], [], [], ev, Units(), tz)
     assert empty["primary"]["points"] == [] and empty["extras"] == [], "a drive filled from history: nothing to draw, nothing thrown"
 
@@ -147,7 +150,7 @@ def test_charge_chart_leads_with_power():
         a, b, [(at(0), 11.4), (at(7), 0.0)], [(at(0), 23.0), (at(8), 90.0)], [(at(0), 80.0), (at(8), 320.0)], [(at(0), 240.0)], [(at(0), 48.0)], ev, Units(), ZoneInfo("America/Los_Angeles")
     )
     assert p["primary"]["key"] == "power" and p["primary"]["lo"] == 0 and p["primary"]["hi"] >= 11.4
-    assert [x["key"] for x in p["extras"]] == ["level", "range", "volts", "amps"] and p["lane"][0][2] == "charging"
+    assert [x["key"] for x in p["extras"]] == ["level", "range", "volts", "amps"] and p["lane"] == [] and p["events"][0]["kind"] == "charge"
     km = charge_chart(a, b, [], [(at(0), 23.0)], [(at(0), 80.0)], [], [], ev, Units(metric=True), ZoneInfo("America/Los_Angeles"))
     assert km["primary"]["points"] == [] and km["extras"][1]["unit"] == " km", "no power readings: nothing primary, the rest still offered"
 
@@ -204,3 +207,133 @@ def test_a_series_chart_has_no_lane_and_scales_each_line():
     assert p["lane"] == [] and p["events"] == [] and p["primary"]["hi"] == 100 and [x["key"] for x in p["extras"]] == ["range"] and 3 <= len(p["ticks"]) <= 7
     empty = series_chart(a, b, {"key": "level", "label": "Battery", "unit": "%", "series": [], "scale": "pct"}, [], ZoneInfo("America/Los_Angeles"))
     assert empty["primary"]["points"] == [] and empty["primary"]["label"] == "Battery"
+
+
+def test_annotations_are_optional_and_checked():
+    from chartdata import BAND_KINDS, annotations
+
+    base = payload(T0, T0 + H, {"key": "level", "label": "Battery", "unit": "%", "lo": 0, "hi": 100, "points": []}, [], [], [])
+    assert not {"marks", "bands", "avg", "on", "xkind"} & set(base), "nothing given, nothing carried"
+    got = annotations(
+        marks=[[T0 + H, "2026.32.1"], [T0.timestamp(), "Jan"], [T0, ""], ["noon", "x"], {"t": 1}],
+        bands=[[T0, T0 + H, "driving", "Home → Work"], [T0 + H, T0, "charging"], [T0, T0 + H, "lava"], [T0, T0 + H, "note"]],
+        avg={"value": 62.5},
+    )
+    assert got["marks"] == [[T0.timestamp(), "Jan"], [(T0 + H).timestamp(), "2026.32.1"]], "in x order, the blank and malformed left out"
+    assert got["bands"] == [[T0.timestamp(), (T0 + H).timestamp(), "driving", "Home → Work"], [T0.timestamp(), (T0 + H).timestamp(), "note", ""]]
+    assert {b[2] for b in got["bands"]} <= set(BAND_KINDS), "a backwards span or an unknown kind is dropped"
+    assert got["avg"] == {"value": 62.5, "label": "Average"}
+    assert annotations(avg={"value": float("nan")}) == {} and annotations(avg={"value": True}) == {}
+
+
+def test_every_extra_has_its_own_tone_and_the_first_shown_must_exist():
+    lines = [{"key": k, "label": k, "unit": "", "lo": 0, "hi": 1, "points": []} for k in ("range", "tire_fl", "temp", "tire_fr")]
+    p = payload(T0, T0 + H, lines[0], lines, [], [], on=["temp", "nope"])
+    assert [x["tone"] for x in p["extras"]] == ["range", "x0", "temp", "x1"], "a known series keeps its colour on every page; the rest take spares in turn"
+    assert p["on"] == ["temp"]
+    assert "tone" not in lines[0], "the caller's dicts are not changed"
+
+
+def test_a_chart_along_the_odometer():
+    from chartdata import dist_ticks, distance_payload, thin_x
+
+    ticks = dist_ticks(12_345, 98_765)
+    assert [k[1] for k in ticks] == ["20k", "40k", "60k", "80k"] and all(12_345 <= k[0] <= 98_765 for k in ticks)
+    assert [k[1] for k in dist_ticks(0, 900)][:3] == ["0", "200", "400"]
+    pts = thin_x([(x * 10.0, 380 - x / 100) for x in range(10_000)], 0, 100_000, n=50)
+    assert len(pts) <= 52 and pts[-1][0] == 99_990.0
+    p = distance_payload(12_345, 98_765, {"key": "full", "label": "Range at 100%", "unit": " mi", "lo": 300, "hi": 400, "points": pts}, [], ticks, " mi", marks=[[50_000, "2025"]])
+    assert p["xkind"] == "dist" and p["xunit"] == " mi" and p["t0"] == 12_345 and p["t1"] == 98_765
+    assert p["lane"] == [] and p["events"] == [] and p["marks"] == [[50_000.0, "2025"]]
+
+
+def test_the_payload_names_the_zone_its_ticks_are_in():
+    """The hover card formats its time in this zone (chart.js), so it says the same clock as
+    the axis whatever zone the browser is in."""
+    from zoneinfo import ZoneInfo
+
+    from chartdata import charge_chart, drive_chart, series_chart
+    from units import Units
+
+    tz = ZoneInfo("America/Chicago")
+    line = {"key": "level", "label": "Battery", "unit": "%", "lo": 0, "hi": 100, "points": []}
+    assert payload(T0, T0 + H, line, [], [], [], tz=tz)["tz"] == "America/Chicago"
+    assert "tz" not in payload(T0, T0 + H, line, [], [], []), "no zone given, none claimed"
+    ev = {"a": T0.timestamp(), "b": (T0 + H).timestamp(), "kind": "drive", "title": "", "figs": ""}
+    lv = [(T0, 80.0), (T0 + H, 70.0)]
+    d = drive_chart(T0, T0 + H, lv, [(T0, 30.0), (T0 + H, 40.0)], [], [], [], [], ev, Units(), tz, on=["speed"])
+    assert d["tz"] == "America/Chicago" and d["on"] == ["speed"]
+    assert charge_chart(T0, T0 + H, [(T0, 7.0)], lv, [], [], [], dict(ev, kind="charge"), Units(), tz)["tz"] == "America/Chicago"
+    assert series_chart(T0, T0 + H, {"key": "level", "label": "Battery", "unit": "%", "series": lv, "scale": "pct"}, [], tz)["tz"] == "America/Chicago"
+
+
+def test_a_line_keeps_each_slices_highest_and_lowest_reading():
+    from chartdata import peaks
+
+    t = [T0 + timedelta(seconds=i) for i in range(4000)]
+    speeds = [(x, 52.0 if i == 1234 else 30.0 + (i % 7)) for i, x in enumerate(t)]
+    pts = peaks(speeds, T0, t[-1], n=100)
+    assert max(v for _s, v in pts) == 52.0, "the top speed survives thinning"
+    assert len(pts) <= 4 * 101 and [s for s, _v in pts] == sorted(s for s, _v in pts)
+
+
+def test_a_charges_sampled_readings_are_lines_and_its_battery_steps():
+    from zoneinfo import ZoneInfo
+
+    from chartdata import charge_chart
+    from units import Units
+
+    ev = {"a": T0.timestamp(), "b": (T0 + H).timestamp(), "kind": "charge", "title": "", "figs": ""}
+    pts = [(T0, 7.0), (T0 + H, 7.2)]
+    c = charge_chart(T0, T0 + H, pts, [(T0, 60.0), (T0 + H, 70.0)], [], [(T0, 240.0)], [(T0, 30.0)], ev, Units(), ZoneInfo("America/Chicago"), rate=[(T0, 25.0)])
+    kinds = {x["key"]: x.get("draw") for x in [c["primary"], *c["extras"]]}
+    assert kinds == {"power": "line", "level": None, "rate": "line", "volts": "line", "amps": "line"} and c["lane"] == []
+    assert c["primary"]["gap"] > 3600, "an hour held at one power is two readings an hour apart, not a hole in the line"
+
+
+def test_a_scale_has_a_round_middle_as_well_as_round_ends():
+    from chartdata import nice
+
+    assert nice([296.0, 309.0], zero=False) == (295, 315), "295, 305, 315 rather than 295, 302.5, 310"
+    for vals in ([61.0, 79.0], [0.0, 37.0], [512.0, 601.0], [296.0, 309.0]):
+        lo, hi = nice(vals, zero=False)
+        assert lo <= min(vals) and hi >= max(vals) and ((lo + hi) / 2) % 5 == 0, f"{vals}: {lo}, {(lo + hi) / 2}, {hi}"
+
+
+def test_a_parked_stretch_draws_its_point_or_two_on_a_snug_axis():
+    from chartdata import snug_level_scale
+
+    assert snug_level_scale([77.0, 76.2]) == (76, 78), "a 0.8-point drop fills most of the chart, not a tenth of 75–85"
+    assert snug_level_scale([80.0, 80.0]) == (79, 81) and snug_level_scale([99.9, 100.0]) == (98, 100), "never past 100"
+    lo, hi = snug_level_scale([61.3, 63.9])
+    assert lo <= 61.3 and hi >= 63.9 and (hi - lo) % 2 == 0, "a whole middle label"
+    assert snug_level_scale([80.0, 70.0]) == (65.0, 85.0), "a stretch that moved five points or more is scaled like a drive"
+
+
+def test_volts_held_since_an_earlier_charge_are_still_a_line_on_this_one():
+    """cc_charging_electrics keeps runs: a home charger's 240 V can be one row from a charge
+    weeks ago to the one after this. Its first date falls before this charge, so fed as a
+    reading it was dropped and the Volts and Amps chips never appeared; clipped to the
+    session it is a line across the whole charge."""
+    from zoneinfo import ZoneInfo
+
+    from chartdata import charge_chart
+    from samples import run_points
+    from units import Units
+
+    ev = {"a": T0.timestamp(), "b": (T0 + H).timestamp(), "kind": "charge", "title": "", "figs": ""}
+    held = [(T0 - 40 * 24 * H, T0 + 9 * 24 * H, 240.0)]
+    c = charge_chart(T0, T0 + H, [(T0, 11.0)], [(T0, 60.0)], [], run_points(held, T0, T0 + H), run_points([(f, lst, 46.0) for f, lst, _ in held], T0, T0 + H), ev, Units(), ZoneInfo("America/Chicago"))
+    lines = {x["key"]: x for x in c["extras"]}
+    assert "volts" in lines and "amps" in lines
+    assert lines["volts"]["points"][0][0] == T0.timestamp() and lines["volts"]["points"][-1] == [(T0 + H).timestamp(), 240.0]
+
+
+def test_ticks_over_two_years_name_the_year():
+    from zoneinfo import ZoneInfo
+
+    from chartdata import ticks
+
+    t0 = datetime(2023, 9, 9, tzinfo=timezone.utc)
+    out = ticks(t0, datetime(2025, 10, 1, tzinfo=timezone.utc), ZoneInfo("America/Chicago"))
+    assert out and all(label[-4:].isdigit() for _, label, _ in out), [label for _, label, _ in out]

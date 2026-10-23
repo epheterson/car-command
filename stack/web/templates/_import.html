@@ -1,0 +1,98 @@
+{# Settings › Cars and sources › Bring history in: TeslaFi exports uploaded here, or a TeslaMate database.
+   The job and its state come from importjob.Store; this only draws them. #}
+{% import "_info.html" as i %}
+{% set job = imp.job %}
+{% set live = job and job.state in ('running', 'interrupted') %}
+{% macro n(v) %}{{ '{:,}'.format(v) }}{% endmacro %}
+{% macro post(action, label, cls='btn sm', fields={}) %}<form method="post" action="{{ root }}/settings/import/{{ action }}" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf }}">{% for k, v in fields.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}<button type="submit" class="{{ cls }}">{{ label }}</button></form>{% endmacro %}
+<section class="group" id="import" data-import data-busy="{{ 1 if imp.busy else 0 }}" data-status="{{ root }}/settings/import/status">
+  <h2 class="sec">Bring history in {% call i.info("TeslaFi and TeslaMate") %}Loading the same file again replaces what it loaded; nothing doubles. A car another source is already logging is filled in up to where that one began. Without the website: docs/sources.md.{% endcall %}</h2>
+  <div class="group-b">
+    {% if imp.notice %}<div class="set-notes"><p class="notice {{ imp.notice.kind }}" role="status">{{ imp.notice.text }}</p></div>{% endif %}
+    {% if job %}
+    <div class="set-row stack imp-job" data-job="{{ job.state }}">
+      <span class="set-l">{{ 'TeslaFi export' if job.kind == 'teslafi' else 'TeslaMate' }}<span class="set-s" data-step>{% if job.state == 'running' %}{{ job.step }}{% elif job.state == 'interrupted' %}Interrupted · {{ job.step }}{% elif job.state == 'done' %}Finished{% else %}{{ job.error or 'Stopped' }}{% endif %}</span></span>
+      {% if job.state == 'running' %}<progress class="imp" max="100" value="{{ job.pct }}" data-pct aria-label="Progress"></progress>{% endif %}
+    </div>
+    {% for it in job['items'] %}
+    <div class="set-row imp-item" data-item="{{ loop.index0 }}" data-state="{{ it.state }}"><span class="set-l">{{ it.name }}<span class="set-s" data-detail>{{ it.detail }}</span></span>
+      <span class="set-v">{% if it.state == 'done' %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>loaded</span>{% elif it.state == 'running' %}<progress class="imp" max="100" value="{{ it.pct }}" aria-label="{{ it.name }}"></progress>{% elif it.state == 'skipped' %}<span class="sstate"><span class="sdot wait" aria-hidden="true"></span>skipped</span>{% else %}waiting{% endif %}</span></div>
+    {% endfor %}
+    {% if job.state in ('done', 'failed', 'interrupted') %}
+    <div class="set-row"><span class="set-l">{% if job.state == 'done' %}Loaded{% else %}So far{% endif %}</span><span class="set-v"><b>{{ n(job.result.drives) }}</b> {{ job.result.drives|plural('drive') }}{% if job.result.get('new_drives') is not none and job.result.new_drives != job.result.drives %} ({{ n(job.result.new_drives) }} new){% endif %} · <b>{{ n(job.result.charges) }}</b> {{ job.result.charges|plural('charge') }} · <b>{{ n(job.result.days) }}</b> {{ job.result.days|plural('day') }}{% if job.places %} · <b>{{ n(job.places) }}</b> new {{ job.places|plural('place') }}{% endif %}</span></div>
+    {% if job.state == 'done' and job.places %}<div class="set-row"><span class="set-l">Name your places<span class="set-s">{{ n(job.places) }} {{ job.places|plural('place') }} found from where the cars stop</span></span><div class="set-c"><a class="btn sm" href="{{ root }}/places">Name them</a></div></div>{% endif %}
+    <div class="set-row"><span class="set-l"></span><div class="set-c">
+      {% if job.kind == 'teslafi' and job.state == 'interrupted' %}{{ post('resume', 'Resume', 'btn primary') }}{{ post('resume', 'Start over', 'btn', {'restart': '1'}) }}{% elif job.kind == 'teslafi' and job.state == 'failed' %}{{ post('resume', 'Try again', 'btn primary', {'restart': '1'}) }}{% endif %}
+      {{ post('dismiss', 'Dismiss' if job.state != 'done' else 'Close', 'btn' if job.state != 'done' else 'btn primary') }}
+    </div></div>
+    {% endif %}
+    {% endif %}
+    {% if not live %}
+    <details class="set-x" id="imp-teslafi"{% if imp.staged %} open{% endif %}><summary class="set-row"><span class="set-l">TeslaFi export<span class="set-s">.csv or .csv.gz</span></span></summary>
+      <div class="set-p">
+        {% for f in imp.staged %}<div class="set-row"><span class="set-l">{{ f.name }}<span class="set-s">{{ f.size|filesize }}</span></span><div class="set-c">{{ post('remove', 'Remove', 'btn sm', {'name': f.name}) }}</div></div>{% endfor %}
+        <div class="set-row"><span class="set-l">Exports<span class="set-s">one or more, any car</span></span><div class="set-c"><label class="btn find-filebtn"><input class="find-file" id="imp-files" type="file" multiple accept=".csv,.gz,.csv.gz" data-files>Choose files</label></div></div>
+        <div class="set-row" hidden data-up><span class="set-l" data-up-text></span><progress class="imp" max="100" value="0" data-up-bar aria-label="Upload"></progress></div>
+        <div class="set-notes" data-up-err hidden><p class="notice err" role="alert"></p></div>
+        <div class="acts">{% if imp.staged %}{{ post('start', 'Import ' ~ imp.staged|length ~ (' file' if imp.staged|length == 1 else ' files'), 'btn primary') }}{% endif %}</div>
+      </div>
+    </details>
+    <details class="set-x" id="imp-teslamate"{% if imp.typed %} open{% endif %}><summary class="set-row"><span class="set-l">TeslaMate, one time<span class="set-s">Copy the history it holds now, read-only</span></span></summary>
+      <form class="set-p" method="post" action="{{ root }}/settings/import/teslamate" data-wait="Reading the TeslaMate database…"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="set-row stack"><label class="set-l" for="imp-tm-url">TeslaMate database</label><input class="field wide" id="imp-tm-url" type="password" name="url" autocomplete="off"{% if imp.typed %} value="{{ imp.typed }}"{% endif %} placeholder="postgresql://teslamate:…@host:5432/teslamate"></div>
+        <div class="acts">{% if imp.saved_mate %}<button type="submit" name="saved" value="1" class="btn">Use the saved database</button>{% endif %}<button type="submit" class="btn primary">Import</button></div>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+</section>
+<script>
+(() => {
+  const box = document.querySelector("[data-import]");
+  if (!box) return;
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  const csrf = meta ? meta.getAttribute("content") : "";
+  const base = box.dataset.status.replace(/status$/, "");
+  const files = box.querySelector("[data-files]");
+  const up = box.querySelector("[data-up]"), upText = box.querySelector("[data-up-text]"), upBar = box.querySelector("[data-up-bar]");
+  const err = box.querySelector("[data-up-err]");
+  const send = (file) => new Promise((ok, bad) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", base + "upload?name=" + encodeURIComponent(file.name));
+    x.setRequestHeader("X-CSRF-Token", csrf);
+    x.setRequestHeader("Content-Type", "application/octet-stream");
+    x.upload.onprogress = e => { if (e.lengthComputable) upBar.value = Math.round(e.loaded * 100 / e.total); };
+    x.onload = () => { let r = {}; try { r = JSON.parse(x.responseText); } catch (e) {} r.ok ? ok() : bad(r.error || "Upload failed (" + x.status + ")"); };
+    x.onerror = () => bad("The upload did not finish.");
+    x.send(file);
+  });
+  if (files) files.addEventListener("change", async () => {
+    err.hidden = true; up.hidden = false;
+    for (const f of files.files) {
+      upText.textContent = "Uploading " + f.name; upBar.value = 0;
+      try { await send(f); } catch (m) { err.hidden = false; err.firstElementChild.textContent = f.name + ": " + m; up.hidden = true; return; }
+    }
+    location.href = location.pathname + location.search + "#import"; location.reload();
+  });
+  if (box.dataset.busy !== "1") return;
+  const tick = async () => {
+    try {
+      const v = await (await fetch(box.dataset.status, { headers: { "Accept": "application/json" } })).json();
+      const job = v.job;
+      if (!job || job.state !== "running") { location.reload(); return; }
+      box.querySelector("[data-step]").textContent = job.step;
+      box.querySelector("[data-pct]").value = job.pct;
+      job.items.forEach((it, k) => {
+        const row = box.querySelector('[data-item="' + k + '"]');
+        if (!row) return;
+        const bar = row.querySelector("progress");
+        if (bar) bar.value = it.pct;
+        row.querySelector("[data-detail]").textContent = it.detail;
+        if (it.state !== row.dataset.state) { location.reload(); return; }
+      });
+    } catch (e) { /* the site restarting: try again */ }
+    setTimeout(tick, 2000);
+  };
+  setTimeout(tick, 2000);
+})();
+</script>

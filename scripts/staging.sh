@@ -28,8 +28,11 @@ fi
 
 PROJECT="${CC_STAGING_PROJECT:-carcommand-staging}"
 PORT="${CC_STAGING_PORT:-3055}"
-SUBNET="${CC_STAGING_SUBNET:-192.168.63.0/24}"
-TESLA_SUBNET="${CC_STAGING_TESLA_SUBNET:-192.168.65.0/24}"
+# Ranges clear of the compose defaults (.61 to .64), so a staging stack starts beside production.
+SUBNET="${CC_STAGING_SUBNET:-192.168.73.0/24}"
+TESLA_SUBNET="${CC_STAGING_TESLA_SUBNET:-192.168.75.0/24}"
+COMMANDS_SUBNET="${CC_STAGING_TESLA_COMMANDS_SUBNET:-192.168.76.0/24}"
+PROXY_OUT_SUBNET="${CC_STAGING_TESLA_PROXY_OUT_SUBNET:-192.168.77.0/24}"
 BACKUPS="${CC_BACKUP_DIR:-$HOME/backups/carcommand}"
 env_file="$here/.staging.env"
 
@@ -58,7 +61,7 @@ make_env() {
         while IFS= read -r line; do
             case "$line" in
             DB_PASSWORD=* | WEBUI_PASSWORD=* | REST_PASSWORD=* | CC_SECRET=*) printf '%s=%s\n' "${line%%=*}" "$(openssl rand -hex 24)" ;;
-            CC_PORT=* | CC_SUBNET=* | CC_TESLA_SUBNET=* | COMPOSE_PROJECT_NAME=*) ;;
+            CC_PORT=* | CC_SUBNET=* | CC_TESLA_SUBNET=* | CC_TESLA_COMMANDS_SUBNET=* | CC_TESLA_PROXY_OUT_SUBNET=* | COMPOSE_PROJECT_NAME=*) ;;
             # No live car and no alerting from a copy: it would poll the same vehicle and
             # send the same messages to the same channel, from data that is not real.
             TESLAFI_TOKENS=* | TESLA_STREAM_HOST=* | DISCORD_WEBHOOK_URL=* | TELEGRAM_BOT_TOKEN=* | TELEGRAM_CHAT_ID=*) printf '%s=\n' "${line%%=*}" ;;
@@ -66,7 +69,7 @@ make_env() {
             esac
         done <"$prod_env" >"$env_file"
         chmod 600 "$env_file"
-        printf 'COMPOSE_PROJECT_NAME=%s\nCC_PORT=%s\nCC_SUBNET=%s\nCC_TESLA_SUBNET=%s\nCC_AUTH=off\n' "$PROJECT" "$PORT" "$SUBNET" "$TESLA_SUBNET" >>"$env_file"
+        printf 'COMPOSE_PROJECT_NAME=%s\nCC_PORT=%s\nCC_SUBNET=%s\nCC_TESLA_SUBNET=%s\nCC_TESLA_COMMANDS_SUBNET=%s\nCC_TESLA_PROXY_OUT_SUBNET=%s\nCC_AUTH=off\n' "$PROJECT" "$PORT" "$SUBNET" "$TESLA_SUBNET" "$COMMANDS_SUBNET" "$PROXY_OUT_SUBNET" >>"$env_file"
         echo "staging: wrote $env_file with its own passwords"
     fi
 }
@@ -118,7 +121,7 @@ check)
     slowest=0
     slowest_path=""
     fail=0
-    for p in / /drives /charges /timeline /calendar /stats /charging /places /map /battery /sleep /software /tags /service /settings/cars /settings/money /settings/energy /settings/alerts /settings/look /settings/maps /settings/data /settings/access /day /health /api/now /api/driveprint; do
+    for p in / /drives /charges /timeline /calendar /stats /charging /places /map /battery /sleep /software /tags /service /settings/cars /settings/money /settings/energy /settings/alerts /settings/commands /settings/look /settings/maps /settings/data /settings/access /day /health /api/now /api/driveprint; do
         # The trailing newline matters: without it `read` hits EOF, returns non-zero,
         # and `set -e` kills the script mid-loop with nothing printed.
         read -r code secs < <(curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' "http://localhost:$PORT$p")

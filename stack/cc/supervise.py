@@ -63,9 +63,11 @@ def _span(seconds: float) -> str:
 
 
 def default_connectors(token_path: str, env) -> str:
-    """The Lucid block the entrypoint has always written, character for character."""
+    """The Lucid block: the token file and the polling rates. Commands are on in the connector
+    (0.2.0 and later; older ones ignore the key): Settings › Commands on the site is the switch,
+    and nothing reaches the connector's command paths but the site."""
     idle, driving = env.get("CC_POLL_IDLE_S") or "60", env.get("CC_POLL_DRIVING_S") or "15"
-    return f'[{{"type":"lucid","config":{{"refresh_token_file":"{token_path}","interval":{idle},"driving_interval":{driving},"log_level":"info","api_log_level":"error"}}}}]'
+    return f'[{{"type":"lucid","config":{{"refresh_token_file":"{token_path}","interval":{idle},"driving_interval":{driving},"log_level":"info","api_log_level":"error","commands":true}}}}]'
 
 
 def cc_blocks(cc_rows: list[dict], installed=lambda config: True) -> list[tuple[int, dict]]:
@@ -124,6 +126,13 @@ def desired(rows: list[dict], env, app_token_path: str, cc_rows: list[dict] = ()
     state = env.get("CC_GEOCODER_STATE") or ""
     out["env"] = {} if state == "public" else {"CC_GEOCODER_URL": state}
     return out
+
+
+def lucid_failure(err: BaseException) -> str:
+    """Why a sign-in failed, in words: never the exception's class name, never its text (which can carry the account)."""
+    if isinstance(err, (OSError, TimeoutError)):
+        return "Lucid could not be reached. Check the connection, then sign in again."
+    return "Lucid did not accept the sign-in. Check the e-mail and password, then sign in again."
 
 
 class Supervisor:
@@ -434,7 +443,7 @@ class Supervisor:
         except Exception as err:  # noqa: BLE001 - say what kind of failure, never the credentials
             cur.execute(
                 "UPDATE cc_sources SET secret = NULL, config = %s, last_error = %s, updated_at = now() WHERE id = %s",
-                (json.dumps({"pending": False}), f"Lucid did not sign in ({type(err).__name__}). Check the e-mail and password and sign in again.", row["id"]),
+                (json.dumps({"pending": False}), lucid_failure(err), row["id"]),
             )
             row.update(secret=None, config={"pending": False})
             LOG.warning("Lucid: sign-in failed (%s); nothing kept", type(err).__name__)

@@ -8,7 +8,7 @@ Docker on an amd64 or arm64 host: a small server, a NAS that runs containers, a 
 - **Memory:** about 650 MB for the site, the database and the connector together (site 330 MB, database 170 MB, connector 125 MB). The [local maps add-on](maps.md) uses about 2.5 GB more.
 - **Disk:** three cars with eight years of history take 1.2 GB of database. The maps add-on needs several GB more ([sizing](maps.md#sizing)).
 - **Port 3044** free on the host. It is the only port published. Move it with `-p 8080:3044` (one container) or `CC_PORT` in `stack/.env` (compose).
-- **Per source:** Lucid needs only the account. Tesla direct needs a developer.tesla.com account with a card on file and a hostname you control serving the site over HTTPS ([Tesla app](tesla-app.md)); its live stream also needs a Tailscale account with Funnel. TeslaFi needs an API token per car; TeslaMate, its database reachable from this stack.
+- **Per source:** Lucid needs only the account. Tesla direct needs a developer.tesla.com account with a card on file and a hostname you control serving the site over HTTPS ([Tesla app](tesla-app.md)), whose Client ID, secret and domain you enter on Connect Tesla, with no `.env` edit or restart; its live stream also needs a Tailscale account with Funnel. TeslaFi needs an API token per car; TeslaMate, its database reachable from this stack.
 
 The one container is the simple way. Docker Compose runs the same parts as separate containers, and is needed for the local maps add-on and the [Tesla live stream](tesla-stream.md) for now.
 
@@ -18,9 +18,9 @@ The one container is the simple way. Docker Compose runs the same parts as separ
 docker run -d --name carcommand --restart unless-stopped --stop-timeout 30 -p 3044:3044 -v carcommand:/data ghcr.io/epheterson/car-command
 ```
 
-Get the setup code with `docker exec carcommand carcommand web python3 setup_code.py`, open `http://<host>:3044` and choose a password with it. Add a source on **Settings › Cars and sources**, or [import](sources.md#importing-history) a TeslaFi export or a TeslaMate database. Units, currency, time zone and rates are in Settings.
+Get the setup code with `docker exec carcommand carcommand web python3 setup_code.py`, open `http://<host>:3044` and choose a password with it; the site then asks for your time zone, units and currency on `/hello`. Add a source on **Settings › Cars and sources**, or bring a TeslaFi export or a TeslaMate database in from **Settings › Cars and sources › Bring history in** (the [command line](sources.md#importing-history) does the same). Units, currency, time zone and rates are in Settings.
 
-The first start generates the database password, the connector's passwords and the key that seals your sources (`CC_SECRET_KEY`), creates the database, and starts the site and the connector.
+The first start generates the database password, the connector's passwords and two keys: one seals your sources (`CC_SECRET_KEY`), the other signs sessions (`CC_SECRET`). It creates the database and starts the site and the connector.
 
 To look around before adding your own cars, run the [demo](#try-it-with-demo-data) in a container of its own. `docker stop carcommand && docker rm carcommand && docker volume rm carcommand` removes the install and all its data.
 
@@ -31,10 +31,12 @@ To look around before adding your own cars, run the [demo](#try-it-with-demo-dat
 Everything is under `/data`, in the `carcommand` volume:
 
 - `postgres/`: the database (Postgres 18).
-- `secrets/`: one file per generated value (`DB_PASSWORD`, `WEBUI_PASSWORD`, `REST_PASSWORD`, `CC_SECRET_KEY`), readable only by root inside the container. CarConnectivity and its plugins run as their own user without any of it, and use a database role limited to their own tables.
+- `secrets/`: one file per generated value (`DB_PASSWORD`, `WEBUI_PASSWORD`, `REST_PASSWORD`, `CC_SECRET_KEY`, `CC_SECRET`), readable only by root inside the container. CarConnectivity and its plugins run as their own user without any of it, and use a database role limited to their own tables.
 - `logs/`: each part's log, about 6 MB at most per part. The same lines go to `docker logs carcommand`; add `--log-opt max-size=10m --log-opt max-file=3` to the run line to cap that.
 - `connector/`: files the connector reads, such as a Lucid `lucid-token.json` from an older install.
 - `plugins/`: connectors for other brands, when added.
+- `terrain/`: elevation tiles, when Settings › Maps › Terrain tiles from Amazon (AWS) is on; safe to delete, they download again.
+- `tesla/`: the [Tesla stream](tesla-stream.md)'s Tailscale node and the receiver's certificate, once the stream is on.
 
 A second container on the same volume is refused.
 
@@ -42,7 +44,7 @@ A second container on the same volume is refused.
 
 The settings a compose install keeps in `stack/.env` are environment variables here, with the same names, all optional: `-e NAME=value`, or `--env-file`. [`stack/.env.example`](../stack/.env.example) describes them.
 
-Not used here: `DB_USER`, `DB_NAME`, `CC_PORT`, `CC_SUBNET`, `CC_TESLA_SUBNET` and `COMPOSE_PROJECT_NAME`. Publish a different port with `-p 8080:3044`.
+Not used here: `DB_USER`, `DB_NAME`, `CC_PORT`, `CC_SUBNET`, `CC_TESLA_SUBNET`, `CC_TESLA_COMMANDS_SUBNET`, `CC_TESLA_PROXY_OUT_SUBNET` and `COMPOSE_PROJECT_NAME`. Publish a different port with `-p 8080:3044`.
 
 A changed `-e` takes a new container, since `docker restart` keeps the old environment: `docker stop carcommand && docker rm carcommand`, then the run line again with the new value. The data stays in the volume.
 
@@ -121,7 +123,7 @@ docker run -d --name carcommand --restart unless-stopped --stop-timeout 30 -p 30
 
 Sign in with the same password. To go back: `docker stop carcommand` and `docker compose -f stack/docker-compose.yml up -d`. Compose's volume stays until you remove it (`docker compose -f stack/docker-compose.yml down -v`).
 
-`MAPS_URL` and `TESLA_STREAM_HOST` are not carried over; the maps add-on and the Tesla stream stay with compose for now. A `TESLAMATE_DB_URL` naming a compose host must be reachable from the new container.
+The Tesla stream's node comes along (its Tailscale state, so the cars keep streaming to the same name), with `TESLA_STREAM_HOST`. `MAPS_URL` is not carried over; the maps add-on stays with compose for now. A `TESLAMATE_DB_URL` naming a compose host must be reachable from the new container.
 
 ## Docker Compose
 
@@ -131,12 +133,12 @@ Commands here run from the checkout's root. The `make` targets marked "over ssh"
 git clone https://github.com/epheterson/car-command car-command && cd car-command
 git checkout "$(git describe --tags --abbrev=0)"         # the newest release, not unreleased main
 make setup                                                # writes stack/.env with generated passwords
-docker compose -f stack/docker-compose.yml up -d db web   # Postgres, the schema, and the site
+docker compose -f stack/docker-compose.yml up -d          # Postgres, the schema, the site and the connector
 ```
 
-The site is on port 3044. Its first page asks you to choose a password and for the setup code: run `docker compose -f stack/docker-compose.yml exec web python3 setup_code.py` (`make setup-code` does the same over ssh). `make setup` never overwrites an existing `stack/.env`, which holds your database password.
+The site is on port 3044. Its first page asks you to choose a password and for the setup code: run `docker compose -f stack/docker-compose.yml exec web python3 setup_code.py` (`make setup-code` does the same over ssh). `make setup` never overwrites an existing `stack/.env`, which holds your database password. Copying `stack/.env.example` by hand isn't enough: the site and the connector refuse to start while a password is still `CHANGE_ME`.
 
-Bringing up `web` also runs a one-shot `schema` container that creates the tables, so an install can run with no connector. The connector (`cc`) starts with `docker compose -f stack/docker-compose.yml up -d` once a live source needs it ([sources](sources.md)).
+`up -d` starts the connector (`cc`) with the rest; Lucid and other brands sign in through it (CarConnectivity) ([sources](sources.md)). Bringing up `web` also runs a one-shot `schema` container that creates the tables, so an install of imported history alone can run without it: `up -d db web`. Settings › Cars and sources says when CarConnectivity is not running, and the command to start it: `docker compose -f stack/docker-compose.yml up -d cc`.
 
 ## Try it with demo data
 
@@ -150,11 +152,13 @@ docker exec carcommand-demo carcommand demo        # then open http://<host>:304
 docker stop carcommand-demo && docker rm carcommand-demo && docker volume rm carcommand-demo
 ```
 
-To start a compose install over on the data only: `docker compose -f stack/docker-compose.yml down`, then `docker volume rm carcommand_pgdata`. `down -v` also removes the built maps, the brand plugins and the Tesla stream's node identity (a new node needs a new auth key).
+To start a compose install over on the data only: `docker compose -f stack/docker-compose.yml down`, then `docker volume rm carcommand_pgdata`. `down -v` also removes the built maps, the terrain tiles, the brand plugins and the Tesla stream's node identity (a new node needs a new auth key).
 
 ## Signing in
 
-One password per household. The site asks you to choose one on first visit and keeps you signed in for a month. If sign-in is off (`CC_AUTH=off`), turn it on in **Settings › Sign-in and API**: choose the password and you are signed in at once, with no restart. The same page turns it off again for anyone who knows the password. Turning it on asks for the same setup code as `/setup`. Turning it on signs every other device out (unless `CC_SECRET` pins the signing key). It is stored as an scrypt hash; until it is set the site serves only the page that asks for it. Failed attempts are throttled.
+One password per household. The site asks you to choose one on first visit and keeps you signed in for a month. If sign-in is off (`CC_AUTH=off`), turn it on in **Settings › Sign-in and API**: choose the password and you are signed in at once, with no restart. The same page turns it off again for anyone who knows the password. Turning it on asks for the same setup code as `/setup`. Turning it on, or changing the password, signs every other device out; **Sign out everywhere else** on the same page does just that. Signing out ends that browser's session on the server too, so a copy of its cookie stops working. The password is stored as an scrypt hash; until it is set the site serves only the page that asks for it. Failed attempts are throttled per address (an IPv6 address counts as its /64). After 50 failures from many addresses every new browser waits too, and an alert goes out; a browser that has signed in here within the year isn't held, so a stranger can't lock you out.
+
+**Under Docker Desktop (Mac, Windows) the code is always needed, from any browser including one on the host itself:** every published-port connection arrives from the network's gateway, which looks the same as the internet through a port forward, so the site cannot tell your LAN from outside and never exempts it. The exemption below is for a bare host or Linux with plain port mapping.
 
 The first password on `/setup` needs no code from this machine (loopback) or from a device on your home network that reaches the site directly (an address in 10/8, 192.168/16 or fc00::/7, with no proxy header, that is not on a network the container itself sits on), **in the first hour after the site first started** (a restart does not reset it; after that the code is needed, loopback included, because a header-less proxy on this machine connects from loopback). The window opens only on an install with no history (nothing in its auth settings and no car yet) at that start; a site that has run before, whether its signing key is in the database or pinned in `.env`, has the code from the start. The Settings switch that turns sign-in on, and the Cloudflare Access pin, are stricter: they always ask for the setup code, loopback included (you have a terminal), except that listing your e-mail in `CC_ACCESS_EMAILS`, or being signed in with the password, authorises the pin on its own. Everything else needs the setup code: the Docker bridge (172.16/12), the tailnet (100.64/10 and Tailscale's fd7a:115c:a1e0::/48), link-local, anything public, and anything a proxy passed on. A request counts as passed on if it carries any proxy header (`X-Forwarded-*`, `X-Real-IP`, `Forwarded`, `Via`, `CF-*`, `Tailscale-Funnel-Request` and similar), so **a proxy in front of the site must add `X-Forwarded-For`**: nginx's default `proxy_pass`, a TCP or stream proxy, `ssh -R` and frp add nothing, and during the first hour they would make the internet look like a home device. The container reads its own networks once. **In a bridge-network container (the compose default; found by a marker file, Kubernetes' environment, or containerd, kubepods, docker, libpod or lxc in the cgroup or mounts) every subnet it is attached to is distrusted, its gateway included**: on Docker Desktop (Mac, Windows) every published-port connection arrives from the compose network's gateway, often a 192.168.x address, so the code is always needed there. On a bare host or with host networking only the bridges and virtual networks (`docker*`, `br-*`, `virbr*`, `lxdbr*`, `cni*`, `podman*`, `flannel*`, `cali*`, `vxlan*`) are distrusted, and a phone on your LAN needs none; so on Linux with plain port mapping a phone keeps its own address and needs none. In Kubernetes (`KUBERNETES_SERVICE_HOST` set) no network counts as home and `/setup` always needs the code, because a NodePort's address translation makes the internet look like the node's own address. Containers on other Docker networks drawn from 192.168/16 or 10/8 pools reach the published port with their own addresses and count as home network during the first hour.
 
@@ -163,15 +167,17 @@ In `stack/.env` or the one container's environment:
 - `CC_PASSWORD` sets the password from the environment, for a scripted install.
 - `CC_AUTH=off` turns sign-in off, when a reverse proxy already decides who gets in. Cross-site request tokens are still checked. The proxy then has to be the only way in: anything that reaches the port directly, the whole LAN by default, reads every page and `/api/` without a password or token, live locations included. Publish the port on loopback (`CC_PORT=127.0.0.1:3044`; one container: `-p 127.0.0.1:3044:3044`) when the proxy runs on the same host, or keep sign-in on. The switch in Settings overrides this: once sign-in is turned on or off there, that choice is kept and `CC_AUTH` is no longer consulted.
 - `CF_ACCESS_TEAM` names your Cloudflare Access team and `CF_ACCESS_AUD` its application's audience tag; see Behind Cloudflare Access. `CC_ACCESS_PROXY` and `CC_ACCESS_EMAILS` narrow who may present the Access token and who counts.
-- `CC_SECRET` pins the session cookie's signing key. Unset, one is generated and kept in the database.
-- `CC_SECRET_KEY` seals the sources kept in the app (TeslaFi tokens, a TeslaMate address, the Lucid and Tesla tokens). The one container generates it; under compose, `make setup` writes one and `make secret-key` (over ssh; locally `scripts/secret-key.sh`) adds one to an older install. It is in no database backup: lose it and those sources have to be entered again.
+- `CC_SECRET` signs sessions and the setup code. `make setup` writes one and the one container generates one, so a database dump alone can't mint a session. Unset (an install from before this), the site generates one and keeps it in the database, where every dump carries it. To move it out, give it a key and restart; everyone signs in once more, and the site deletes the old key from the database at start:
+  - compose: put a value on the `CC_SECRET=` line of `stack/.env` (`openssl rand -hex 32`), then `docker compose -f stack/docker-compose.yml up -d --no-deps web`;
+  - the one container: `docker exec carcommand python3 -c "import os, secrets; os.umask(0o077); open('/data/secrets/CC_SECRET', 'w').write(secrets.token_urlsafe(32))" && docker restart carcommand`.
+- `CC_SECRET_KEY` seals the sources kept in the app (TeslaFi tokens, a TeslaMate address, the Lucid and Tesla tokens, the Tesla app's Client ID and secret). The one container generates it; under compose, `make setup` writes one and `make secret-key` (over ssh; locally `scripts/secret-key.sh`) adds one to an older install. It is in no database backup: lose it and those sources have to be entered again.
 
-Everything else (alert channels, other brands, Connect Tesla, the network) is in [`stack/.env.example`](../stack/.env.example).
+Everything else (alert channels, the network) is in [`stack/.env.example`](../stack/.env.example).
 
 
 ## Behind a reverse proxy
 
-- The proxy must add `X-Forwarded-For`. Without a proxy header, during the first hour a request from the internet could look like a home device ([Signing in](#signing-in)).
+- The proxy must set `X-Forwarded-For` to the client's address (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; Caddy and Traefik do it themselves). nginx's default `proxy_pass`, a TCP or stream proxy, `ssh -R` and frp add nothing, and then the site sees every visitor as the proxy's own address: during the first hour a request from the internet could look like a home device ([Signing in](#signing-in)), an admin token would be accepted from the internet because the proxy's address is on the LAN ([Admin tokens](api.md#admin-tokens)), every visitor would share one sign-in throttle, and alerts and the admin call log would name the proxy.
 - The site answers at `/`, `/carcommand` or `/cc`, with the prefix left on the path. Any other prefix breaks its links.
 - Live updates (`/stream` and `/api/stream`) are server-sent events; the proxy must not buffer them.
 - Keep the published port off the internet: `CC_PORT=127.0.0.1:3044` (one container: `-p 127.0.0.1:3044:3044`) when the proxy runs on the same host.
@@ -269,7 +275,7 @@ Tables are created and columns added at startup; nothing is dropped or renamed, 
 
 Put your host in `Makefile.local` (`MINI = user@host`, `DEST = path/on/host`). `make deploy` rsyncs `stack/` there (not `.env` or `secrets/`, and without deleting host-only files) and `make web` rebuilds the site container alone. `make import`, `make discover`, `make replay` and the rest run over ssh on that host.
 
-`make staging` puts a second stack on the same host with a copy of production's data and reads every page against it, which catches a schema change or backfill that would lock the live site. `make staging ARGS=check` re-reads the pages, `ARGS=down` removes it. Set `COMPOSE_PROJECT_NAME` and `CC_PORT` to run a second stack beside the first; every name is keyed on the project.
+`make staging` puts a second stack on the same host with a copy of production's data and reads every page against it, which catches a schema change or backfill that would lock the live site. `make staging ARGS=check` re-reads the pages, `ARGS=down` removes it. Set `COMPOSE_PROJECT_NAME`, `CC_PORT` and the four subnets to run a second stack beside the first: every container and image name is keyed on the project, and the four pinned networks need ranges of their own, `CC_SUBNET` (default 192.168.61.0/24), `CC_TESLA_SUBNET` (.62), `CC_TESLA_COMMANDS_SUBNET` (.63) and `CC_TESLA_PROXY_OUT_SUBNET` (.64). `make staging` picks .73 to .77 for itself.
 
 ## What is in the repository
 

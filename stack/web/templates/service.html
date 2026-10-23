@@ -4,22 +4,23 @@
 {% block title %}Service · Car Command{% endblock %}
 {% block body %}
 {# What is due, what was done, the tires: each a group of rows that open in place; adding
-   one opens a form beneath its group's last row. #}
-<div class="pbar"><h1>Service</h1><span class="pbar-ctx">{{ 'Every car' if car.garage else car.name }}</span></div>
+   one opens a form beneath its group's last row. Nothing logged yet: no tiles and no Due, only
+   History's one empty line and its button. #}
+<div class="pbar"><h1>Service</h1><span class="pbar-ctx">{{ 'All cars' if car.garage else car.name }}</span></div>
 {% set open = items|rejectattr('done')|list %}{% set done = items|selectattr('done')|list %}
 {% set spent = done|map(attribute='cost')|select|sum %}{% set last = done|selectattr('done_on')|sort(attribute='done_on', reverse=true)|first %}
 {% set overdue = open|selectattr('status', 'equalto', 'overdue')|list %}
-<div class="tiles t3">
+{% if items %}<div class="tiles t3">
   <div class="tile"><span class="l">Due</span><span class="v">{{ open|length }}</span><span class="d">{% if overdue %}{{ overdue|length }} overdue{% else %}&nbsp;{% endif %}</span></div>
-  <div class="tile"><span class="l">Last done</span><span class="v small-v">{% if last %}{{ last.what }}{% else %}–{% endif %}</span><span class="d">{% if last %}{{ last.done_on.strftime('%b %-d, %Y') }}{% else %}&nbsp;{% endif %}</span></div>
+  <div class="tile"><span class="l">Last done</span><span class="v small-v">{% if last %}{{ last.what }}{% else %}–{% endif %}</span><span class="d">{% if last %}{{ last.done_on|dfmt('%b %-d, %Y') }}{% else %}&nbsp;{% endif %}</span></div>
   <div class="tile"><span class="l">Spent</span><span class="v">{{ cur }}{{ spent|num }}</span><span class="d">{{ done|length }} job{{ 's' if done|length != 1 }}</span></div>
-</div>
+</div>{% endif %}
 <div class="groups svc">
-<section class="group">
+{% if items %}<section class="group">
   <h2 class="sec">Due</h2>
   <div class="group-b">
     {% for it in open %}
-    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(it.vin) }}{% endif %}{{ it.what }}{% if it.status == 'overdue' %}<span class="badge due">Overdue</span>{% elif it.status == 'soon' %}<span class="badge">Soon</span>{% endif %}<span class="set-s">{% if it.due_date %}{{ it.due_date.strftime('%b %-d, %Y') }}{% endif %}{% if it.due_miles %}{% if it.due_date %} or {% endif %}{{ it.due_miles|dist }} {{ u.dist }}{% if odos.get(it.vin) %}, {{ (it.due_miles - odos[it.vin])|dist }} {{ u.dist }} to go{% endif %}{% endif %}</span></span></summary>
+    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(it.vin) }}{% endif %}{{ it.what }}{% if it.status == 'overdue' %}<span class="badge due">Overdue</span>{% elif it.status == 'soon' %}<span class="badge">Soon</span>{% endif %}<span class="set-s">{% if it.due_date %}{{ it.due_date|dfmt('%b %-d, %Y') }}{% endif %}{% if it.due_miles %}{% if it.due_date %} or {% endif %}{{ it.due_miles|dist }} {{ u.dist }}{% if odos.get(it.vin) %}, {{ (it.due_miles - odos[it.vin])|dist }} {{ u.dist }} to go{% endif %}{% endif %}</span></span></summary>
       <div class="set-p">
         {% if it.every_months or it.every_miles %}<div class="set-row"><span class="set-l">Repeats</span><span class="set-v">every {% if it.every_months %}{{ it.every_months }} months{% endif %}{% if it.every_months and it.every_miles %} or {% endif %}{% if it.every_miles %}{{ it.every_miles|dist }} {{ u.dist }}{% endif %}</span></div>{% endif %}
         {% if it.notes %}<div class="set-row"><span class="set-l">Notes</span><span class="set-v">{{ it.notes }}</span></div>{% endif %}
@@ -28,12 +29,12 @@
     </details>
     {% else %}<div class="empty">Nothing due</div>{% endfor %}
   </div>
-</section>
+</section>{% endif %}
 <section class="group">
   <h2 class="sec">History{% if done %}<span class="sp"></span><span class="sec-n">{{ cur }}{{ spent|num }}</span>{% endif %}</h2>
   <div class="group-b">
     {% for it in done %}
-    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(it.vin) }}{% endif %}{{ it.what }}<span class="set-s">{% if it.done_on %}{{ it.done_on.strftime('%b %-d, %Y') }}{% endif %}{% if it.odometer %} · {{ it.odometer|dist }} {{ u.dist }}{% endif %}{% if it.files %} · {{ it.files|length }} file{{ 's' if it.files|length != 1 }}{% endif %}</span></span><span class="set-v">{% if it.cost %}{{ cur }}{{ it.cost|num(2) }}{% endif %}</span></summary>
+    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(it.vin) }}{% endif %}{{ it.what }}<span class="set-s">{% if it.done_on %}{{ it.done_on|dfmt('%b %-d, %Y') }}{% endif %}{% if it.odometer %} · {{ it.odometer|dist }} {{ u.dist }}{% endif %}{% if it.files %} · {{ it.files|length }} file{{ 's' if it.files|length != 1 }}{% endif %}</span></span><span class="set-v">{% if it.cost %}{{ cur }}{{ it.cost|num(2) }}{% endif %}</span></summary>
       <div class="set-p">
         {% if it.notes %}<div class="set-row"><span class="set-l">Notes</span><span class="set-v">{{ it.notes }}</span></div>{% endif %}
         {% for f in it.files or [] %}<div class="set-row"><span class="set-l"><a href="{{ root }}/service/files/{{ f.id }}" data-no-prefetch target="_blank" rel="noopener">{{ f.filename }}</a><span class="set-s">{{ f.size_text }}</span></span><span class="set-c"><button type="submit" form="unfile-{{ f.id }}" class="btn sm">Remove</button></span></div>{% endfor %}
@@ -64,11 +65,14 @@
   </div>
   {% for it in done %}{% for f in it.files or [] %}<form id="unfile-{{ f.id }}" method="post" action="{{ root }}/service/files/{{ f.id }}/delete" hidden>{{ hidden_vin() }}</form>{% endfor %}{% endfor %}
 </section>
+{% for b in tire_blocks %}{% if b.tire_history or b.tires %}<section class="group tires" id="tires{{ '-' ~ b.vin if car.garage }}">
+  {% if car.garage %}<h3 class="sub-h">{{ chip(b.vin) }}{{ b.name }}</h3>{% endif %}{% include "_tires.html" %}
+</section>{% endif %}{% endfor %}
 <section class="group">
   <h2 class="sec">Tire sets</h2>
   <div class="group-b">
     {% for t in tire_sets %}
-    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(t.vin) }}{% endif %}{{ t.name }}<span class="set-s">{{ t.fitted_on.strftime('%b %-d, %Y') }} → {% if t.removed_on %}{{ t.removed_on.strftime('%b %-d, %Y') }}{% else %}now{% endif %}{% if t.wh_per_mi %} · {{ t.wh_per_mi|econ }} {{ u.econ }}{% endif %}</span></span><span class="set-v"><b>{{ t.miles|dist }}</b> {{ u.dist }}</span></summary>
+    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(t.vin) }}{% endif %}{{ t.name }}<span class="set-s">{{ t.fitted_on|dfmt('%b %-d, %Y') }} → {% if t.removed_on %}{{ t.removed_on|dfmt('%b %-d, %Y') }}{% else %}now{% endif %}{% if t.wh_per_mi %} · {{ t.wh_per_mi|econ }}&nbsp;{{ u.econ }}{% endif %}</span></span><span class="set-v"><b>{{ t.miles|dist }}</b> {{ u.dist }}</span></summary>
       <div class="set-p">
         <div class="set-row"><span class="set-l">Drives on them</span><span class="set-v">{{ t.drives }}</span></div>
         {% if t.fitted_odometer %}<div class="set-row"><span class="set-l">Fitted at</span><span class="set-v">{{ t.fitted_odometer|dist }} {{ u.dist }}</span></div>{% endif %}
@@ -93,7 +97,7 @@
   <h2 class="sec">Tread</h2>
   <div class="group-b">
     {% for t in tread %}
-    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(t.vin) }}{% endif %}{{ t.measured_on.strftime('%b %-d, %Y') }}{% if t.odometer %}<span class="set-s">{{ t.odometer|dist }} {{ u.dist }}</span>{% endif %}</span><span class="set-v tread4"><span>{{ t.front_left|tread }}</span><span>{{ t.front_right|tread }}</span><span>{{ t.rear_left|tread }}</span><span>{{ t.rear_right|tread }}</span></span></summary>
+    <details class="set-x"><summary class="set-row"><span class="set-l">{% if car.garage %}{{ chip(t.vin) }}{% endif %}{{ t.measured_on|dfmt('%b %-d, %Y') }}{% if t.odometer %}<span class="set-s">{{ t.odometer|dist }} {{ u.dist }}</span>{% endif %}</span><span class="set-v tread4"><span>{{ t.front_left|tread }}</span><span>{{ t.front_right|tread }}</span><span>{{ t.rear_left|tread }}</span><span>{{ t.rear_right|tread }}</span></span></summary>
       <div class="set-p">
         {% if t.notes %}<div class="set-row"><span class="set-l">Notes</span><span class="set-v">{{ t.notes }}</span></div>{% endif %}
         <div class="acts"><form method="post" action="{{ root }}/service/tread/{{ t.id }}/delete">{{ hidden_vin() }}<button type="submit" class="btn sm danger">Remove</button></form></div>

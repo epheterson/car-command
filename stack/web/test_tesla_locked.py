@@ -123,6 +123,8 @@ def test_doors_and_windows_open():
     assert activity.stream_now({"_at": mins(1), "DoorState": {}}, now)["doors_open"] is False
     assert activity.stream_now({"_at": mins(1), "DoorState": {"DriverFront": False}}, now)["doors_open"] is False
     assert activity.stream_now({"_at": mins(1), "DoorState": {"DriverFront": False, "TrunkFront": True}}, now)["doors_open"] is True
+    opened = activity.stream_now({"_at": mins(1), "DoorState": {"TrunkFront": True}}, now)
+    assert opened["frunk_open"] is True and opened["trunk_open"] is False, "the buttons say which way each goes"
     closed = {"_at": mins(1), **{k: "Closed" for k in WINDOWS}}
     assert activity.stream_now(closed, now)["windows_open"] is False
     assert activity.stream_now({**closed, "RpWindow": "PartiallyOpen"}, now)["windows_open"] is True
@@ -131,8 +133,11 @@ def test_doors_and_windows_open():
     assert activity.stream_now({"_at": mins(1), "FdWindow": "Closed"}, now)["windows_open"] is False
 
 
-def test_a_stale_stream_says_nothing_about_the_lock():
-    assert activity.stream_now({"_at": mins(30), "Locked": True}, mins(0)) == {}
+def test_a_sleeping_car_keeps_its_last_word_on_the_lock_with_when_it_said_it():
+    # a car asleep changes none of these; the time lets a reader judge how old the word is
+    st = activity.stream_now({"_at": mins(300), "Locked": True, "FdWindow": "Closed", "ChargeLimitSoc": 80, "Gear": "D"}, mins(0))
+    assert st["locked"] is True and st["windows_open"] is False and st["charge_limit"] == 80.0
+    assert st["said_at"] == mins(300) and st["fresh"] is False and "driving" not in st
 
 
 class Rows:
@@ -200,3 +205,74 @@ def test_the_cars_state_has_locked_true_false_or_none(car):
     assert json.loads(json.dumps(app.jsonable(now)))["locked"] is False, "what /api/now answers"
     carried.pop("Locked")
     assert app.stored_vehicle(ALPHA)["locked"] is None, "unknown again, not the last answer"
+
+
+def test_the_stored_car_reads_its_newest_runs_on_their_indexes(car, monkeypatch):
+    """Ordered by last_date, which no index covers, the level, range and state lookups scanned
+    their whole tables on every Tesla page: 50 ms against a quarter of a millisecond."""
+    app, _ = car
+    seen = []
+
+    class Recording(VehicleDb):
+        def execute(self, sql="", *a, **k):
+            seen.append(" ".join(str(sql).split()))
+            return super().execute(sql, *a, **k)
+
+    monkeypatch.setattr(app, "db", lambda: Recording())
+    app.stored_vehicle(ALPHA)
+    runs = [s for s in seen if "FROM drive_levels" in s or "FROM drive_ranges" in s or "FROM states" in s]
+    assert len(runs) == 3 and all("ORDER BY l.first_date DESC" in s or "ORDER BY first_date DESC" in s for s in runs), runs
+    assert not [s for s in runs if "JOIN drives" in s], "the drive id is resolved first, so the index on it is used"
+
+
+class FeedDb(VehicleDb):
+    """A vehicle with a TeslaFi feed whose newest full row is `row`."""
+
+    def __init__(self, row):
+        self.row = row
+
+    def execute(self, sql="", *a, **k):
+        text = " ".join(str(sql).lower().split())
+        if "to_regclass" in text:
+            return Rows({"t": "cc_teslafi_rows"})
+        if "from cc_teslafi_rows" in text:
+            return Rows(self.row)
+        return super().execute(sql, *a, **k)
+
+
+def feed_row(at, **kw):
+    base = {
+        "at": at,
+        "fsd": None,
+        "trip": None,
+        "inside": "68.5",
+        "outside": "55.4",
+        "locked": "1",
+        "sentry": "0",
+        "charging_state": "Disconnected",
+        "charge_limit": "80",
+        "car_state": "Sleeping",
+        "level": "70",
+        "kwh_added": None,
+        "lat": None,
+        "lon": None,
+        "fd": "0",
+        "fp": "0",
+        "rd": "0",
+        "rp": "0",
+    }
+    return {**base, **kw}
+
+
+def test_where_the_stream_has_not_said_the_feed_gives_the_lock_and_windows_and_fresh_temperatures(car, monkeypatch):
+    app, carried = car
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(app, "db", lambda: FeedDb(feed_row(now - timedelta(minutes=5), rp="1")))
+    got = app.stored_vehicle(ALPHA)
+    assert got["locked"] is True and got["windows_open"] is True and got["inside_f"] == 68.5 and got["outside_f"] == 55.4
+    assert got["locked_at"] == now - timedelta(minutes=5)
+    carried.update(Locked=False)  # the car's own word wins
+    assert app.stored_vehicle(ALPHA)["locked"] is False
+    monkeypatch.setattr(app, "db", lambda: FeedDb(feed_row(now - timedelta(hours=3))))
+    old = app.stored_vehicle(ALPHA)
+    assert old["inside_f"] is None and old["outside_f"] is None  # an old reading is not the cabin now

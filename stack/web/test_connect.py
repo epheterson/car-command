@@ -372,9 +372,9 @@ def test_no_session_opens_the_exchange_and_nothing_else_in_api(world):
     app, client = world
     stranger = client.__class__(client.app, follow_redirects=False)
     assert stranger.post("/api/connect/token", json={}).status_code == 400
-    assert stranger.get("/api/now").status_code == 303
-    assert stranger.get("/api/stream").status_code == 303
-    assert stranger.get("/api/connect/token").status_code == 303, "only the POST is open"
+    assert stranger.get("/api/now").status_code == 401
+    assert stranger.get("/api/stream").status_code == 401
+    assert stranger.get("/api/connect/token").status_code == 401, "only the POST is open"
     assert stranger.post("/api/connect/token/x", json={}).status_code == 401, "exactly this path, not its neighbours"
     assert stranger.post("/api/whoami").status_code == 401
 
@@ -1028,3 +1028,15 @@ def test_minting_and_revoking_do_their_database_work_off_the_event_loop(world, m
     monkeypatch.setattr(app.auth, "store_set", lambda *a, **kw: (on_loop.append("store_set") if asyncio._get_running_loop() else None, real_set(*a, **kw))[1])
     assert client.post("/settings/tokens/anywhere", data={"anywhere": "on", "csrf_token": app.csrf}).status_code == 303
     assert on_loop == [], f"ran on the loop: {on_loop}"
+
+
+def test_the_app_stream_carries_the_garage_door_and_hides_whether_a_car_is_home_from_a_token_without_places(status_client, monkeypatch):
+    app, c = status_client
+    monkeypatch.setattr(app, "STREAM_MAX_S", 0)
+    monkeypatch.setattr(app, "STREAM_S", 0.01)
+    monkeypatch.setattr(app.garagedoor, "configured", lambda: True)
+    opened = "2026-10-17T22:00:00+00:00"
+    monkeypatch.setattr(app.garagedoor, "READER", app.garagedoor.Reader(get=lambda: {"state": "open", "last_changed": opened}))
+    text = c.get("/api/stream?vin=V1").text
+    door = [json.loads(b.split("data: ", 1)[1]) for b in text.split("\n\n") if b.startswith("event: garage")]
+    assert door == [{"state": "open", "open": True, "since": opened}]

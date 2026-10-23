@@ -3,22 +3,41 @@
    source writes its history, its pack and its look), the accounts, and the sources that can be
    added. Every edit opens beneath its row with its own Save: each is its own form, one car at a
    time, so there is no page-wide Save bar here. #}
+{% set cc_rows = (accounts or [])|selectattr('kind', 'in', ['lucid', 'carconnectivity'])|list %}
 {% import "_parts.html" as parts %}
 {% import "_info.html" as i %}
 {% import "_settings.html" as s %}
 {% macro switching(w) %}{% if w.switch %}{% set j = w.switch %}<p class="notice {{ 'err' if j.state == 'refused' else 'ok' }}" role="status">{% if j.state == 'switching' %}Switching to {{ j.name }}… reload in a minute.{% elif j.state == 'done' %}Switched to {{ j.name }}{% if j.boundary %} from {{ j.boundary|local }}{% endif %}; it rewrites what follows within the hour.{% else %}Not switched to {{ j.name }}: {{ j.problem }}{% endif %}</p>{% endif %}{% if w.silent %}<p class="notice warn" role="alert">{{ w.silent }}</p>{% endif %}{% endmacro %}
+{# Lucid and other brands sign in through CarConnectivity; where they are added, say so while it is down #}
+{# A refused Test and add / Sign in: the form it came from stays open with the reason inside it, not far above it #}
+{% macro paneerr(pane) %}{% if source_error and source_pane == pane %}<p class="notice err" role="alert">{{ source_error }}</p>{% endif %}{% endmacro %}
+{% macro noconn() %}{% if connector and not cc_rows %}<div class="notice warn" role="status">CarConnectivity is not running. Start it: <code>docker compose -f stack/docker-compose.yml up -d cc</code></div>{% endif %}{% endmacro %}
 {% macro state(s) %}<span class="sstate"><span class="sdot {{ s.state or 'none' }}" aria-hidden="true"></span><span>{{ s.text }}{% if s.at %}, {{ s.at|when }}{% endif %}</span></span>{% endmacro %}
+{# One brand's sign-in form; hide keeps a grouped brand's form out of sight until its picker choice is made #}
+{% macro ccform(cc, hide) %}{% set grouped = cc.key in (cc_groups or {}) %}<form class="{{ 'vwform' if grouped else 'set-p' }}" id="{{ 'cc-' ~ cc.key if grouped else 'cc-pane-' ~ cc.key }}" method="post" action="{{ root }}/settings/sources" data-wait="Saving; CarConnectivity installs and starts it next…"{% if hide %} hidden{% endif %}><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="kind" value="carconnectivity"><input type="hidden" name="connector" value="{{ cc.key }}">
+            {{ paneerr('cc-' ~ cc.key) }}
+            {% for f in cc.fields %}<div class="set-row stack"><label class="set-l" for="cc-{{ cc.key }}-{{ f.key }}">{{ f.label }}</label>{% if f.kind == 'select' %}<select class="sel" id="cc-{{ cc.key }}-{{ f.key }}" name="{{ f.key }}"{% if f.required %} required{% endif %}>{% for v, l in f.options %}<option value="{{ v }}"{% if source_pane == 'cc-' ~ cc.key and (source_typed or {}).get(f.key) == v %} selected{% endif %}>{{ l }}</option>{% endfor %}</select>{% else %}<input class="field wide" id="cc-{{ cc.key }}-{{ f.key }}" type="{{ 'password' if f.secret else 'email' if f.kind == 'email' else 'text' }}" name="{{ f.key }}"{% if not f.secret and source_pane == 'cc-' ~ cc.key and (source_typed or {}).get(f.key) %} value="{{ source_typed[f.key] }}"{% endif %} autocomplete="{{ 'username' if f.kind == 'email' else 'new-password' if f.secret else 'off' }}"{% if f.required %} required{% endif %}{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}>{% endif %}</div>{% endfor %}
+            <div class="acts"><span class="group-f">{{ cc.note }} <code>{{ cc.spec }}</code> · <a href="{{ cc.docs }}">docs</a></span><button type="submit" class="btn primary" {% if not vault_ready or connector %}disabled{% endif %}>Add</button></div>
+          </form>{% endmacro %}
 {% block section %}
+{% if connector and cc_rows %}<p class="notice warn" role="status">CarConnectivity is not running, so Lucid and other-brand accounts cannot sign in or update. Start it: <code>docker compose -f stack/docker-compose.yml up -d cc</code></p>{% endif %}
 {% if look_error %}<p class="notice err" role="alert">{{ look_error }}</p>{% endif %}
 <div class="groups">
 {% for c in (cars or []) %}{% set p = c.pack %}{% set idn = c.get('ident') %}
 <section class="group car" aria-label="{{ c.name }}">
   <div class="group-b">
-    <div class="set-row car-h"><span class="dot c{{ colors.get(c.vin, 0) }}" aria-hidden="true"></span><span class="set-l"><b class="car-nm">{{ c.name }}</b>{% if idn and idn.line %}<span class="set-s">{{ idn.line }}</span>{% elif c.model %}<span class="set-s">{{ c.model }}</span>{% endif %}</span></div>
+    <div class="set-row car-h"><span class="dot c{{ colors.get(c.vin, 0) }}" role="img" title="Chart colour" aria-label="Chart colour"></span><span class="set-l"><b class="car-nm">{{ c.name }}</b>{% if idn and idn.line %}<span class="set-s">{{ idn.line }}</span>{% elif c.model %}<span class="set-s">{{ c.model }}</span>{% endif %}</span></div>
     {% for src in c.sources %}
-    <div class="set-row"><span class="set-l">{{ src.name }}<span class="set-s">{% if loop.first %}Data from{% else %}Also{% endif %}{% if src.writes and c.sources|length > 1 %}, writes its history{% endif %}{% if loop.first and c.newest %} · newest {{ c.newest|when }}{% endif %}</span></span>
+    <div class="set-row"><span class="set-l">{{ src.name }}<span class="set-s">{% if not loop.first %}Also recording, to compare{% elif c.sources|length > 1 %}Writes its history{% else %}Its data and history{% endif %}{% if loop.first and c.newest %} · newest {{ c.newest|when }}{% endif %}</span></span>
       <span class="set-v">{% if src.state == 'ok' %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>working</span>{% elif src.state %}{{ state(src) }}{% elif loop.first %}no live source{% endif %}</span></div>
     {% endfor %}
+    {% set srcname = c.get('source_name') or c.name %}
+    <details class="set-x"><summary class="set-row"><span class="set-l">Name {% call i.info("Name") %}Shown on every page and picker instead of the source's name. The source keeps its own. Blank goes back to it.{% endcall %}</span><span class="set-v"{% if srcname != c.name %} title="Source name: {{ srcname }}"{% endif %}>{{ c.name }}</span></summary>
+      <form class="set-p" method="post" action="{{ root }}/settings/cars/{{ c.vin }}/name{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="set-row"><label class="set-l" for="nm-{{ c.vin }}">Shown as</label><div class="set-c"><input class="field" id="nm-{{ c.vin }}" name="name" value="{{ c.name }}" placeholder="{{ srcname }}" maxlength="40" autocomplete="off"></div></div>
+        <div class="acts"><button type="submit" class="btn primary">Save</button></div>
+      </form>
+    </details>
     {% if c.choices|length > 1 %}<div class="set-row stack"><span class="set-l">History from</span>{{ parts.writer_choice(c.vin, c.choices, root, csrf) }}</div>{% endif %}
     {% if c.switch or c.silent %}<div class="set-notes">{{ switching(c) }}</div>{% endif %}
     <details class="set-x pack"><summary class="set-row"><span class="set-l">Pack {% call i.info("Where the pack comes from") %}Used for every energy figure. From the car's source, else its model, unless you set it.{% endcall %}</span><span class="set-v">{% if p.kwh %}<b>{{ '%.1f kWh'|format(p.kwh) }}</b> · {{ p.text }}{% else %}unknown{% endif %}</span></summary>
@@ -28,7 +47,7 @@
       </form>
     </details>
     {% if idn %}{% set mine = colors.get(c.vin, 0) %}{% set det = idn.detected_paint %}{% set custom = idn.paint if idn.paint_set and not idn.paint.name else none %}
-    <details class="set-x"><summary class="set-row"><span class="set-l">Paint</span><span class="set-v looksum">{% if idn.paint %}<span class="paintsw" style="--paint:{{ idn.paint.hex }}"></span>{{ idn.paint.name or 'Your own paint' }}{% else %}No paint set{% endif %}{% if not c.get('matched') %} · <span class="dot c{{ mine }}" title="On charts"></span>{{ c.get('chart_name') or 'chart colour' }} on charts{% endif %}</span></summary>
+    <details class="set-x"><summary class="set-row"><span class="set-l">Paint</span><span class="set-v looksum">{% if idn.paint %}<span class="paintsw" style="--paint:{{ idn.paint.hex }}" role="img" title="Paint: {{ idn.paint.name or 'your own' }}" aria-label="Paint: {{ idn.paint.name or 'your own' }}"></span>{{ idn.paint.name or 'Your own paint' }}{% else %}No paint set{% endif %}{% if not c.get('matched') %} · <span class="dot c{{ mine }}" role="img" title="Chart colour: {{ c.get('chart_name') or 'chart colour' }}" aria-label="Chart colour: {{ c.get('chart_name') or 'chart colour' }}"></span>{{ c.get('chart_name') or 'chart colour' }} on charts{% endif %}</span></summary>
       <form class="set-p look" method="post" action="{{ root }}/settings/cars{{ q }}" data-look><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="look" value="{{ c.vin }}"><input type="hidden" name="chart_set_{{ c.vin }}" value="" data-chart-set>
         <fieldset><legend>Paint</legend>
           <label class="sw auto" style="--sw:{{ det.hex if det else 'transparent' }}" title="{{ 'As the car reports: ' ~ det.name if det else 'None' }}"><input type="radio" name="paint_{{ c.vin }}" value="auto" aria-label="{{ 'As the car reports, ' ~ det.name if det else 'None' }}"{% if c.get('auto_chart') is not none %} data-chart="{{ c.auto_chart }}"{% endif %}{% if not idn.paint_set %} checked{% endif %}><i></i></label>
@@ -52,18 +71,22 @@
 
 <section class="group" id="accounts">
   <h2 class="sec">Accounts</h2>
-  {% if source_error %}<p class="notice err" role="alert">{{ source_error }}</p>{% endif %}
-  {% if added and added.wait %}<p class="notice ok" role="status">{{ added.wait }}</p>{% elif added and added.pending %}<p class="notice ok" role="status">Signing in to Lucid (about ten seconds)…</p>{% elif added %}<p class="notice ok" role="status">Added {{ added.kind }}{% if added.name %} for {{ added.name }}{% endif %} ({{ added.last4 }}){% if added.battery is not none and added.battery is defined %}: {{ added.battery }}% right now{% endif %}{% if added.cars %}, following {{ added.cars|length }} car{{ 's' if added.cars|length != 1 }}{% endif %}.</p>{% endif %}
+  {% if source_error and not source_pane %}<p class="notice err" role="alert">{{ source_error }}</p>{% endif %}
+  {% for why in (env_problems or []) %}<p class="notice warn" role="status">TESLAFI_TOKENS in stack/.env: {{ why }}</p>{% endfor %}
+  {% if added %}<p class="notice ok" role="status">Added {{ added.kind }}{% if added.name %} for {{ added.name }}{% endif %} ({{ added.last4 }}){% if added.battery is not none and added.battery is defined %}: {{ added.battery }}% right now{% endif %}{% if added.cars %}, following {{ added.cars|length }} car{{ 's' if added.cars|length != 1 }}{% endif %}.</p>{% endif %}
   {% if tested %}<p class="notice {{ 'ok' if tested.ok else 'err' }}" role="status">{% if tested.ok %}Working{% if tested.name %}: {{ tested.name }}{% endif %}{% if tested.cars %}: {{ tested.cars|length }} car{{ 's' if tested.cars|length != 1 }}{% endif %}.{% else %}{{ tested.error }}{% endif %}</p>{% endif %}
   {% set unmoved = (env_sources or [])|selectattr('used')|list %}
-  {% if unmoved %}<div class="notice warn bar"><span>{{ unmoved|length }} source{{ 's are' if unmoved|length != 1 else ' is' }} still read from an older token setting {% call i.info("Moving") %}They're in stack/.env. Moving tests each and seals it in the app. .env is left as is.{% endcall %}</span><button type="submit" class="btn sm" form="src-move" {% if not vault_ready %}disabled{% endif %}>Move into the app</button></div>{% endif %}
   {% set stale = [] %}{% for kind in (moved or []) %}{% if (env_sources or [])|selectattr('kind', 'equalto', kind)|list %}{% if stale.append('TESLAFI_TOKENS' if kind == 'teslafi' else 'TESLAMATE_DB_URL') %}{% endif %}{% endif %}{% endfor %}
-  {% if stale %}<div class="notice warn">{{ 'An older token setting is' if stale|length == 1 else 'Older token settings are' }} no longer read {% call i.info("Tidying up") %}Delete {{ stale|join(' and ') }} from stack/.env.{% endcall %}</div>{% endif %}
+  {% set waiting = (accounts or [])|selectattr('where', 'equalto', 'app')|selectattr('state', 'equalto', 'wait')|list %}
+  <div class="group-b accts" id="accts" data-waiting="{{ 1 if waiting else 0 }}">
+    {% if unmoved or stale or not vault_ready %}<div class="set-notes">
+  {% if unmoved %}<div class="notice warn bar"><span>{{ unmoved|length }} source{{ 's are' if unmoved|length != 1 else ' is' }} set in .env {% call i.info("Moving") %}Read from stack/.env as they are. Moving tests each and seals it in the app; .env is left as is.{% endcall %}</span><button type="submit" class="btn sm" form="src-move" {% if not vault_ready %}disabled{% endif %}>Move into the app</button></div>{% endif %}
+  {% if stale %}<div class="notice warn">{{ 'An .env setting is' if stale|length == 1 else 'Some .env settings are' }} no longer read {% call i.info("Tidying up") %}Delete {{ stale|join(' and ') }} from stack/.env.{% endcall %}</div>{% endif %}
   {% if not vault_ready %}<div class="notice err">{{ vault_problem }}: run <code>make secret-key</code> on the host, then restart the site {% call i.info("Why") %}Accounts are sealed with that key. The command adds one and backs up .env.{% endcall %}</div>{% endif %}
-  <div class="group-b accts">
+    </div>{% endif %}
   {% for a in (accounts or []) %}{% if a.where == 'app' or not (a.where == 'env' and not a.get('used', true)) %}
     <div class="set-row acct{{ ' legacy' if a.where != 'app' }}"><span class="set-l">{% if a.kind == 'tesla' %}<a href="{{ root }}/settings/sources/tesla">{{ a.what }}</a>{% else %}{{ a.what }}{% endif %}<span class="set-s">{% if a.cars %}{{ a.cars|join(', ') }} · {% elif a.kind == 'teslamate' %}every car in it · {% endif %}{{ a.kept }}{% if a.kept_detail %} {% call i.info("Where") %}{{ a.kept_detail }}{% endcall %}{% endif %}</span><span class="set-s">{{ state(a) }}</span></span>
-      {% if a.where == 'app' %}<div class="set-c">{% if a.kind == 'carconnectivity' and a.config.get('state') != 'remove' %}<label class="check small"><input type="checkbox" name="uninstall" form="src-rm-{{ a.id }}" checked> and its plugin</label>{% endif %}{% if a.kind not in ('lucid', 'carconnectivity') %}<button type="submit" form="src-test-{{ a.id }}" class="btn sm">Test</button>{% endif %}<button type="submit" form="src-rm-{{ a.id }}" class="btn sm danger">Remove</button></div>{% endif %}
+      {% if a.where == 'app' %}<div class="set-c">{% if a.retry %}<a class="btn sm primary" href="#{{ 'add-lucid' if a.kind == 'lucid' else 'cc-' ~ (a.config.get('connector') or '') }}" data-open>Sign in again</a>{% endif %}{% if a.kind not in ('lucid', 'carconnectivity') %}<button type="submit" form="src-test-{{ a.id }}" class="btn sm">Test</button>{% endif %}{% if a.config.get('state') != 'remove' %}<button type="submit" form="src-rm-{{ a.id }}" class="btn sm danger">Remove</button>{% endif %}</div>{% endif %}
     </div>
     {% if a.where == 'app' and a.kind == 'tesla' and pw_card %}<div class="set-row sub"><span class="set-l">Powerwall<span class="set-s">{{ pw_card.text }}</span></span><div class="set-c"><a class="btn sm{{ ' primary' if pw_card.todo }}" href="{{ root }}/settings/sources/tesla#pw">{{ pw_card.action }}</a></div></div>{% endif %}
     {% if a.where == 'app' and a.kind == 'teslamate' and a.readable %}{% set followed = a.config.get('vins') or [] %}
@@ -85,37 +108,54 @@
     <details class="set-x" id="add-tesla"><summary class="set-row"><span class="set-l">Tesla<span class="set-s">Direct, with your own developer app</span></span></summary>
       <div class="set-p" id="pane-tesla"><div class="acts"><a class="btn primary" href="{{ root }}/settings/sources/tesla">Connect Tesla</a></div></div>
     </details>
-    <details class="set-x" id="add-teslafi"><summary class="set-row"><span class="set-l">TeslaFi<span class="set-s">One API token per car</span></span></summary>
+    <details class="set-x" id="add-teslafi"{% if source_pane == 'add-teslafi' %} open data-err{% endif %}><summary class="set-row"><span class="set-l">TeslaFi<span class="set-s">One API token per car</span></span></summary>
       <form class="set-p" id="pane-teslafi" method="post" action="{{ root }}/settings/sources" data-wait="Checking with TeslaFi…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="kind" value="teslafi">
+        {{ paneerr('add-teslafi') }}
         <div class="set-row stack"><label class="set-l" for="add-tf-token">TeslaFi token</label><input class="field wide" id="add-tf-token" type="password" name="token" autocomplete="off" required placeholder="TeslaFi › Settings › Advanced › API"></div>
         <div class="acts"><button type="submit" class="btn primary" {% if not vault_ready %}disabled{% endif %}>Test and add</button></div></form>
     </details>
-    <details class="set-x" id="add-teslamate"><summary class="set-row"><span class="set-l">TeslaMate<span class="set-s">Its database</span></span></summary>
+    <details class="set-x" id="add-teslamate"{% if source_pane == 'add-teslamate' %} open data-err{% endif %}><summary class="set-row"><span class="set-l">TeslaMate, live<span class="set-s">Follow its database as it logs</span></span></summary>
       <form class="set-p" id="pane-teslamate" method="post" action="{{ root }}/settings/sources" data-wait="Reading the TeslaMate database…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="kind" value="teslamate">
+        {{ paneerr('add-teslamate') }}
         <div class="set-row stack"><label class="set-l" for="add-tm-url">TeslaMate database</label><input class="field wide" id="add-tm-url" type="password" name="url" autocomplete="off" required placeholder="postgresql://teslamate:…@host:5432/teslamate"></div>
         <div class="acts"><button type="submit" class="btn primary" {% if not vault_ready %}disabled{% endif %}>Test and add</button></div></form>
     </details>
-    <details class="set-x" id="add-lucid"><summary class="set-row"><span class="set-l">Lucid<span class="set-s">The password is not kept</span></span></summary>
+    <details class="set-x" id="add-lucid"{% if source_pane == 'add-lucid' %} open data-err{% endif %}><summary class="set-row"><span class="set-l">Lucid<span class="set-s">Only its sign-in token is kept, never the password</span></span></summary>
       <form class="set-p" id="pane-lucid" method="post" action="{{ root }}/settings/sources" data-wait="Signing in to Lucid…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="kind" value="lucid">
+        {{ noconn() }}{{ paneerr('add-lucid') }}
         <div class="set-row stack"><label class="set-l" for="add-lu-email">Lucid email</label><input class="field wide" id="add-lu-email" type="email" name="email" autocomplete="username" required></div>
         <div class="set-row stack"><label class="set-l" for="add-lu-pw">Password</label><input class="field wide" id="add-lu-pw" type="password" name="password" autocomplete="current-password" required></div>
-        <div class="acts"><button type="submit" class="btn primary" {% if not vault_ready %}disabled{% endif %}>Sign in</button></div></form>
+        <div class="acts">{% if connector %}<span class="muted small">Waiting for CarConnectivity</span>{% endif %}<button type="submit" class="btn primary" {% if not vault_ready or connector %}disabled{% endif %}>Sign in</button></div></form>
     </details>
-    <details class="set-x" id="add-carconnectivity"><summary class="set-row"><span class="set-l">Other brand<span class="set-s">Through a CarConnectivity connector</span></span></summary>
+    <details class="set-x" id="add-carconnectivity"{% if source_pane and source_pane.startswith('cc-') %} open{% endif %}><summary class="set-row"><span class="set-l">Other brand<span class="set-s">Through a CarConnectivity connector</span></span></summary>
       <div class="set-p" id="pane-carconnectivity">
+        {{ noconn() }}
         <div class="group-f">Sign-in sealed, handed only to CarConnectivity {% call i.info("How it is added") %}CarConnectivity installs the brand's plugin at the release shown, signs in and restarts. Place lookups are rounded to about 100 m.{% endcall %}</div>
-        {% for cc in (cc_catalogue or []) %}
-        <details class="set-x brand" id="cc-{{ cc.key }}"><summary class="set-row"><span class="set-l">{{ cc.name }}</span></summary>
-          <form class="set-p" id="cc-pane-{{ cc.key }}" method="post" action="{{ root }}/settings/sources" data-wait="Saving; CarConnectivity installs and starts it next…"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="kind" value="carconnectivity"><input type="hidden" name="connector" value="{{ cc.key }}">
-            {% for f in cc.fields %}<div class="set-row stack"><label class="set-l" for="cc-{{ cc.key }}-{{ f.key }}">{{ f.label }}</label>{% if f.kind == 'select' %}<select class="sel" id="cc-{{ cc.key }}-{{ f.key }}" name="{{ f.key }}"{% if f.required %} required{% endif %}>{% for v, l in f.options %}<option value="{{ v }}">{{ l }}</option>{% endfor %}</select>{% else %}<input class="field wide" id="cc-{{ cc.key }}-{{ f.key }}" type="{{ 'password' if f.secret else 'email' if f.kind == 'email' else 'text' }}" name="{{ f.key }}" autocomplete="{{ 'username' if f.kind == 'email' else 'new-password' if f.secret else 'off' }}"{% if f.required %} required{% endif %}{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}>{% endif %}</div>{% endfor %}
-            <div class="acts"><span class="group-f">{{ cc.note }} <code>{{ cc.spec }}</code> · <a href="{{ cc.docs }}">docs</a></span><button type="submit" class="btn primary" {% if not vault_ready %}disabled{% endif %}>Add</button></div>
-          </form>
+        {% set grp = cc_groups or {} %}
+        {% for cc in (cc_catalogue or []) %}{% set g = grp.get(cc.key) %}
+        {% if not g %}
+        <details class="set-x brand" id="cc-{{ cc.key }}"{% if source_pane == 'cc-' ~ cc.key %} open data-err{% endif %}><summary class="set-row"><span class="set-l">{{ cc.name }}</span></summary>
+          {{ ccform(cc, false) }}
         </details>
+        {% elif g.first == cc.key %}
+        {# One row for a brand with several connectors: a picker chooses which sign-in shows. A refused add reopens the one it came from. #}
+        {% set picked = source_pane[3:] if source_pane and source_pane[3:] in g.choices else '' %}
+        <details class="set-x brand" id="cc-group-{{ g.id }}"{% if picked %} open data-err{% endif %}><summary class="set-row"><span class="set-l">{{ g.name }}</span></summary>
+          <div class="set-p">
+            <div class="set-row stack"><label class="set-l" for="cc-pick-{{ g.id }}">{{ g.label }}</label><select class="sel" id="cc-pick-{{ g.id }}" data-pick>
+              <option value=""{% if not picked %} selected{% endif %} disabled>Choose…</option>
+              {% for k, lab in g.choices.items() %}<option value="cc-{{ k }}"{% if picked == k %} selected{% endif %}>{{ lab }}</option>{% endfor %}
+            </select></div>
+            {% for k in g.choices %}{% for m in (cc_catalogue or []) if m.key == k %}{{ ccform(m, picked != k) }}{% endfor %}{% endfor %}
+          </div>
+        </details>
+        {% endif %}
         {% endfor %}
       </div>
     </details>
   </div>
 </section>
+{% if imp is defined and imp %}{% include "_import.html" %}{% endif %}
 <script>
 // A paint picked with the chart colour left alone takes the free chart colour that matches it;
 // a chart colour picked by hand stays (and the server keeps it).
@@ -131,6 +171,42 @@ document.querySelectorAll("form[data-look]").forEach(f => {
     }
   });
 });
+// "Sign in again" opens the form it points at, and the e-mail field takes the cursor.
+document.querySelectorAll("a[data-open]").forEach(a => a.addEventListener("click", e => {
+  const d = document.querySelector(a.getAttribute("href"));
+  if (!d) return;
+  e.preventDefault();
+  const parent = d.closest("#add-carconnectivity"); if (parent) parent.open = true;
+  const grp = d.closest("details.brand"); if (grp) { grp.open = true; const pk = grp.querySelector("[data-pick]"); if (pk) { pk.value = d.id; pk.dispatchEvent(new Event("change")); } }
+  d.open = true; d.scrollIntoView({ block: "center" });
+  const f = d.querySelector("input"); if (f) f.focus({ preventScroll: true });
+}));
+// A sign-in or a plugin install under way: the account rows look again every few seconds and show how it went; once none is waiting,
+// the page reloads so the new car shows too. Stops after a quarter hour, and rests while the tab is hidden.
+(() => {
+  const box = document.getElementById("accts");
+  if (!box || box.dataset.waiting !== "1") return;
+  const until = Date.now() + 15 * 60 * 1000;
+  const tick = async () => {
+    if (Date.now() > until) return;
+    if (!document.hidden) {
+      try {
+        const html = await (await fetch(location.pathname + location.search, { credentials: "same-origin", headers: { Accept: "text/html" } })).text();
+        const next = new DOMParser().parseFromString(html, "text/html").getElementById("accts");
+        if (next && next.dataset.waiting !== "1") { location.reload(); return; }
+        if (next && !box.contains(document.activeElement)) box.innerHTML = next.innerHTML;
+      } catch (e) { /* the site is restarting: look again */ }
+    }
+    setTimeout(tick, 3000);
+  };
+  setTimeout(tick, 3000);
+})();
+// A brand with several connectors: its picker shows the one sign-in form chosen.
+document.querySelectorAll("select[data-pick]").forEach(p => p.addEventListener("change", () => {
+  p.closest(".set-p").querySelectorAll("form.vwform").forEach(f => { f.hidden = f.id !== p.value; });
+}));
+// A refused add: its form is already open with the reason in it; bring it into view.
+const refused = document.querySelector("details[data-err]"); if (refused) refused.scrollIntoView({ block: "center" });
 // Add a source: one kind open at a time.
 document.querySelectorAll("#add details.set-x:not(.brand)").forEach((d, _, all) => d.addEventListener("toggle", () => { if (d.open) all.forEach(o => { if (o !== d) o.open = false; }); }));
 </script>

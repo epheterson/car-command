@@ -122,6 +122,9 @@ def test_only_the_identity_fields_of_vehicle_data_are_kept():
     }
     got = identity.tesla_config(body)
     assert got == {"car_type": "modely", "trim_badging": "74d", "exterior_color": "MidnightSilver", "wheel_type": "Apollo19", "roof_color": "RoofColorGlass", "perf_config": "P2"}
+    fitted = identity.tesla_config({"response": {"vehicle_config": {"has_seat_cooling": False, "rear_seat_heaters": 1}}})
+    assert fitted == {"seat_cooling": False, "rear_seat_heaters": True}
+    assert identity.describe("5YJ3E1EA0SF000001", "Tesla", "Model 3", {"detected": fitted})["fitted"] == fitted
     assert identity.tesla_config({}) == {} and identity.tesla_config(None) == {} and identity.tesla_config({"response": {"vehicle_config": {"exterior_color": ""}}}) == {}
 
 
@@ -706,8 +709,8 @@ def test_the_garage_cards_and_the_switcher_show_each_car():
         for v in VEHICLES
     ]
     html = _env().get_template("garage.html").render(**BASE, car={"vin": "all", "name": "All cars", "garage": True}, cars=cars, today={}, line=[], ticks=[])
-    assert "2018 Tesla Model 3 Long Range · Pearl White" in html and "2022 Tesla Model Y · Midnight Silver" in html
-    assert html.count('class="cc-id"') == 2 and "cars.svg" not in html
+    # the year, make, model and paint belong to the car's own page; All cars stays a glance
+    assert "Pearl White" not in html and "Midnight Silver" not in html and 'class="cc-id"' not in html and "cars.svg" not in html
     assert '<span class="dot c7"></span>' in html and "paintdot" not in html, "the switcher's dot is the chart colour alone"
     assert "<symbol" not in html, "the sprite is linked, never inlined"
 
@@ -822,6 +825,7 @@ def test_saving_a_look_forgets_the_identities_after_the_commit(monkeypatch):
     class Req:
         scope = {"root_path": ""}
         query_params = {}
+        headers = {}
 
         async def form(self):
             return Form(look="V1", csrf_token="x")
@@ -934,3 +938,63 @@ def test_model_code_from_a_source_reads_as_the_model_name():
     assert identity.model_of("5YJSA1E40LF000001", "Tesla", "lychee", None) == ("Model S", None)
     assert identity.describe("5YJ3E1EA0JF000001", "Tesla", "model3", None)["title"].endswith("Tesla Model 3")
     assert identity.model_of(None, "Lucid", "Air", None) == ("Air", None)
+
+
+def test_the_map_cells_are_kept_warm_in_the_background_never_built_on_a_request(monkeypatch):
+    """Cold, the Map's cells took 0.8-1 s after every deploy and every hour; the warmer builds
+    them at start and every 45 minutes, inside the hour a request keeps them."""
+    app = _app(monkeypatch)
+    monkeypatch.setattr(app, "all_vehicles", lambda: [{"vin": "V1", "name": "Alpha"}, {"vin": "V2", "name": "Bravo"}])
+    calls = []
+    monkeypatch.setattr(app, "driveprint", lambda vin, fresh=False: calls.append(("cells", vin, fresh)) or [])
+    monkeypatch.setattr(app, "driveprint_body", lambda key, fresh=False: calls.append(("body", key, fresh)) or b"[]")
+
+    class Stop(Exception):
+        pass
+
+    def sleep(s):
+        calls.append(("sleep", s))
+        raise Stop
+
+    monkeypatch.setattr(app.time, "sleep", sleep)
+    with pytest.raises(Stop):
+        app.warm_driveprints()
+    assert calls == [("cells", "V1", True), ("cells", "V2", True), ("body", app.GARAGE, True), ("body", "V1", True), ("body", "V2", True), ("sleep", 2700)]
+    src = (HERE / "app.py").read_text()
+    route = src[src.index('@site.get("/api/driveprint")') :][:400]
+    assert "fresh=True" not in route, "a request reads the cache"
+
+
+def test_a_car_joining_the_garage_never_recolours_one_already_drawn():
+    """The walkthrough's case: a third car sorted before the second and its auto colour moved from coral to teal."""
+    deep = identity.PAINTS["deepblue"][1]
+    first = identity.chart_colors(["Bravo", "Comet"], {}, {"Bravo": deep, "Comet": None})
+    kept = dict(first)
+    after = identity.chart_colors(["Bravo", "Charlie", "Comet"], {}, {"Bravo": deep, "Charlie": deep}, kept)
+    assert after["Bravo"] == first["Bravo"] and after["Comet"] == first["Comet"], "kept colours stay"
+    assert after["Charlie"] not in (after["Bravo"], after["Comet"])
+
+
+def test_a_hand_picked_colour_still_beats_a_kept_one():
+    got = identity.chart_colors(["A", "B"], {"B": 3}, None, {"A": 3})
+    assert got["B"] == 3 and got["A"] != 3
+
+
+def test_editing_a_cars_look_forgets_its_kept_colour():
+    src = (HERE / "identity.py").read_text()
+    assert "chart_auto = NULL" in src and "ADD COLUMN IF NOT EXISTS chart_auto" in src
+
+
+def test_the_page_keeps_each_cars_first_colour_once(monkeypatch):
+    app = _app(monkeypatch)
+    rows = {"V1": {"chart": None, "chart_auto": None}, "V2": {"chart": 5, "chart_auto": None}}
+    monkeypatch.setattr(app, "identity_rows", lambda: (rows, {}))
+    monkeypatch.setattr(app, "car_identities", lambda vehicles: {v["vin"]: {"paint": None} for v in vehicles})
+    wrote = []
+    monkeypatch.setattr(app, "_keep_colors", lambda fresh: wrote.append(dict(fresh)))
+    cars = [{"vin": "V1"}, {"vin": "V2"}]
+    got = app.car_colors(cars)
+    assert wrote == [{"V1": got["V1"]}], "only the car with no choice and nothing kept is written down"
+    rows["V1"]["chart_auto"] = got["V1"]
+    wrote.clear()
+    assert app.car_colors([{"vin": "V0"}, *cars])["V1"] == got["V1"] and wrote == [{"V0": wrote[0]["V0"]}], "a car joining first in the list leaves V1 alone"

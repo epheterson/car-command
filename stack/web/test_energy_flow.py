@@ -122,14 +122,10 @@ def pw_section(html):
     return html[html.index('id="pw"') :]
 
 
-def test_the_flow_is_on_the_tesla_page_with_its_numbered_line_and_asks_for_the_sign_in_first(tesla, client):  # noqa: F811
+def test_the_flow_is_on_the_tesla_page_as_rows_and_asks_for_the_sign_in_first(tesla, client):  # noqa: F811
     html = client.get("/settings/sources/tesla").text
     section = pw_section(html)
-    assert '<ol class="pwline"' in section and [t for t in ("Signed in", "Powerwall", "History") if t in section.split("</ol>")[0]] == [
-        "Signed in",
-        "Powerwall",
-        "History",
-    ]
+    assert 'class="pwline"' not in section and [t for t in ("Signed in", "Your Powerwall", "History") if t in section] != [], "the steps are rows once, no second list"
     assert 'href="/settings/sources/tesla/start?energy=1"' in section and "Sign in with Tesla" in section
 
 

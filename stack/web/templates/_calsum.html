@@ -1,0 +1,28 @@
+{# A month's or a year's totals as a switch: Driven, Charged, Cost, each with its figure; the
+   one chosen shows its bar strips (a bar a day, or a bar a month and a bar a week) and the
+   rest stay one tap away; `est` on a measure marks its total an estimate. `ms` is calview.month_strips or year_strips; `quiet` the line of
+   supporting figures under it. Without script the first measure shows. #}
+{% import "_strips.html" as st %}
+{% macro calsum(ms, what, quiet) -%}
+<section class="calsum" aria-label="Totals">
+  <div class="calsum-tabs" role="group" aria-label="Show">{% for m in ms %}<button type="button" class="calsum-tab" data-m="{{ m.key }}" aria-pressed="{{ 'true' if loop.first else 'false' }}"><span class="l">{{ m.label }}</span><span class="v">{% if m.est %}{{ est(true, 'part priced at the regional average') }}{% endif %}{{ m.total }}</span></button>{% endfor %}</div>
+  {% for m in ms %}<div class="calsum-s{{ ' two' if m.weeks }}" data-m="{{ m.key }}"{% if not loop.first %} hidden{% endif %}>
+    {% if m.weeks %}{{ st.strip(m.months, m.label ~ ' each month of ' ~ what) }}{{ st.strip(m.weeks, m.label ~ ' each week of ' ~ what, 'wk') }}{% else %}{{ st.strip(m.strip, m.label ~ ' each day of ' ~ what) }}{% endif %}
+  </div>{% endfor %}
+  {% if quiet %}<div class="calsum-q">{{ quiet }}</div>{% endif %}
+</section>
+<script>
+(function () {
+  var box = document.currentScript.previousElementSibling;
+  var tabs = box.querySelectorAll(".calsum-tab"), panes = box.querySelectorAll(".calsum-s");
+  tabs.forEach(function (t) {
+    t.addEventListener("click", function () {
+      var k = t.getAttribute("data-m");
+      tabs.forEach(function (o) { o.setAttribute("aria-pressed", o === t ? "true" : "false"); });
+      panes.forEach(function (p) { p.hidden = p.getAttribute("data-m") !== k; });
+      document.body.setAttribute("data-calm", k);  // the rest of the page follows: a year's small months show the same measure
+    });
+  });
+})();
+</script>
+{%- endmacro %}

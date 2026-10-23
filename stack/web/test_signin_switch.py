@@ -43,6 +43,7 @@ def world(monkeypatch):
     monkeypatch.setattr(app, "db", lambda: Conn())
     monkeypatch.setattr(auth, "store_get", lambda conn, k: stored.get(k))
     monkeypatch.setattr(auth, "store_set", lambda conn, k, v: stored.__setitem__(k, v))
+    monkeypatch.setattr(auth, "store_delete", lambda conn, k: stored.pop(k, None), raising=False)
     monkeypatch.setattr(app.recorder, "notify", lambda text, kind="other": told.append((kind, text)))
     monkeypatch.setattr(app, "FAILURES", auth.Failures())
     monkeypatch.setattr(app, "TOKENS", {})
@@ -50,6 +51,8 @@ def world(monkeypatch):
     monkeypatch.setitem(app.AUTH, "enabled", False)
     monkeypatch.setitem(app.AUTH, "secret", auth.new_secret())
     monkeypatch.setitem(app.AUTH, "password", None)
+    monkeypatch.setitem(app.AUTH, "epoch", 0)
+    monkeypatch.setitem(app.AUTH, "revoked", {})
     client = TestClient(app.server, follow_redirects=False, client=("127.0.0.1", 50000))  # the machine itself, as the socket shows it
     app.stored, app.told = stored, told
     yield app, client
@@ -72,7 +75,7 @@ def sign_in(app, client):
     import auth
 
     client.cookies.clear()
-    client.cookies.set(auth.SESSION_COOKIE, auth.new_session(app.AUTH["secret"]))
+    client.cookies.set(auth.SESSION_COOKIE, app.new_session())
 
 
 # ---- turning on
@@ -86,7 +89,7 @@ def test_turning_on_stores_the_password_and_the_flag_and_signs_this_browser_in(w
     assert r.status_code == 303 and r.headers["location"].endswith("/settings/access?saved=signin")
     assert auth.verify_password(app.stored["password"], PASSWORD) and app.stored["enabled"] == "1"
     assert app.AUTH["enabled"] is True, "live, no restart"
-    assert auth.valid_session(app.AUTH["secret"], r.cookies.get(auth.SESSION_COOKIE)), "this browser is signed in at once"
+    assert app.session_ok(r.cookies.get(auth.SESSION_COOKIE)), "this browser is signed in at once"
     assert [k for k, _ in app.told] == ["login"] and "sign-in" in app.told[0][1].lower()
 
 
@@ -115,7 +118,7 @@ def test_a_password_set_in_the_environment_is_not_asked_for(world, monkeypatch):
     app, client = world
     monkeypatch.setenv("CC_PASSWORD", PASSWORD)
     r = client.post("/settings/signin/on", data={"code": app.auth.setup_code(app.AUTH["secret"]), "csrf_token": csrf(app, client)})
-    assert r.status_code == 303 and app.AUTH["enabled"] is True and set(app.stored) <= {"enabled", "secret"} and "password" not in app.stored, "the switch only, the password stays in .env"
+    assert r.status_code == 303 and app.AUTH["enabled"] is True and set(app.stored) <= {"enabled", "secret", "epoch"} and "password" not in app.stored, "the switch only, the password stays in .env"
 
 
 def test_turning_on_when_it_is_on_changes_nothing(world, monkeypatch):
@@ -198,6 +201,17 @@ def test_turned_on_here_then_a_restart_keeps_the_password_and_the_switch(world):
     app.AUTH.update(enabled=False, password=None)  # a fresh process before load_auth
     app.load_auth()
     assert app.AUTH["enabled"] is True and app.auth.verify_password(app.AUTH["password"], PASSWORD)
+
+
+def test_a_signing_key_in_the_environment_takes_the_old_one_out_of_the_database(world, monkeypatch):
+    """Then a dump of the database alone cannot mint a session, and the old key cannot come back if .env loses its own."""
+    app, client = world
+    app.stored["secret"] = "kept-in-the-database"
+    app.load_auth()
+    assert app.AUTH["secret"] == "kept-in-the-database" and app.stored["secret"] == "kept-in-the-database", "no key in .env: the database's is used"
+    monkeypatch.setenv("CC_SECRET", "pinned-in-env")
+    app.load_auth()
+    assert app.AUTH["secret"] == "pinned-in-env" and "secret" not in app.stored
 
 
 # ---- turning off
@@ -303,19 +317,20 @@ def test_turning_on_rotates_the_signing_key_so_old_cookies_stay_dead(world):
     old_cookie = auth.new_session(old_secret)  # a session from before an earlier turn-off
     r = turn_on(app, client)
     assert r.status_code == 303 and app.AUTH["secret"] != old_secret and app.stored["secret"] == app.AUTH["secret"]
-    assert not auth.valid_session(app.AUTH["secret"], old_cookie)
-    assert auth.valid_session(app.AUTH["secret"], r.cookies.get(auth.SESSION_COOKIE)), "while this browser is signed in under the new one"
+    assert not app.session_ok(old_cookie)
+    assert app.session_ok(r.cookies.get(auth.SESSION_COOKIE)), "while this browser is signed in under the new one"
 
 
-def test_a_signing_key_set_in_the_environment_is_not_rotated_and_the_page_says_so(world, monkeypatch):
+def test_a_signing_key_set_in_the_environment_is_kept_and_older_sessions_still_end(world, monkeypatch):
     app, client = world
     monkeypatch.setenv("CC_SECRET", "pinned-by-the-owner")
     monkeypatch.setitem(app.AUTH, "secret", "pinned-by-the-owner")
+    old_cookie = app.new_session()
     turn_on(app, client)
-    assert "secret" not in app.stored
-    html = render_access(auth_enabled=True, saved=True, said="signin", secret_in_env=True)
-    assert "older sessions stay valid" in html and "CC_SECRET" in html
-    assert "older sessions" not in render_access(auth_enabled=True, saved=True, said="signin", secret_in_env=False)
+    assert "secret" not in app.stored and app.AUTH["secret"] == "pinned-by-the-owner"
+    assert not app.session_ok(old_cookie), "the next session generation ends it, whatever signed it"
+    html = render_access(auth_enabled=True, saved=True, said="signin")
+    assert "signed in on this device" in html and "older sessions" not in html
 
 
 def test_from_anywhere_but_the_machine_itself_turning_on_needs_the_setup_code(world):
@@ -551,3 +566,14 @@ def test_a_small_chunked_form_still_reaches_its_route(world):
 
     r = client.post("/login", content=small(), headers={"content-type": "application/x-www-form-urlencoded"})
     assert r.status_code != 413
+
+
+def test_every_sign_in_switch_alert_reads_as_a_sentence():
+    """"Sign-in was turned set to use…" went out once: each caller now says the whole verb."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).parent / "app.py").read_text()
+    whats = re.findall(r'switch_alert\(request, f?"([^"]+)"\)', src)
+    assert whats and all(w.startswith(("turned ", "set to ")) for w in whats), whats
+    assert 'f"Sign-in was {what} from' in src

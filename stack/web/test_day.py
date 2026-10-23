@@ -122,7 +122,10 @@ def test_elevation_profile_in_feet_ignores_jitter():
     track = [{"at": T(8, i), "elevation": e} for i, e in enumerate([100.0, 100.5, 110.0, 105.0, 105.5, 130.0, None, 90.0])]
     series, climb, descent = elevation_profile(track)
     assert len(series) == 7 and round(series[0][1]) == 328
-    assert round(climb) == round((9.5 + 24.5) * 3.28084) and round(descent) == round((5 + 40) * 3.28084)
+    assert round(climb) == round(30 * 3.28084) and round(descent) == round(40 * 3.28084), "100→130 up (the 5 m dip is noise), 130→90 down"
+    # a metre a reading is under the noise floor each step, and still a 20 m climb
+    _s, climb, descent = elevation_profile([{"at": T(8, i), "elevation": 100.0 + i} for i in range(21)])
+    assert round(climb) == round(20 * 3.28084) and descent == 0
 
 
 def test_time_at_places_follows_the_drives():
@@ -203,3 +206,52 @@ def test_parked_rows_carry_their_place_for_the_naming_card():
     assert [r["refs"] for r in rows if r["kind"] == "drive"] == [[home, elm]] and [r["refs"] for r in rows if r["kind"] == "charge"] == [[grocer]]
     rows = day_sessions([dict(drives[0], to="?", to_ref=None)], [], [], [(T(0), 80.0)], T(0), T(23, 59))
     assert [r["refs"] for r in rows if r["kind"] == "parked"] == [[home], []], "an unknown end: nothing to tap"
+
+
+def test_what_a_charge_bought_prices_the_miles_it_paid_for():
+    from day import bought
+
+    b = {"miles": 120.0, "battery_used": 40.0, "rated_used": 150.0, "kwh": 36.0, "efficiency": 0.8}
+    got = bought(b, cost=6.0, kwh_charged=40.0, capacity_kwh=80.0)
+    assert got["used_kwh"] == 36.0 and got["wh_per_mi"] == 300.0, "rated range × kWh a rated mile first"
+    assert round(got["cost_per_mi"], 4) == round(0.15 * 36 / 120, 4), "this charge's price a kWh × what the miles used"
+    got = bought(dict(b, kwh=None), cost=None, kwh_charged=40.0, capacity_kwh=80.0)
+    assert got["used_kwh"] == 32.0 and got["cost_per_mi"] is None, "no rated figure: the battery points × the pack; no price, no cost a mile"
+    assert bought(dict(b, miles=0.4), 6.0, 40.0, 80.0)["wh_per_mi"] is None, "under a mile driven is no efficiency"
+
+
+def test_gps_height_noise_is_not_a_climb_and_a_real_hill_is():
+    from day import elevation_profile
+
+    flat = [{"at": T(8, i % 60), "elevation": 200.0 + (4 if i % 2 else -4)} for i in range(120)]
+    _s, climb, descent = elevation_profile(flat)
+    assert climb < 5 and descent < 5, "±4 m of noise on a flat road is no climb"
+    hill = [{"at": T(8, i % 60), "elevation": 100.0 + min(i, 100) + (3 if i % 2 else -3)} for i in range(130)]
+    _s, climb, descent = elevation_profile(hill)
+    assert abs(climb / 3.28084 - 100) <= 8 and descent / 3.28084 <= 8, "a 100 m hill climbs about 100 m, noise and all"
+
+
+def test_a_stretch_driven_out_of_reach_is_not_parked_time_or_phantom_drain():
+    t = datetime(2026, 10, 15, 23, 16, tzinfo=timezone.utc)
+    rows = [
+        {"kind": "parked", "start": t, "end": t + timedelta(minutes=81), "duration": timedelta(minutes=81), "range_loss": 6.0, "moved_mi": 5.0},
+        {"kind": "parked", "start": t + timedelta(hours=2), "end": t + timedelta(hours=4), "duration": timedelta(hours=2), "range_loss": 0.5},
+    ]
+    tot = day_totals(rows, 75.0)
+    assert tot["parked_h"] == 2.0 and tot["parked_range_loss"] == 0.5
+
+
+def test_a_charge_over_midnight_is_shown_both_days_and_counted_on_the_first():
+    from datetime import datetime, timedelta, timezone
+
+    import day
+
+    d0 = datetime(2026, 10, 12, 7, 0, tzinfo=timezone.utc)  # local midnight, Pacific
+    c = {"id": 9, "session_start_date": d0 - timedelta(hours=3), "session_end_date": d0 + timedelta(hours=6), "kwh": 61.8, "cost": 19.43}
+    rows = day.day_sessions([], [c], [], [], d0, d0 + timedelta(days=1))
+    (row,) = [r for r in rows if r["kind"] == "charge"]
+    assert row["carried"] is True
+    totals = day.day_totals(rows, 75.0)
+    assert totals["kwh"] == 0 and totals["cost"] == 0 and totals["charges"] == 0
+    before = day.day_sessions([], [c], [], [], d0 - timedelta(days=1), d0)
+    assert day.day_totals(before, 75.0)["kwh"] == 61.8
