@@ -2,6 +2,16 @@
 
 Newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-10-23
+
+Dependency updates.
+
+### Changed
+- **The site's libraries:** FastAPI 0.143 (Starlette 1.9), Uvicorn 0.54, psycopg 3.3 and psycopg-pool 3.3, pypdf 6.21.
+- **The connector's REST plugin** carconnectivity-plugin-restapi 0.1 (the first release after the alphas), the one the Lucid commands go through.
+- **Tailscale 1.104** for the Tesla stream, in Compose and in the one container; **Valhalla 3.9.1** for the local maps.
+- **Release and CI actions** moved to their latest releases, still pinned by commit.
+
 ## [0.2.0] - 2026-10-22
 
 Commands, the garage door, every detail and analysis page filled in, and history that adds up.

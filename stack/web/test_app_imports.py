@@ -27,7 +27,8 @@ def test_app_imports_and_mounts_every_page(monkeypatch):
     monkeypatch.setenv("REST_PASSWORD", "p")
     sys.path.insert(0, str(Path(__file__).parent))
     app_module = importlib.import_module("app")
-    paths = {r.path for r in app_module.site.routes}
+    # FastAPI 0.14x lists an included router as one route without a path of its own.
+    paths = {r.path for r in app_module.site.routes if hasattr(r, "path")}
     for p in (
         "/",
         "/drives",

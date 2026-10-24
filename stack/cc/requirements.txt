@@ -1,5 +1,5 @@
 carconnectivity==0.11.11
 carconnectivity-plugin-database==0.4.5
 carconnectivity-plugin-webui==0.7.3
-carconnectivity-plugin-restapi==0.1a2
+carconnectivity-plugin-restapi==0.1
 # Connectors are not here: CC_CONNECTORS in stack/.env (a build argument) names them, one pip spec per line or separated by semicolons.

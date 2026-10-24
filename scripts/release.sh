@@ -88,6 +88,12 @@ ship() {
     say "main -> ${sha:0:7}"
     git push -q origin "$sha:refs/heads/main"
     git push -q origin --delete "rc/$VERSION" || true
+    # The workflow starts by itself only when version.py changed in the push; a second commit of the
+    # same version (a fix staged after the first) needs it started by hand.
+    sleep 15
+    if ! gh api "repos/$REPO/git/ref/tags/v$VERSION" >/dev/null 2>&1 && [ -z "$(gh run list -R "$REPO" --workflow release.yml -L 1 --json headSha,status -q ".[] | select(.headSha==\"$sha\") | .status")" ]; then
+        gh workflow run release.yml -R "$REPO" --ref main
+    fi
     echo "the release workflow tags v$VERSION, builds the image and drafts the release:"
     echo "  https://github.com/$REPO/releases"
 }
