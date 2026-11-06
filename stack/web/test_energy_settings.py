@@ -41,8 +41,9 @@ def test_the_page_opens_with_nothing_set_up(house, client):  # noqa: F811
     r = client.get("/settings/energy")
     assert r.status_code == 200 and "<h1>Powerwall</h1>" in r.text
     assert "Tesla account" in r.text and "Connect Tesla" in r.text, "no account yet"
-    assert "gateway" not in r.text.lower() and "Find it" not in r.text and "CC_POWERWALL" not in r.text
-    assert "needs a Tesla account with a Powerwall" in r.text, "with no Powerwall the page says what it would show and what it needs"
+    assert "password" not in r.text.lower() and "Find it" not in r.text and "CC_POWERWALL" not in r.text, "no gateway sign-in: the relay needs none"
+    assert "from the home network or a Tesla account" in r.text, "with no Powerwall the page says what it would show and what it needs"
+    assert ">Home network<" in r.text and "Not set up" in r.text and r.text.index('id="relay"') < r.text.index('id="tesla"'), "the home network is listed first"
 
 
 def test_the_local_gateway_routes_are_gone(house, client, bare):  # noqa: F811
@@ -218,3 +219,32 @@ def test_a_car_sign_in_keeps_the_powerwall_scope_when_it_is_already_held_or_the_
     cfg["cloud"] = {"enabled": True, "site_id": "1", "name": "x"}
     energy.save_config(house.state.__setitem__, cfg)
     assert has(), "the cloud source is on"
+
+
+def test_the_home_network_address_is_checked_then_kept_and_blank_goes_back_to_env(house, client, monkeypatch):  # noqa: F811
+    import energy_relay
+
+    agg = {"site": {"instant_power": 10}, "battery": {"instant_power": 800}, "load": {"instant_power": 900}, "solar": {"instant_power": 0}}
+    asked = []
+    monkeypatch.setattr(energy_relay, "http_get", lambda base: (lambda path: asked.append(base + path) or agg))
+    monkeypatch.setenv("POWERWALL_RELAY_URL", "http://env-relay.springfield.test:8675")
+    r = client.post("/settings/energy/relay", data=form(house.app, {"url": "192.168.1.20:8675"}))
+    assert r.status_code == 303 and asked == ["http://192.168.1.20:8675/aggregates"]
+    assert energy.load_config(house.state.get)["relay"]["url"] == "http://192.168.1.20:8675" and house.app.relay_url() == "http://192.168.1.20:8675"
+    page = client.get("/settings/energy").text
+    assert "http://192.168.1.20:8675" in page and "from .env" not in page
+    r = client.post("/settings/energy/relay", data=form(house.app, {"url": ""}))
+    assert r.status_code == 303 and house.app.relay_url() == "http://env-relay.springfield.test:8675", "blank goes back to .env's"
+    assert "from .env" in client.get("/settings/energy").text
+
+
+def test_an_address_that_is_wrong_or_silent_or_not_a_powerwall_is_said_and_not_kept(house, client, monkeypatch):  # noqa: F811
+    import energy_relay
+
+    r = client.post("/settings/energy/relay", data=form(house.app, {"url": "ftp://relay"}))
+    assert "That is not an address" in r.text
+    monkeypatch.setattr(energy_relay, "http_get", lambda base: (lambda path: (_ for _ in ()).throw(OSError("down"))))
+    assert "did not answer (OSError)" in client.post("/settings/energy/relay", data=form(house.app, {"url": "http://relay.springfield.test"})).text
+    monkeypatch.setattr(energy_relay, "http_get", lambda base: (lambda path: {"hello": 1}))
+    assert "not with Powerwall readings" in client.post("/settings/energy/relay", data=form(house.app, {"url": "http://relay.springfield.test"})).text
+    assert energy.load_config(house.state.get)["relay"]["url"] == ""

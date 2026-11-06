@@ -1,3 +1,15 @@
-{# A car's last commands, drawn when the Now card's Command log is opened. #}
-{% if rows %}<dl class="cmd-rows">{% for r in rows %}<dt>{{ r.at|local }}</dt><dd><span class="sstate"><span class="sdot {{ 'ok' if r.ok else 'bad' }}" aria-hidden="true"></span>{{ r.label }}{% if r.arg is not none %} {{ '%g'|format(r.arg) }}{% endif %}</span> <span class="muted small">{{ r.source }}{% if r.detail %} · {{ r.detail }}{% endif %}</span></dd>{% endfor %}</dl>
+{# A car's last commands, newest first, drawn when the card's Log tab is opened: the verb, what it was given, when, and whether the car took it. The first five show; the rest are one tap away. #}
+{% import "_icons.html" as ic %}
+{% set SHOW = 5 %}
+{% macro glyph(key) -%}
+{%- set k = key or '' -%}
+{{ ic.icon('charge' if k.startswith('charge') or k.startswith('precondition') or k.startswith('sched') else 'climate' if k.startswith(('climate', 'defrost', 'max_ac', 'keep', 'dog', 'camp', 'overheat', 'bioweapon', 'seat', 'wheel')) else 'lock' if k == 'lock' else 'unlock' if k == 'unlock' else 'lights' if k in ('flash', 'lights_on', 'lights_off') else 'horn' if k in ('honk', 'volume') or k.startswith('media') else 'wake' if k == 'wake' else 'trunk' if k.startswith('trunk') else 'frunk' if k.startswith('frunk') else 'window' if k.startswith('windows') else 'garage' if k == 'homelink' else 'key' if k == 'remote_start' else 'guard' if k.startswith(('sentry', 'alarm', 'deterrence')) else 'more') }}
+{%- endmacro %}
+{% if rows %}<ul class="clog">{% for r in rows %}<li class="clog-r{{ ' bad' if not r.ok }}"{% if loop.index > SHOW %} data-more hidden{% endif %}>
+  <span class="clog-i">{{ glyph(r.command) }}</span>
+  <span class="clog-w"><span class="clog-v">{{ r.label }}{% if r.arg is not none %} <span class="clog-a">{{ '%g'|format(r.arg) }}</span>{% endif %}</span>{% set by = r.by if r.by is defined else '' %}{% if r.detail or by %}<span class="clog-d muted small">{{ by }}{% if by and r.detail %} · {% endif %}{{ r.detail or "" }}</span>{% endif %}</span>
+  <span class="clog-t muted small" title="{{ r.at|local }}">{% if r.age is defined and r.age < 3600 %}{{ 'Just now' if r.age < 60 else (r.age // 60) ~ ' min ago' }}{% else %}{{ r.at|when }}{% endif %}</span>
+  <span class="clog-ok sstate"><span class="sdot {{ 'ok' if r.ok else 'bad' }}" aria-hidden="true"></span>{{ 'Accepted' if r.ok else 'Refused' }}</span>
+</li>{% endfor %}</ul>
+{% if rows|length > SHOW %}<button type="button" class="btn sm clog-all" data-log-all>Show all {{ rows|length }}</button>{% endif %}
 {% else %}<span class="muted small">No commands yet</span>{% endif %}

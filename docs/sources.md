@@ -9,6 +9,7 @@ Add sources on **Settings › Cars and sources**. Each is tested before it is ke
 | Tesla, direct | about once a second with the [stream](tesla-stream.md) (Compose only for now); none without it | both | yes | import from TeslaFi or TeslaMate | a [Tesla developer app](tesla-app.md), its key on your domain, a tap per car |
 | TeslaFi | each minute | both | yes | the export | a token per car |
 | TeslaMate | as TeslaMate records | both | yes | its database | its database address |
+| Tessie | none (history only) | both | yes | its API | a Tessie token |
 | Lucid | each minute, every 15 s driving | route only | yes | none | e-mail and password, once |
 | Other brands (CarConnectivity) | per connector | route | per connector | none | the brand and its sign-in |
 
@@ -63,7 +64,7 @@ The connector container publishes no port. Its config, sign-ins included, is rea
 
 ## Powerwall
 
-The Powerwall is read from the Tesla account Car Command already has; nothing is read from the gateway on your network (Tesla's newer firmware removed its web login, and a Powerwall 3 never had one). It is set up inside Connect Tesla, as steps after the cars:
+The Powerwall is read from the Tesla account Car Command already has, and, when you run one, from a [pypowerwall](https://github.com/jasonacox/pypowerwall) proxy on your own network (below). It is set up inside Connect Tesla, as steps after the cars:
 
 1. **Signed in.** The sign-in asks for the `energy_device_data` scope together with the vehicle ones (the Powerwall step's "Bring it in" does this). A sign-in from before this release lacks the scope, and Connect Tesla and Settings › Energy say so. The ordinary car sign-in never asks for it, so a developer app that does not allow Energy Product Data still signs in for cars; once the token holds it, or the Powerwall is on, a car re-sign-in keeps it.
 2. **Your Powerwall.** The account's energy site is used on its own when it has exactly one; with several you pick. Its install date is kept.
@@ -71,7 +72,9 @@ The Powerwall is read from the Tesla account Car Command already has; nothing is
 
 Every action returns to its own step, and the numbered line shows what is next. Cars and sources shows the same line on the Tesla account's card. Settings › Energy is where it is managed: status, turn off, stop and resume.
 
-While a site is on, Tesla's `live_status` is read every five minutes: it is the Powerwall row on Now (fifteen minutes is as old as it shows) and a row of `cc_energy`. Every row there is one five-minute sample, held for the five minutes from its time. The table keeps a `source` column (`cloud` for all of them) so another source can come later; a local gateway was tried and removed, and what it left in the database is deleted at startup.
+While a site is on, Tesla's `live_status` is read every five minutes (every ten or twenty once Tesla's allowance is half or four-fifths spent, see Tesla API use): it is the Powerwall row on Now (twenty-five minutes is as old as it shows) and a row of `cc_energy`. A row stands for the time until the next one, twenty minutes at most; a longer silence is a gap. Each night after 02:00 the last seven days are checked, and a day with fewer than 200 readings (a slowed poll, an outage) is read again from Tesla's five-minute history, one request a day. The table keeps a `source` column: `cloud`, or `relay` for the proxy.
+
+**On your own network.** Give Settings › Powerwall › Sources › Home network the address of a pypowerwall proxy the site can reach (for example `http://192.168.1.20:8675`; the proxy's own docs cover pointing it at the gateway). The address is checked before it is kept, takes effect within 15 seconds, and `POWERWALL_RELAY_URL` in `.env` is used when it is blank. Car Command reads its `/aggregates` and `/soe` every 15 seconds: that is the Powerwall row on Now, and each minute's mean is a `relay` row. Its charge is the gateway's own figure, which sits 5% below the Tesla app's scale; it is put on the app's scale, `(raw − 5) / 0.95`, so rows from either source read the same. While the proxy answers, Tesla's `live_status` is not asked at all; ninety seconds after it stops, the five-minute cloud poll takes over, and the nightly refill reads only the days the proxy left thin. Car Command only reads from the proxy and never signs in to the gateway itself.
 
 **Where each charge's energy came from.** Judged by what plugging the car in drew. Once a home charge has ended and its five-minute readings are in, each minute of it is taken against the house's reading for that minute:
 
@@ -87,6 +90,7 @@ The Powerwall's own part is then split by what went into it over the seven days 
 **In the browser.** Settings › Cars and sources › Bring history in.
 
 - *TeslaFi:* choose one or more exports (`.csv` or `.csv.gz`, up to 1 GB each; `CC_IMPORT_MAX_MB` changes the limit), then Import. Each file is checked on arrival: a file that is not a TeslaFi export is turned away before anything starts. Uploads are kept on the data volume (`CC_IMPORT_DIR`, `/data/imports`) only while the import runs.
+- *Tessie:* paste a token (Tessie › Settings › API, [dash.tessie.com/settings/api](https://dash.tessie.com/settings/api)) and Import; every car on it comes in, read-only. The token stays in memory for the job and is not saved. A restart interrupts it: paste the token again, and the months already loaded are skipped.
 - *TeslaMate:* paste the database address (or use the saved one) and Import; every car in it comes in, read-only, up to where Car Command's own logging of that car began.
 - The import runs in the site's background, one at a time, and shows the file it is on, its progress and, at the end, the drives, charges and days loaded and any file it skipped. Reload the page or come back later; it carries on. A restart interrupts it: the page offers Resume (TeslaFi) or Start over, and a TeslaMate import is started again from its form.
 - Loading the same file again replaces what it loaded; nothing doubles. When it ends, the places in the history are named by whatever Settings › Maps allows.
@@ -111,6 +115,30 @@ Add `--dry-run` (with `make import`, `ARGS=--dry-run`) to read the file and prin
 The loader streams the file and rebuilds drives, charges, positions, firmware history and state the way the live logger would. Loading the same file twice changes nothing. How the columns are read is at the top of `stack/web/teslafi_import.py`.
 
 When a TeslaFi feed starts weeks after its last export, the first poll fills the gap from TeslaFi's drive and charge summaries (endpoints, odometer, levels, energy, max speed, temperature; no routes or curves). `make teslafi-history VIN=… FROM=… [TO=…]` (over ssh) does the same by hand; locally, `docker compose -f stack/docker-compose.yml exec -T web python3 teslafi_history.py VIN FROM [TO]`, with dates as `2026-09-04`.
+
+**Tessie.** History only, over Tessie's API; Car Command sends Tessie nothing but the token (an `Authorization` header, never the address) and the VIN and time range of each read, and makes only GET requests, one a second (`TESSIE_PAUSE_S`), waiting out a 429 or a 5xx by the server's `Retry-After` or a doubling pause.
+
+```sh
+# stack/.env on the host: TESSIE_TOKEN=...   then   docker compose -f stack/docker-compose.yml up -d --no-deps web
+make import-tessie ARGS="--dry-run"                       # over ssh: ask Tessie and count, write nothing
+make import-tessie                                        # every car on the token
+docker compose -f stack/docker-compose.yml exec -T web python3 tessie_import.py --vin <VIN> --since 2024-01-01
+```
+
+- It walks the car's months from now back, stopping after 12 empty months in a row (or at `--since`). A month is one rolling import, `tessie:<VIN>:<YYYY-MM>`; running it again replaces a month and nothing doubles. A month loaded after it ended is skipped on the next run, which is how an interrupted run carries on (`--again` loads them anyway).
+- Per drive: the list (`/drives`) gives start and end, places, energy, max speed, average temperature and tag; the car's readings inside the drive (`/states`, every `--step` seconds, default 5; 1 asks for every reading Tessie holds) give the route with speed, power, battery level and rated range, and the odometer at each end. Per charge: the list (`/charges`) gives start, end, place, levels, energy added and the Supercharger flag; the readings at 60 s give the power, volts and amps curve (`--no-curves` skips them, one request fewer per charge). A charge that drew more than 25 kW counts as DC even where Tessie does not call it a Supercharger.
+- Where another source holds a car's time, Tessie fills only what none of them cover: a drive or charge that overlaps another import's span, or starts after the live logger began, is left out, and a month wholly inside such a span is not asked for. So a TeslaFi export, a TeslaMate load or live logging always wins its own time; Tessie supplies the years before it. Time inside an export's span that the export lacks is not filled (`--again` also asks for months that look covered, but a drive or charge that overlaps another source is still left out.)
+- Not imported: elevation (the unit is undocumented), software versions (not in the API), the cost you set in Tessie, idles and battery-health history.
+
+What was checked against Tessie's published OpenAPI file (developer.tessie.com, 2026-11-03) and what was not:
+
+| Checked in the documentation | Assumed, to confirm with a real token |
+|---|---|
+| Paths `/vehicles`, `/{vin}/drives`, `/{vin}/charges`, `/{vin}/states`; bearer-token header; `from` and `to` as unix seconds; `distance_format=mi`, `temperature_format=f`, `timezone`, `interval`, `condense=false` as query parameters | Page size: the lists document `limit` but no default or paging, so a month is asked for whole; a month that came back cut off would load short |
+| Drive fields `started_at`, `ended_at`, `starting_`/`ending_` `latitude`/`longitude`, `max_speed`, `average_outside_temperature`, `energy_used`, `odometer_distance`, `tag`; charge fields `started_at`, `ended_at`, `latitude`, `longitude`, `is_supercharger`, `odometer`, `energy_added`, `starting_battery`, `ending_battery` | Units of `power` (read as kW), `speed` (mph under `distance_format=mi`) and the readings' `odometer` (miles; a reply in km is detected against the drive's own distance and converted) |
+| State fields `timestamp`, `latitude`, `longitude`, `speed`, `power`, `odometer`, `battery_level`, `battery_range`, `charger_power`, `charger_voltage`, `charger_actual_current` | That `/states` with `condense=false` returns a row per reading inside the range, and how many it returns for `interval=5` |
+| `/vehicles` returns `results[].vin` and `last_state` | `last_state.display_name` as the car's name; the importer falls back to the VIN |
+| No rate limit is documented | One request a second is polite; 429 and 5xx are retried with backoff |
 
 **TeslaMate.** Dump six tables from TeslaMate's database as CSV (read-only), copy them in, and load them. It stops where Car Command's own logging of that car began, so the two never overlap. Find TeslaMate's database container with `docker ps`: its own compose file names it `teslamate-database-1`, with user and database `teslamate`.
 

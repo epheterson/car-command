@@ -11,8 +11,8 @@ a Tesla through Tesla's signing proxy (tesla_cmd), a car on the CarConnectivity 
 (the Lucid among them) through the connector's REST plugin (`cc_request` names the path).
 
 Tiers, from the owner's spec: 1 is on once commands are on; 2 waits until it is enabled for
-the car; 3 is enabled per car too, and every command in it asks for the password again (or
-a fresh Cloudflare Access sign-in) within the last five minutes. Nothing here moves the car,
+the car; 3 is enabled per car too, and every command in it is confirmed: a passkey for that one
+command, or the command PIN or the password within the last two minutes. Nothing here moves the car,
 updates its software, changes a PIN or a speed limit, or touches its keys.
 
 What Home Assistant's and TeslaFi's controls do for each make is here, bar what NEVER holds:
@@ -25,9 +25,12 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import clockfmt
 
+# Commands whose argument is a time of day, in minutes after midnight
+TIMES = ("sched_charge", "sched_charge_end", "depart", "depart_offpeak")
 TIERS = {1: "Everyday", 2: "Car settings", 3: "Access"}
 
 
@@ -102,12 +105,18 @@ CATALOGUE = {
         Command("deterrence_on", "Enhanced deterrence on", "Enhanced deterrence on", tier=2, makes=("Lucid",)),
         Command("deterrence_off", "Enhanced deterrence off", "Enhanced deterrence off", tier=2, makes=("Lucid",)),
         Command("alarm_on", "Alarm on", "Alarm on", tier=2, makes=("Lucid",)),
-        Command("alarm_silent", "Alarm silent", "Alarm set to notify only", tier=2, makes=("Lucid",)),
-        Command("alarm_off", "Alarm off", "Alarm off", tier=2, makes=("Lucid",)),
-        Command("alarm_silence", "Silence the alarm", "Alarm silenced", makes=("Lucid",)),
+        Command("alarm_silent", "Alarm silent", "Alarm set to notify only", tier=3, makes=("Lucid",)),
+        Command("alarm_off", "Alarm off", "Alarm off", tier=3, makes=("Lucid",)),
+        Command("alarm_silence", "Silence the alarm", "Alarm silenced", tier=3, makes=("Lucid",)),  # every alarm disarm asks for you, as unlocking does
         # minutes after midnight, local to the car
-        Command("sched_charge", "Scheduled charging", "Scheduled charging set", tier=2, arg=(0, 1439), makes=("Tesla",)),
-        Command("sched_charge_off", "Scheduled charging off", "Scheduled charging off", tier=2, makes=("Tesla",)),
+        Command("sched_charge", "Scheduled charging", "Scheduled charging set", tier=2, arg=(0, 1439), makes=("Tesla", "Lucid")),
+        Command("sched_charge_off", "Scheduled charging off", "Scheduled charging off", tier=2, makes=("Tesla", "Lucid")),
+        # a Lucid's schedule is a window with no place: the start above, and when it should be done by
+        Command("sched_charge_end", "Charge finishes by", "Charge finish time set", tier=2, arg=(0, 1439), makes=("Lucid",)),
+        # a departure time: the car warms the cabin and battery for it, and (off-peak) finishes charging by it
+        Command("depart", "Scheduled departure", "Scheduled departure set", tier=2, arg=(0, 1439), makes=("Tesla",)),
+        Command("depart_offpeak", "Scheduled departure with off-peak charging", "Scheduled departure with off-peak charging set", tier=2, arg=(0, 1439), makes=("Tesla",)),
+        Command("depart_off", "Scheduled departure off", "Scheduled departure off", tier=2, makes=("Tesla",)),
         Command("unlock", "Unlock", "Unlocked", tier=3),
         Command("trunk", "Open the trunk", "Trunk opened", tier=3, makes=("Tesla", "Lucid")),
         Command("frunk", "Open the frunk", "Frunk opened", tier=3, makes=("Tesla", "Lucid")),
@@ -115,7 +124,8 @@ CATALOGUE = {
         Command("trunk_close", "Close the trunk", "Trunk closed", tier=2, makes=("Lucid",)),
         Command("frunk_close", "Close the frunk", "Frunk closed", tier=2, makes=("Lucid",)),
         Command("windows_vent", "Vent the windows", "Windows vented", tier=3, makes=("Tesla", "Lucid")),
-        Command("windows_close", "Close the windows", "Windows closed", tier=3, makes=("Tesla", "Lucid")),
+        # closing makes the car safer, so it asks nothing more than closing a trunk does
+        Command("windows_close", "Close the windows", "Windows closed", tier=2, makes=("Tesla", "Lucid")),
         # the garage door the car has learned, sent with where the car is: the car opens it only near it
         Command("homelink", "HomeLink", "HomeLink sent", tier=3, makes=("Tesla",)),
         Command("remote_start", "Keyless driving", "Keyless driving on for two minutes", tier=3, makes=("Tesla", "Lucid")),
@@ -126,8 +136,12 @@ CATALOGUE = {
 NEVER = ("summon", "autopark", "software_update", "speed_limit", "pin_to_drive", "valet", "add_key", "remove_key", "navigation", "boombox")
 
 PER_MINUTE = 10
-TIER3_PER_HOUR = 3
-STEP_UP_S = 300  # the password, or an Access sign-in, this recent for a tier 3 command
+TIER3_PER_HOUR = {"unlock": 3, "remote_start": 2}  # a tier 3 command to one car in an hour; the rest 6
+TIER3_OTHER_PER_HOUR = 6
+TIER3_ALL_PER_HOUR = 10  # every tier 3 command to every car, in an hour
+STEP_UP_S = 120  # the PIN or the password this recent for a tier 3 command (a passkey confirms one command)
+STEP_UP_ASK = "Confirm it first."  # the refusal that asks for a passkey, the PIN or the password
+OWNERS_ONLY = "Only an owner can do this. Name the owners in CC_ACCESS_EMAILS."  # an Access identity not on the list
 
 LEVELS = ("off", "low", "medium", "high")  # a seat or wheel level, 0 to 3, as the connector names it
 
@@ -184,6 +198,10 @@ CC_PATHS = {
     "precondition_on": ("POST", "charging/commands/battery-preconditioning", "on"),
     "precondition_off": ("POST", "charging/commands/battery-preconditioning", "off"),
     "charge_amps": ("PUT", "charging/settings/maximum_current", None),
+    # from 0.5.0: the charging schedule, one command that takes "on", "off", or one or both ends
+    "sched_charge": ("POST", "charging/commands/charging-schedule", lambda a: f"{int(a) // 60:02d}:{int(a) % 60:02d}-"),
+    "sched_charge_end": ("POST", "charging/commands/charging-schedule", lambda a: f"-{int(a) // 60:02d}:{int(a) % 60:02d}"),
+    "sched_charge_off": ("POST", "charging/commands/charging-schedule", "off"),
     # from 0.4.0
     "remote_start": ("POST", "commands/keyless-driving", "on"),
 }
@@ -208,31 +226,38 @@ KEEP_DAYS = 365
 
 
 class Limiter:
-    """At most PER_MINUTE commands a car in any sixty seconds, and TIER3_PER_HOUR tier 3
-    ones a car in any hour. Only commands admitted count; one refused here does not."""
+    """At most PER_MINUTE commands a car in any sixty seconds; of each tier 3 command, its
+    TIER3_PER_HOUR (else TIER3_OTHER_PER_HOUR) to a car in any hour, and TIER3_ALL_PER_HOUR
+    tier 3 commands in all. Only commands admitted count; one refused here does not."""
 
-    def __init__(self, per_minute: int = PER_MINUTE, tier3_per_hour: int = TIER3_PER_HOUR, clock=time.monotonic):
-        self.per_minute, self.tier3_per_hour, self.clock = per_minute, tier3_per_hour, clock
+    def __init__(self, per_minute: int = PER_MINUTE, clock=time.monotonic):
+        self.per_minute, self.clock = per_minute, clock
         self.sent: dict[str, deque] = defaultdict(deque)
-        self.tier3: dict[str, deque] = defaultdict(deque)
+        self.tier3: dict[tuple, deque] = defaultdict(deque)
+        self.tier3_all: deque = deque()
 
     @staticmethod
     def _trim(q: deque, now: float, window: float) -> None:
         while q and now - q[0] >= window:
             q.popleft()
 
-    def admit(self, vin: str, tier: int = 1) -> str | None:
+    def admit(self, vin: str, tier: int = 1, key: str = "") -> str | None:
         """None when admitted (and counted), else the sentence that says why not."""
-        now, q, q3 = self.clock(), self.sent[vin], self.tier3[vin]
+        now, q = self.clock(), self.sent[vin]
         self._trim(q, now, 60)
-        self._trim(q3, now, 3600)
         if len(q) >= self.per_minute:
             return f"That's {self.per_minute} commands to this car in a minute. Wait a moment."
-        if tier >= 3 and len(q3) >= self.tier3_per_hour:
-            return f"That's {self.tier3_per_hour} of these to this car in an hour. Try again later."
-        q.append(now)
         if tier >= 3:
+            q3, cap = self.tier3[(vin, key)], TIER3_PER_HOUR.get(key, TIER3_OTHER_PER_HOUR)
+            self._trim(q3, now, 3600)
+            self._trim(self.tier3_all, now, 3600)
+            if len(q3) >= cap:
+                return f"That's {cap} of these to this car in an hour. Try again later."
+            if len(self.tier3_all) >= TIER3_ALL_PER_HOUR:
+                return f"That's {TIER3_ALL_PER_HOUR} of these commands in an hour. Try again later."
             q3.append(now)
+            self.tier3_all.append(now)
+        q.append(now)
         return None
 
 
@@ -308,11 +333,25 @@ TURN_ON = "Turn them on in Settings › Commands."
 NO_ROW = "They need a Tesla account or a connector car: add one in Settings › Cars and sources, then turn them on in Settings › Commands."  # Commands is not in Settings until one exists
 
 
-def refusal(cmd: Command, make: str | None, way: str | None, *, enabled: bool, signed: bool, allowed_tier: int, stepped_up: bool, offered=None, turn_on: str = TURN_ON) -> str | None:
+def refusal(
+    cmd: Command,
+    make: str | None,
+    way: str | None,
+    *,
+    enabled: bool,
+    signed: bool,
+    allowed_tier: int,
+    stepped_up: bool,
+    offered=None,
+    turn_on: str = TURN_ON,
+    owner: bool = True,
+    cap: int | None = None,
+) -> str | None:
     """Why this command may not go to this car now, or None. In order: the owner's switch,
-    a way to reach the car, sign-in in front of the site, the car's tier, the make, what the
-    connector offers, the step-up. `offered` is the connector's set of command keys, None
-    when it was not asked."""
+    a way to reach the car, sign-in in front of the site, the car's tier, the token's cap, the
+    make, what the connector offers, an owner for tier 3, the step-up. `offered` is the
+    connector's set of command keys, None when it was not asked; `cap` is a control token's
+    highest tier, None for the site."""
     if not enabled:
         return f"Commands are off. {turn_on}"
     if way is None:
@@ -321,12 +360,16 @@ def refusal(cmd: Command, make: str | None, way: str | None, *, enabled: bool, s
         return "Commands need the site's sign-in or Cloudflare Access in front of it."
     if cmd.tier > allowed_tier:
         return f"{cmd.label} is off for this car. Settings › Commands turns it on."
+    if cap is not None and cmd.tier > cap:
+        return f"This token sends {' and '.join(TIERS[t].lower() for t in range(1, cap + 1))} commands only. Make one that sends more in Settings › Access."
     if cmd.makes is not None and make not in cmd.makes:
         return f"{cmd.label} isn't something {make or 'this car'} takes from here."
     if way == "connector" and (cmd.key not in CC_PATHS or (offered is not None and cmd.key not in offered)):
         return f"This car's connector doesn't offer {cmd.label.lower()}."
+    if cmd.tier >= 3 and not owner:
+        return OWNERS_ONLY
     if cmd.tier >= 3 and not stepped_up:
-        return "Enter the password again first."
+        return STEP_UP_ASK
     return None
 
 
@@ -371,7 +414,7 @@ def said(cmd: Command, arg, ok: bool, detail: str | None, at: str) -> str:
     text = cmd.done
     if arg is not None:
         unit = {"charge_limit": "%", "charge_amps": " A", "climate_temp": " °C"}.get(cmd.key, "")
-        shown = clockfmt.tod(f"{arg // 60}:{arg % 60:02d}") if cmd.key == "sched_charge" else f"{arg:g}{unit}"
+        shown = clockfmt.tod(f"{arg // 60}:{arg % 60:02d}") if cmd.key in TIMES else f"{arg:g}{unit}"
         text = f"{text} to {shown}"
     return f"{text} {at}" + (f". {detail}" if detail else "")
 
@@ -381,6 +424,18 @@ def log(conn, vin: str, cmd: str, arg, tier: int, source: str, ip: str | None, o
         "INSERT INTO cc_command_log (vin, command, arg, tier, source, ip, ok, detail, ms) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         (vin, cmd[:40], arg, tier, (source or "")[:80], (ip or None) and ip[:64], ok, (detail or "")[:300] or None, ms),
     )
+
+
+def by_whom(source: str | None) -> str:
+    """Who sent a logged command, in words; nothing for a tap on the site itself."""
+    src = (source or "").strip()
+    if src == "hold":
+        return "Charging hold"
+    if src.startswith("api "):
+        return "API token " + src[4:].split("…")[0]
+    if src.startswith("site ("):
+        return src[6:].rstrip(")")
+    return "" if src in ("", "site") else src
 
 
 def recent(conn, vin: str, limit: int = 20) -> list[dict]:
@@ -393,6 +448,8 @@ def recent(conn, vin: str, limit: int = 20) -> list[dict]:
         r = dict(r)
         cmd = CATALOGUE.get(r["command"])
         r["label"] = cmd.label if cmd else r["command"]
+        r["by"] = by_whom(r["source"])
+        r["age"] = max(0, int((datetime.now(timezone.utc) - r["at"]).total_seconds()))
         out.append(r)
     return out
 

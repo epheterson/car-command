@@ -7,10 +7,12 @@ Each charge is priced when it is logged, and the price is stored with where it c
 The first rule that applies wins:
 
 1. **What you paid**, for a charge you entered by hand.
-2. **What the network billed.** A Tesla Supercharger session takes the fees Tesla charged, read from Tesla's charging history, with a link to the invoice. This needs Connect Tesla ([sources](sources.md#tesla)) signed in with the charging scope. The history is read in the background and nothing about where the car has been is sent.
-3. **The place's price**, set on Places or when you name a place: free, per kWh or per minute (with an optional session fee), the home plan, or the regional average. A place called Work is not free until you say so.
+2. **What the network billed.** A Tesla Supercharger session takes the fees Tesla charged, read from Tesla's charging history, with a link to the invoice. The charge's page splits the bill into charging, idle (parking) and congestion fees, where the bill has them. This needs Connect Tesla ([sources](sources.md#tesla)) signed in with the charging scope. The history is read in the background and nothing about where the car has been is sent.
+3. **The place's price**, set on Places or when you name a place: free, per kWh or per minute (with an optional session fee, and an optional idle price per minute after some free minutes), the home plan, or the regional average. A place called Work is not free until you say so.
 4. **The home plan**, for a charge at home, by the hour the car drew power.
-5. **Your fast-charging rates**, for a DC charge away from home: per kWh and per minute, for Superchargers and for other networks.
+5. **Your fast-charging rates**, for a DC charge away from home: per kWh and per minute, for Superchargers and for other networks, with an optional fee per charge and an idle price per minute after some free minutes (Settings › Money).
+
+**Idle fees.** For a charge no bill covers, idle minutes run from when the charge finished to when the car left. Finished is the end of the last stretch of the power profile drawing at least 1 kW. Left is the plug coming out where the source recorded it (the live connector's database plugin writes it when the cable disconnects), else the start of the next drive within three days (an upper bound: the cable may have come out earlier). The TeslaFi and TeslaMate imports end a session when charging stops and record no plug, so for them only a later drive gives an end. With no finish or no departure the idle time is unknown: no idle fee is charged, the charge page says "Idle unknown", and it is worked out once the car has left (re-checked for two days after the charge). Only a bill is exact. The fees are stored with the charge, are part of its cost, and so are in every total and stat. Charges priced before this existed show no split until they are priced again (changing a place's price or a fast-charging rate does that).
 6. **The regional average**, for a home charge no plan covers: the average household price for its region and month, marked `≈` as an estimate.
 
 A charge none of these prices shows as unpriced, not $0.

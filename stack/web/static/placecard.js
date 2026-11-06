@@ -345,6 +345,8 @@
       price.querySelector('select[name="price_per"]').value = kind;
       price.querySelector('input[name="price_rate"]').value = p.rate;
       if (p.fee) price.querySelector('input[name="price_fee"]').value = p.fee;
+      if (p.idle) price.querySelector('input[name="price_idle"]').value = p.idle;
+      if (p.grace) price.querySelector('input[name="price_grace"]').value = p.grace;
     } else if (kind) {
       pick = price.querySelector('input[name="price_kind"][value="' + CSS.escape(kind) + '"]');
     }
@@ -472,7 +474,7 @@
   function save(extra) {
     if (!st || !card || card.hidden) return;
     var p = st.place, fd = new FormData(form), name = (fd.get("name") || "").trim();
-    if (!priceTouched) ["price_kind", "price_rate", "price_per", "price_fee"].forEach(function (k) { fd.delete(k); });
+    if (!priceTouched) ["price_kind", "price_rate", "price_per", "price_fee", "price_idle", "price_grace"].forEach(function (k) { fd.delete(k); });
     var rate = price.querySelector('input[name="price_rate"]');
     if (priceTouched && price.querySelector('input[value="paid"]:checked') && !(parseFloat(rate.value) > 0)) { rate.focus(); say(err, "Type what a kWh or a minute costs here."); return; }
     var url;

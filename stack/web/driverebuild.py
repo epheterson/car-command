@@ -41,6 +41,7 @@ from zoneinfo import ZoneInfo
 
 import driveedits
 import history
+import nosignal
 from manual import DDL as MANUAL_DDL
 
 LOG = logging.getLogger("driverebuild")
@@ -57,10 +58,11 @@ LEAVE = timedelta(minutes=2)  # a drive ends where the state changed, if that wa
 EDGE = timedelta(seconds=60)  # readings this close outside a drive's states still belong to it
 SETTLE = timedelta(minutes=10)  # a drive that ended this recently may still be getting its last readings
 END_TOL = timedelta(minutes=3)
+SILENCE = timedelta(minutes=15)  # a drive still open whose last fix is this old has lost its signal: it ends at that fix, not at now
 END_LONG = timedelta(minutes=20)  # a trip that runs this much past the drive's last reading only sat there with the state still on; its end stands
 START_LATE = timedelta(minutes=3)
 START_EARLY = timedelta(minutes=45)  # the plugin starts a trip at IGNITION_ON, however long before the car moves
-TO_DO = ("create", "change", "merge", "remove")  # what writes to `trips`
+TO_DO = ("create", "change", "merge", "remove", "gap")  # what writes to `trips`
 MERGE_SHARE = 0.5  # a trip this much inside a wanted drive is part of it
 STILL_M = 10.0  # readings this close together (GPS wander of a parked car) are one place
 EDGE = timedelta(minutes=3)  # readings this close outside a car-on run still say whether it stood
@@ -161,6 +163,12 @@ def plan_drives(states: list[dict], fixes: list[dict], charges: list[tuple[datet
     times = [f["at"] for f in fixes]
     out = []
     for seg in segments(states, list(charges)):
+        silent = False
+        if seg["open"] and now is not None:
+            # still "driving" by the states, but the readings stopped: out of coverage. Ended at the last fix.
+            seen = [f["at"] for f in fixes[bisect.bisect_left(times, seg["start"] - EDGE) :]]
+            if seen and now - seen[-1] >= SILENCE:
+                seg, silent = dict(seg, end=seen[-1], open=False), True
         if seg["open"] or (now is not None and seg["end"] > now - SETTLE):
             continue
         fx = fixes[bisect.bisect_left(times, seg["start"] - EDGE) : bisect.bisect_right(times, seg["end"] + EDGE)]
@@ -188,6 +196,7 @@ def plan_drives(states: list[dict], fixes: list[dict], charges: list[tuple[datet
                     "end_lon": b["lon"],
                     "miles": miles,
                     "unlogged": gaps.get(s),
+                    "silent": silent and n == len(ranges) - 1,  # the last piece of a drive the signal was lost in: the plugin's trip is still open
                 }
             )
     return out
@@ -210,10 +219,13 @@ def plan_changes(wanted: list[dict], existing: list[dict]) -> list[dict]:
         if any(e["manual"] and _overlap(e, w) > 0 for e in closed):
             out.append({"do": "hand", "drive": w})
             continue
-        if any(e["end"] is None and e["start"] < w["end"] for e in existing):
+        # a drive the signal was lost in (w["silent"]) is wanted closed at its last fix: the trip the plugin still holds open is
+        # the one to close, not one to wait for. Any other open trip over it is still going.
+        opened = [dict(e, end=w["end"], open=True) for e in existing if w.get("silent") and e["end"] is None and e["start"] < w["end"] and not e["manual"] and e["id"] not in taken]
+        if not opened and any(e["end"] is None and e["start"] < w["end"] for e in existing):
             out.append({"do": "wait", "drive": w})
             continue
-        near = [e for e in closed if not e["manual"] and e["id"] not in taken and _overlap(e, w) > 0]
+        near = [e for e in closed + opened if not e["manual"] and e["id"] not in taken and _overlap(e, w) > 0]
         if not near:
             out.append({"do": "create", "drive": w})
             continue
@@ -222,7 +234,7 @@ def plan_changes(wanted: list[dict], existing: list[dict]) -> list[dict]:
         start_ok = w["start"] - START_EARLY <= main["start"] <= w["start"] + START_LATE
         swallows = any(w2 is not w and w["end"] <= w2["start"] < main["end"] for w2 in wanted)
         end_ok = -END_TOL <= (main["end"] - w["end"]) <= (END_TOL if swallows else END_LONG)
-        if start_ok and end_ok:
+        if start_ok and end_ok and not main.get("open"):
             out.append({"do": "keep", "id": main["id"], "drive": w})
         else:
             out.append({"do": "change", "id": main["id"], "drive": w, "start": main["start"] if start_ok else w["start"], "was": (main["start"], main["end"])})
@@ -317,6 +329,8 @@ def line(a: dict, tz=TZ) -> str:
         return f"merge   #{a['id']} {at(a['start'])}-{at(a['end'])} into #{a['into']}"
     if a["do"] == "remove":
         return f"remove  #{a['id']} {at(a['start'])}-{at(a['end'])} never moved"
+    if a["do"] == "gap":
+        return "gap     " + nosignal.line(a["drive"], tz)
     if a["do"] == "caron":
         return f"car on  {at(a['start'])}-{at(a['end'])} {_span(a['start'], a['end']) / 60:.0f} min parked"
     miles = "" if w["miles"] is None else f" {w['miles']:.1f} mi"
@@ -370,6 +384,8 @@ def load(conn, vin: str, lo: datetime, hi: datetime) -> tuple[list[dict], list[d
         )
     ]
     manual = {r["ref_id"] for r in _rows(conn, "SELECT ref_id FROM cc_manual WHERE kind = 'drive'", ())} if driveedits._has(conn, "cc_manual") else set()
+    if driveedits._has(conn, "cc_gap_drives"):
+        manual |= {r["trip_id"] for r in _rows(conn, "SELECT trip_id FROM cc_gap_drives WHERE vin = %s", (vin,))}  # a drive filled across a dead zone is not the rebuild's to move or drop
     trips = [
         {
             "id": r["id"],
@@ -417,6 +433,8 @@ def run(conn, vin: str, since: datetime, now: datetime | None = None, dry_run: b
         history.apply_trip_plan(conn, vin, actions)
         history.apply_car_on(conn, vin, since, now, car)
         driveedits.reapply(conn, vin)
+    actions += [{"do": "gap", "drive": g} for g in history.fill_gaps(conn, vin, since, dry_run, auto=True)]  # after the drives are right: a dead zone is the step between two of them
+    if not dry_run:
         conn.commit()
     return actions
 

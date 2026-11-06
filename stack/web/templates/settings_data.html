@@ -40,6 +40,7 @@
 </section>
 
 {% set ha = ha or {} %}
+{% set mqtt = mqtt or {"state": "off", "text": "Off", "detail": ""} %}
 <section class="group" id="ha">
   <h2 class="sec">Integrations {% call info("Home Assistant") %}Links the garage door: its own settings then appear under Alerts. Signs in with Home Assistant itself; this site's address is the client id.{% endcall %}</h2>
   <div class="group-b">
@@ -55,6 +56,7 @@
       <div class="set-c"><input class="field" id="ha-url" name="url" type="url" inputmode="url" placeholder="http://homeassistant.local:8123" value="{{ ha_typed or '' }}" required><button class="btn sm primary">Connect</button></div></form>
   {% endif %}
   {% if ha.problem %}<div class="set-row"><span class="set-l"></span><div class="set-c bad small" role="alert">{{ ha.problem }}</div></div>{% endif %}
+    <div class="set-row"><span class="set-l">MQTT{% call info("Home Assistant discovery") %}Publishes each car's state to your broker, retained, with Home Assistant discovery. Set MQTT_URL in .env to turn it on; MQTT_LOCATION=1 adds position, so keep the broker on your own network.{% endcall %}<span class="set-s">{% if mqtt.detail %}{{ mqtt.detail }}{% else %}Set MQTT_URL in .env{% endif %}</span></span><span class="set-v">{% if mqtt.state == 'off' %}Off{% else %}<span class="sstate"><span class="sdot {{ mqtt.state }}" aria-hidden="true"></span>{{ mqtt.text }}</span>{% endif %}</span></div>
   </div>
 </section>
 

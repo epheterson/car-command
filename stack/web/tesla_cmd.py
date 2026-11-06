@@ -25,6 +25,54 @@ import fleet_usage
 WAKE_S = 45  # how long a sleeping car is given to come online
 WAKE_POLL_S = 3
 
+
+def _depart(minutes, off_peak: bool) -> dict:
+    return {
+        "enable": True,
+        "departure_time": int(minutes),
+        "preconditioning_enabled": True,
+        "preconditioning_weekdays_only": False,
+        "off_peak_charging_enabled": off_peak,
+        "off_peak_charging_weekdays_only": False,
+        "end_off_peak_time": int(minutes) if off_peak else 0,
+    }
+
+
+@dataclass(frozen=True)
+class Schedule:
+    """What a schedule command is sent: the time (minutes after midnight, None for Off), where the car is
+    for the car's own schedule list to key it on (read at send time, never stored), and whether the car
+    takes the current API (firmware 2024.26 and later) or the legacy pair."""
+
+    minutes: int | None = None
+    lat: float | None = None
+    lon: float | None = None
+    modern: bool = True
+
+
+# The ids of the three schedules Car Command keeps on a car, fixed so that sending again changes the one
+# schedule instead of adding another (the car makes its own from a timestamp; these are far below that).
+CHARGE_ID, PRE_ID, DONE_ID = 4301, 4302, 4303
+SCHEDULE_KEYS = ("sched_charge", "sched_charge_off", "depart", "depart_offpeak", "depart_off")
+
+
+def plan(key: str, s: Schedule) -> list[tuple[str, dict]]:
+    """The current API's commands for a schedule command, in order. Every day. add_* needs a place
+    (the proxy refuses without lat and lon); remove_* needs only the id. Departure is a
+    preconditioning schedule (ready by then) and, with off-peak charging, a charge schedule
+    that must finish by then; Off removes both."""
+    at = {"lat": s.lat, "lon": s.lon}
+    charge = {"days_of_week": "ALL", "enabled": True, "one_time": False, "start_enabled": False, "start_time": 0, "end_enabled": False, "end_time": 0, **at}
+    pre = {"days_of_week": "ALL", "enabled": True, "one_time": False, "precondition_time": s.minutes, "id": PRE_ID, **at}
+    return {
+        "sched_charge": lambda: [("add_charge_schedule", {**charge, "id": CHARGE_ID, "start_enabled": True, "start_time": s.minutes})],
+        "sched_charge_off": lambda: [("remove_charge_schedule", {"id": CHARGE_ID})],
+        "depart": lambda: [("add_precondition_schedule", pre)],
+        "depart_offpeak": lambda: [("add_precondition_schedule", pre), ("add_charge_schedule", {**charge, "id": DONE_ID, "end_enabled": True, "end_time": s.minutes})],
+        "depart_off": lambda: [("remove_precondition_schedule", {"id": PRE_ID}), ("remove_charge_schedule", {"id": DONE_ID})],
+    }[key]()
+
+
 # command key -> (Fleet API command name, its JSON body from the argument)
 ENDPOINTS = {
     "charge_start": ("charge_start", lambda a: {}),
@@ -71,6 +119,10 @@ ENDPOINTS = {
     "sentry_off": ("set_sentry_mode", lambda a: {"on": False}),
     "sched_charge": ("set_scheduled_charging", lambda a: {"enable": True, "time": int(a)}),
     "sched_charge_off": ("set_scheduled_charging", lambda a: {"enable": False, "time": 0}),
+    # departure: every day; the car preconditions for it, and off-peak charging ends at it. Switching it off sends only `enable`.
+    "depart": ("set_scheduled_departure", lambda a: _depart(a, off_peak=False)),
+    "depart_offpeak": ("set_scheduled_departure", lambda a: _depart(a, off_peak=True)),
+    "depart_off": ("set_scheduled_departure", lambda a: {"enable": False}),
     "trunk": ("actuate_trunk", lambda a: {"which_trunk": "rear"}),
     "frunk": ("actuate_trunk", lambda a: {"which_trunk": "front"}),
     # The signed command takes no position; the REST shape still names one.
@@ -146,9 +198,16 @@ def problem(status: int, body) -> str:
         return "Tesla is limiting commands. Try again in a few minutes."
     if status == 404:
         return "Tesla doesn't know this car on the signed-in account."
+    said = _said(body)
     if status >= 500:
-        return "Tesla's servers didn't take the command. Try again shortly."
-    return "Tesla refused the command."
+        return "Tesla's servers didn't take the command" + (f" ({said})" if said else "") + ". Try again shortly."
+    return "Tesla refused the command" + (f" ({said})" if said else "") + "."
+
+
+def _said(body) -> str:
+    """The proxy's or Tesla's own words, short, for a refusal no sentence above names, so the log says why."""
+    text = " ".join(_text(body).replace("None", "").split()).strip(" .:")
+    return text[:100]
 
 
 class Proxy:
@@ -201,15 +260,28 @@ class Proxy:
     def send(self, token: str, vin: str, key: str, arg=None) -> Result:
         if key == "wake":
             return Result(True, None, True) if self.wake(token, vin) else Result(False, "The car didn't wake up. Try again in a minute.")
-        name, body = ENDPOINTS[key]
+        if isinstance(arg, Schedule):
+            steps = plan(key, arg) if arg.modern else [(ENDPOINTS[key][0], ENDPOINTS[key][1](arg.minutes))]
+        else:
+            name, body = ENDPOINTS[key]
+            steps = [(name, body(arg))]
+        woke = False
+        for name, body in steps:
+            r = self._one(token, vin, name, body, removing=name.startswith("remove_"))
+            woke = woke or r.woke
+            if not r.ok:
+                return Result(False, r.detail, woke)
+        return Result(True, r.detail if len(steps) == 1 else None, woke)
+
+    def _one(self, token: str, vin: str, name: str, body: dict, removing: bool = False) -> Result:
         path = f"/api/1/vehicles/{quote(vin, safe='')}/command/{name}"
-        status, answer = self._post(token, path, body(arg))
+        status, answer = self._post(token, path, body)
         woke = False
         if asleep(status, answer):
             if not self.wake(token, vin):
                 return Result(False, "The car is asleep and didn't wake up. Try again in a minute.")
             woke = True
-            status, answer = self._post(token, path, body(arg))
+            status, answer = self._post(token, path, body)
             if asleep(status, answer):
                 return Result(False, "The car went back to sleep. Try again.", woke)
         if status >= 400:
@@ -217,7 +289,7 @@ class Proxy:
         r = (answer or {}).get("response") if isinstance(answer, dict) else None
         if isinstance(r, dict) and r.get("result") is False:
             reason = str(r.get("reason") or "").strip().lower()
-            if reason in ALREADY:
+            if reason in ALREADY or removing:  # removing what is not there is done
                 return Result(True, "It already was.", woke)
             return Result(False, REASONS.get(reason, "The car said no" + (f" ({reason[:60]})." if reason else ".")), woke)
         if not isinstance(r, dict):

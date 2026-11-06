@@ -1,0 +1,13 @@
+{# The mileage logbook download: a GET form to /logbook.csv. `tags` makes the tag a pick list, `tag` preselects one; without them the tag is typed. #}
+<details class="fsheet">
+<summary>Logbook CSV</summary>
+<form method="get" action="{{ root }}/logbook.csv" class="row range" data-no-prefetch>{% if q %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}
+  <label>From <input type="date" name="from"></label>
+  <label>To <input type="date" name="to"></label>
+  {% if tags %}<label>Tag <select name="tag"><option value="">any</option>{% for t in tags %}<option value="{{ t }}"{% if t == tag %} selected{% endif %}>{{ t }}</option>{% endfor %}</select></label>
+  {% else %}<label>Tag <input name="tag" maxlength="40" placeholder="any" style="min-width:7em"></label>{% endif %}
+  <label class="check" title="Street and city for each end, besides the place names"><input type="checkbox" name="addresses" value="on"> addresses</label>
+  <label class="check" title="Distance per tag after the last row"><input type="checkbox" name="totals" value="on"> totals</label>
+  <button type="submit" class="quiet">Download</button>
+</form>
+</details>

@@ -49,6 +49,20 @@
   </div>
 </section>
 {% endif %}
+{% set fee_sum = (session.get('session_fee') or 0) + (session.get('idle_fee') or 0) + (session.get('congestion_fee') or 0) %}
+{% set idle_unknown = session.get('cost_source') in ('dc', 'place') and '/min idle' in (session.get('rate_plan') or '') and session.get('idle_fee') is none %}
+{% if session.cost is not none and (fee_sum > 0 or idle_unknown) %}
+<section class="group fees">
+  <div class="group-b">
+    <div class="set-row"><span class="set-l">Charging</span><span class="set-c">{{ cur }}{{ [session.cost - fee_sum, 0]|max|num(2) }}</span></div>
+    {% if session.get('session_fee') %}<div class="set-row"><span class="set-l">Session fee</span><span class="set-c">{{ cur }}{{ session.session_fee|num(2) }}</span></div>{% endif %}
+    {% if session.get('idle_fee') %}<div class="set-row"><span class="set-l">Idle fee {% call i.info('Idle minutes') %}{% if session.get('idle_min') %}{{ session.idle_min|num }} min from the charge finishing until the plug came out. {% endif %}{{ 'Billed by the network.' if session.get('cost_source') == 'billed' else 'Worked out from the fee rule on Settings › Money or this place, until the plug came out or the next drive began.' }}{% endcall %}</span><span class="set-c">{{ cur }}{{ session.idle_fee|num(2) }}</span></div>{% endif %}
+    {% if idle_unknown %}<div class="set-row"><span class="set-l">Idle fee {% call i.info('Idle unknown') %}An idle price applies here, but when the car left is not known: no drive or unplugging has followed this charge yet, or its power was not recorded. It is worked out once the car has left.{% endcall %}</span><span class="set-c">unknown</span></div>{% endif %}
+    {% if session.get('congestion_fee') %}<div class="set-row"><span class="set-l">Congestion fee</span><span class="set-c">{{ cur }}{{ session.congestion_fee|num(2) }}</span></div>{% endif %}
+    <div class="set-row"><span class="set-l"><b>Total</b></span><span class="set-c"><b>{{ cur }}{{ session.cost|num(2) }}</b></span></div>
+  </div>
+</section>
+{% endif %}
 <section class="group drv-more">
   <div class="group-b">
     {% if bill and bill.invoice_id %}<a class="set-row set-nav" href="{{ root }}/dx/charging/invoice/{{ bill.invoice_id|urlencode }}" target="_blank" rel="noopener"><span class="set-l">Invoice</span></a>{% endif %}

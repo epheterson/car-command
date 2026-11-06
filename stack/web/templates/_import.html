@@ -1,4 +1,4 @@
-{# Settings › Cars and sources › Bring history in: TeslaFi exports uploaded here, or a TeslaMate database.
+{# Settings › Cars and sources › Bring history in: TeslaFi exports uploaded here, a TeslaMate database, or a Tessie token.
    The job and its state come from importjob.Store; this only draws them. #}
 {% import "_info.html" as i %}
 {% set job = imp.job %}
@@ -6,12 +6,12 @@
 {% macro n(v) %}{{ '{:,}'.format(v) }}{% endmacro %}
 {% macro post(action, label, cls='btn sm', fields={}) %}<form method="post" action="{{ root }}/settings/import/{{ action }}" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf }}">{% for k, v in fields.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}<button type="submit" class="{{ cls }}">{{ label }}</button></form>{% endmacro %}
 <section class="group" id="import" data-import data-busy="{{ 1 if imp.busy else 0 }}" data-status="{{ root }}/settings/import/status">
-  <h2 class="sec">Bring history in {% call i.info("TeslaFi and TeslaMate") %}Loading the same file again replaces what it loaded; nothing doubles. A car another source is already logging is filled in up to where that one began. Without the website: docs/sources.md.{% endcall %}</h2>
+  <h2 class="sec">Bring history in {% call i.info("TeslaFi, TeslaMate and Tessie") %}Loading the same file again replaces what it loaded; nothing doubles. A car another source is already logging is filled in up to where that one began. Without the website: docs/sources.md.{% endcall %}</h2>
   <div class="group-b">
     {% if imp.notice %}<div class="set-notes"><p class="notice {{ imp.notice.kind }}" role="status">{{ imp.notice.text }}</p></div>{% endif %}
     {% if job %}
     <div class="set-row stack imp-job" data-job="{{ job.state }}">
-      <span class="set-l">{{ 'TeslaFi export' if job.kind == 'teslafi' else 'TeslaMate' }}<span class="set-s" data-step>{% if job.state == 'running' %}{{ job.step }}{% elif job.state == 'interrupted' %}Interrupted · {{ job.step }}{% elif job.state == 'done' %}Finished{% else %}{{ job.error or 'Stopped' }}{% endif %}</span></span>
+      <span class="set-l">{{ {'teslafi': 'TeslaFi export', 'tessie': 'Tessie'}.get(job.kind, 'TeslaMate') }}<span class="set-s" data-step>{% if job.state == 'running' %}{{ job.step }}{% elif job.state == 'interrupted' %}Interrupted · {{ job.step }}{% elif job.state == 'done' %}Finished{% else %}{{ job.error or 'Stopped' }}{% endif %}</span></span>
       {% if job.state == 'running' %}<progress class="imp" max="100" value="{{ job.pct }}" data-pct aria-label="Progress"></progress>{% endif %}
     </div>
     {% for it in job['items'] %}
@@ -41,6 +41,12 @@
       <form class="set-p" method="post" action="{{ root }}/settings/import/teslamate" data-wait="Reading the TeslaMate database…"><input type="hidden" name="csrf_token" value="{{ csrf }}">
         <div class="set-row stack"><label class="set-l" for="imp-tm-url">TeslaMate database</label><input class="field wide" id="imp-tm-url" type="password" name="url" autocomplete="off"{% if imp.typed %} value="{{ imp.typed }}"{% endif %} placeholder="postgresql://teslamate:…@host:5432/teslamate"></div>
         <div class="acts">{% if imp.saved_mate %}<button type="submit" name="saved" value="1" class="btn">Use the saved database</button>{% endif %}<button type="submit" class="btn primary">Import</button></div>
+      </form>
+    </details>
+    <details class="set-x" id="imp-tessie"><summary class="set-row"><span class="set-l">Tessie, one time<span class="set-s">Copy the history it holds, read-only; a rerun picks up where it stopped</span></span></summary>
+      <form class="set-p" method="post" action="{{ root }}/settings/import/tessie" data-wait="Asking Tessie for your cars…"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="set-row stack"><label class="set-l" for="imp-ts-token">Tessie token</label><input class="field wide" id="imp-ts-token" type="password" name="token" autocomplete="off" placeholder="from dash.tessie.com/settings/api"></div>
+        <div class="acts"><button type="submit" class="btn primary">Import</button></div>
       </form>
     </details>
     {% endif %}

@@ -53,6 +53,8 @@ ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS kind VARCHAR NOT NULL DEFAULT
 ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS last4 VARCHAR;
 ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS share_place BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS coords BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS tier_cap SMALLINT;
+ALTER TABLE cc_api_tokens ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS cc_api_log (
     id         BIGSERIAL PRIMARY KEY,
     at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -444,6 +446,38 @@ def kind_of(text) -> str:
     return kind if kind in ("admin", "status", "control", "mcp") else "read"
 
 
+CAPS = (1, 2)  # what a control token may be allowed: everyday, or car settings too; never tier 3, which needs a person
+EXPIRY_DAYS = (7, 30, 90, 365, 0)  # the choices when a token is made; 0 is never
+EXPIRY_DEFAULT = 0  # until revoked, unless the owner picks a lifetime
+
+
+def cap_of(text) -> int:
+    """A posted tier cap: 2 when it says exactly that, else 1."""
+    return 2 if str(text or "").strip() == "2" else 1
+
+
+def expiry_of(text) -> int:
+    """Posted days until a token stops working, one of EXPIRY_DAYS, else EXPIRY_DEFAULT."""
+    try:
+        days = int(str(text or "").strip())
+    except ValueError:
+        return EXPIRY_DEFAULT
+    return days if days in EXPIRY_DAYS else EXPIRY_DEFAULT
+
+
+def token_cap(token: dict) -> int:
+    """The highest tier a token may send: a control token's own cap (1 for one made before caps), 0 for any other kind."""
+    if token.get("kind") != "control":
+        return 0
+    cap = token.get("tier_cap")
+    return cap if cap in CAPS else 1
+
+
+def token_expired(token: dict | None, now) -> bool:
+    expires = (token or {}).get("expires_at")
+    return expires is not None and now >= expires
+
+
 def status_payload(value, share_place: bool = False):
     """What a status token is shown of a car (or a list of them): without location, and, when the owner has
     allowed it, with the two coarse facts and nothing finer. `place` is a name the owner gave a place, never a
@@ -454,6 +488,9 @@ def status_payload(value, share_place: bool = False):
     if not isinstance(value, dict):
         return value
     out = without_location(value)
+    if "vin" in value:  # the odometer to the 100 miles below: enough for service intervals, nothing for a speed
+        odo = value.get("odometer_mi")
+        out["odometer_100mi"] = int(odo // 100 * 100) if isinstance(odo, (int, float)) and not isinstance(odo, bool) and odo >= 0 else None
     if share_place and "vin" in value:
         out["place"] = value.get("place_named")
         out["at_home"] = bool(value.get("at_home")) if value.get("lat") is not None and value.get("lon") is not None else None

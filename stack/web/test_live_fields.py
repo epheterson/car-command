@@ -42,7 +42,7 @@ def tree_031(state="charging"):
         "connection_state": L("reachable"),
         "battery_capacity_kwh": L(112.0),
         "drives": {"primary": {"level": L(55.0)}},
-        "charging": {"state": L(state), "power": L(11.2), "settings": {"target_level": L(80.0)}, "connector": {"connection_state": L("connected")}},
+        "charging": {"state": L(state), "power": L(11.2), "settings": {"target_level": L(80.0), "maximum_current": L(48.0)}, "connector": {"connection_state": L("connected")}},
         "sentry": L(True),
     }
 
@@ -71,6 +71,24 @@ def tree_040(state="charging"):
     return t
 
 
+def test_connector_0_5_0s_charging_schedule_is_read(app, monkeypatch):
+    t = tree_031()
+    t.update(charging_schedule_on=L(True), charging_schedule_start=L("23:00"), charging_schedule_end=L("06:00"), scheduled_charge=L("scheduled"))
+    monkeypatch.setattr(app, "garage", lambda: {"V1": t})
+    assert app.live_vehicle("V1")["sched_lines"] == ["charges 11:00 PM to 6:00 AM", "waiting for it"]
+    t.update(charging_schedule_on=L(False))
+    assert app.live_vehicle("V1")["sched_lines"] == ["off"]
+
+
+def test_a_connector_without_the_schedule_has_no_schedule_lines(app, monkeypatch):
+    monkeypatch.setattr(app, "garage", lambda: {"V1": tree_040()})
+    assert app.live_vehicle("V1")["sched_lines"] == []
+    t = tree_031()
+    t.update(charging_schedule_on=L("yes"), charging_schedule_start=L(2300), charging_schedule_end=L(None))
+    monkeypatch.setattr(app, "garage", lambda: {"V1": t})
+    assert app.live_vehicle("V1")["sched_lines"] == [], "a leaf of the wrong shape is unknown"
+
+
 @pytest.fixture
 def app(monkeypatch):
     os.environ.setdefault("DATABASE_URL", "postgresql://u:p@localhost:1/x")
@@ -79,6 +97,8 @@ def app(monkeypatch):
     sys.path.insert(0, str(Path(__file__).parent))
     a = importlib.import_module("app")
     monkeypatch.setattr(a, "places", lambda: [])
+    monkeypatch.setattr(a, "vehicle_energy", lambda: {})  # no database here: the recent-range line reads it
+    monkeypatch.setattr(a, "recent_range", lambda *args: {})
     return a
 
 
@@ -181,3 +201,8 @@ def test_a_health_figure_whose_commit_fails_is_written_again_next_tick(app, monk
     monkeypatch.setattr(app, "db", lambda: good)
     app.record_car_figures(car)
     assert good.sql == ["cc_battery_health"] and len(app.HEALTH.series["V1"]) == 1
+
+
+def test_the_cars_own_charging_current_is_read_so_the_stepper_starts_from_it(app, monkeypatch):
+    monkeypatch.setattr(app, "garage", lambda: {"V1": tree_040()})
+    assert app.live_vehicle("V1")["charge_amps_set"] == 48.0

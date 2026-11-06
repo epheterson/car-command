@@ -110,6 +110,11 @@
       {{ s.num(key ~ '_price', st[key ~ '_price'] or '', unit='/kWh', pre=cur, w=4, min='0.01', max=5, placeholder=('0.48' if key == 'sc' else '0.56'), id=key ~ '_price') }}
       {{ s.num(key ~ '_per_min', st[key ~ '_per_min'] or '', unit='/min', pre='+ ' ~ cur, w=4, min='0.01', max=5, placeholder='none', label=name ~ ', per minute') }}
     </div></div>
+    <div class="set-row sub"><span class="set-l">{{ name }}, fees {% call info("Fees beyond the price") %}A fee per charge, and a price per minute the car stays plugged in after its charge finished, after the free minutes. Used when there's no bill from the network.{% endcall %}</span><div class="set-c">
+      {{ s.num(key ~ '_session_fee', st[key ~ '_session_fee'] or '', unit='/charge', pre='+ ' ~ cur, w=4, min='0.01', max=100, placeholder='none', label=name ~ ', fee per charge') }}
+      {{ s.num(key ~ '_idle_per_min', st[key ~ '_idle_per_min'] or '', unit='/min idle', pre='+ ' ~ cur, w=4, min='0.01', max=5, placeholder='none', label=name ~ ', idle fee per minute') }}
+      {{ s.num(key ~ '_idle_grace', st[key ~ '_idle_grace'] or '', unit='min free', w=3, step='1', min='0', max=240, placeholder='0', label=name ~ ', free idle minutes') }}
+    </div></div>
     {% endfor %}
   </div>
 </section>

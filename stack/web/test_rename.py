@@ -83,11 +83,12 @@ def test_the_cars_page_offers_the_rename_with_the_source_name_as_placeholder(gar
     assert 'action="/settings/cars/VINAAAA1111/name' in page and 'value="Family car"' in page and 'placeholder="Comet"' in page
 
 
-def test_the_name_row_says_the_shown_name_once_with_the_source_name_in_a_tooltip(garage, client):  # noqa: F811
+def test_the_header_is_the_shown_name_and_the_nickname_falls_back_to_the_source_name(garage, client):  # noqa: F811
     page = client.get("/settings/cars").text
-    assert 'title="Source name: Comet">Comet (1111)</span>' in page and "Comet (1111) · " not in page
+    assert '<b class="car-nm">Comet (1111)</b>' in page and "Blank goes back to Comet<" in page and "Comet (1111) · " not in page
     _settings(garage, car_names={"VINAAAA1111": "Family car"})
-    assert 'title="Source name: Comet">Family car</span>' in client.get("/settings/cars").text
+    page = client.get("/settings/cars").text
+    assert '<b class="car-nm">Family car</b>' in page and 'name="name" value="Family car" placeholder="Comet"' in page
 
 
 def test_renaming_a_car_does_not_move_it_in_the_list(garage):

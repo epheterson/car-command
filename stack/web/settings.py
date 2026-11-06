@@ -18,6 +18,8 @@ DEFAULTS = {
     # "system" follows the device; "light" or "dark" overrides it. The dark palette is
     # the same either way; this only decides who chooses.
     "theme": "system",
+    # The sections the phone tab bar shows before More, in order (nav.phone_tabs); None is the built-in four.
+    "phone_tabs": None,
     # Lists and totals ignore a drive shorter than this and a charge that added less than
     # this: the two-minute shuffle in the driveway, the three-minute plug-in blip.
     "min_drive_mi": 0.1,
@@ -67,6 +69,14 @@ DEFAULTS = {
     # dc_per_min are then every other fast charger, and any whose network is not known.
     "sc_price": None,
     "sc_per_min": None,
+    # Fees on top of those prices, per network (fees.py): a fee per charge, a price per minute
+    # the car sits plugged in after its charge finished, and the free minutes before it starts.
+    "sc_session_fee": None,
+    "sc_idle_per_min": None,
+    "sc_idle_grace": None,
+    "dc_session_fee": None,
+    "dc_idle_per_min": None,
+    "dc_idle_grace": None,
     "gas_mpg": None,
     "gas_price": None,
     # The plug-in reminder: local time after which a car that is home, parked, below the

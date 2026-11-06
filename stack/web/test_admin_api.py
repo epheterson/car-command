@@ -135,6 +135,7 @@ def test_the_owner_ticks_anywhere_on_and_off_and_it_is_kept_beside_the_password(
     stored = {}
     monkeypatch.setattr(app_module.auth, "store_set", lambda conn, k, v: stored.__setitem__(k, v))
     monkeypatch.setattr(app_module, "db", lambda: _TokenConn([]))
+    monkeypatch.setattr(app_module, "may_change_confirming", lambda request: True)  # confirmed: test_power_settings covers asking
     c = client_from(app_module)
     cookie = auth.new_session(app_module.AUTH["secret"])
     c.cookies.set(auth.SESSION_COOKIE, cookie)
@@ -187,7 +188,7 @@ def test_reload_reads_the_kind_and_an_admin_token_is_never_one_cars(app_module, 
     ]
     monkeypatch.setattr(app_module, "db", lambda: _TokenConn(rows))
     app_module.reload_tokens()
-    assert app_module.TOKENS["h1"] == {"label": "old", "vin": "VIN-ALPHA", "kind": "read", "last4": None, "share_place": False, "coords": False}
+    assert app_module.TOKENS["h1"] == {"label": "old", "vin": "VIN-ALPHA", "kind": "read", "last4": None, "share_place": False, "coords": False, "tier_cap": None, "expires_at": None}
     assert app_module.TOKENS["h2"]["kind"] == "admin" and app_module.TOKENS["h2"]["vin"] is None
     assert app_module.TOKENS["h3"]["kind"] == "read", "a kind this code does not know reads"
 
@@ -198,6 +199,7 @@ def test_minting_an_admin_token_stores_its_kind_and_last_four_never_the_token(ap
     conn = _TokenConn([])
     monkeypatch.setattr(app_module, "db", lambda: conn)
     monkeypatch.setattr(app_module, "all_vehicles", lambda: [{"vin": "VIN-ALPHA", "name": "Alpha"}])
+    monkeypatch.setattr(app_module, "may_change_confirming", lambda request: True)
     monkeypatch.setattr(app_module, "settings_render", lambda request, section, **kw: app_module.JSONResponse({"minted": kw["minted"], "kind": kw["minted_kind"]}))
     c = client_from(app_module)
     cookie = auth.new_session(app_module.AUTH["secret"])

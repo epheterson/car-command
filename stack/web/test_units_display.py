@@ -282,5 +282,19 @@ def test_stats_and_battery_read_in_metric():
             ],
         )
         assert "161 km" in html and "322<small>km</small>" in html and "0<small>°C</small>" in html and "°F" not in html
+        html = env.get_template("battery.html").render(
+            **dict(base, active="battery"),
+            blocks=[
+                {
+                    "car": {"vin": "V1", "name": "Alpha", "soc": 50.0, "range_mi": 100.0, "range_recent_mi": 90.0, "recent_window_mi": 50.0},
+                    "chart": lv,
+                    "full": None,
+                    "tires": {},
+                    "firsts": {},
+                    "points": 0,
+                }
+            ],
+        )
+        assert "145<small>km</small>" in html and "at your last 80 km" in html and "mi<" not in html
     finally:
         units.use_units(False)

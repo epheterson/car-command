@@ -14,6 +14,9 @@ from datetime import datetime, timedelta
 TTL = timedelta(minutes=2)
 # a report this long after the command is the car's answer to it, whatever it says
 SPOKEN = timedelta(seconds=30)
+# fields a car reports late: a Lucid says climate on for about two minutes after it was turned off
+# (10-27 16:29:16 off; reports 16:29:29 and 16:30:30 still on, 16:31:31 off). Held this long, or until it agrees.
+SLOW = {"climate": (timedelta(seconds=150), timedelta(minutes=3))}  # field: (spoken, ttl)
 
 
 def _sets(key: str, arg, car: dict) -> dict:
@@ -69,7 +72,8 @@ class Expected:
         updated = car.get("updated")
         out = dict(car)
         for field, (want, at) in list(held.items()):
-            done = now - at > TTL or _agrees(field, car.get(field), want) or (updated is not None and updated - at > SPOKEN)
+            spoken, ttl = SLOW.get(field, (SPOKEN, TTL))
+            done = now - at > ttl or _agrees(field, car.get(field), want) or (updated is not None and updated - at > spoken)
             if done:
                 del held[field]
             else:

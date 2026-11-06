@@ -100,6 +100,17 @@ def test_the_cloud_is_asked_for_live_status_at_most_every_five_minutes():
     assert f.asked == ["live", "live"]
 
 
+def test_the_cloud_is_not_asked_while_the_house_network_answers():
+    f = Fleet(live={"solar_power": 100, "battery_power": 0, "grid_power": 50, "load_power": 150, "percentage_charged": 70})
+    up = {"fresh": True}
+    w, _s, live, written = cloud(f, local=lambda now: up["fresh"])
+    w.fallback(NOW)
+    assert f.asked == [] and written == [] and live.get(NOW) is None
+    up["fresh"] = False
+    w.fallback(NOW + timedelta(seconds=1))
+    assert f.asked == ["live"], "the relay gone quiet: the cloud takes over at once"
+
+
 def test_a_refusal_is_remembered_for_settings_and_does_not_raise():
     w, _s, live, written = cloud(Fleet(fail=TeslaError("Tesla refused (403)", 403)))
     w.fallback(NOW)
@@ -253,3 +264,36 @@ def test_live_rows_sit_on_the_five_minute_grid(minute, second, floor):
     w, _s, _l, written = cloud(f)
     w.fallback(NOW.replace(minute=minute, second=second))
     assert written[0]["at"] == NOW.replace(minute=floor, second=0, microsecond=0)
+
+
+# ---- the nightly refill
+
+NIGHT = datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc)  # 03:00 in Los Angeles on the 15th
+
+
+def test_each_night_the_thin_days_of_the_last_week_are_read_again_newest_first_and_only_once():
+    thin = {date(2026, 7, 14), date(2026, 7, 11)}
+    f = Fleet(days={d: day_series(d) for d in thin})
+    w, state, _l, written = cloud(f, have_day=lambda d: d not in thin)
+    assert w.refill(NIGHT) == 2
+    assert f.asked == [date(2026, 7, 14), date(2026, 7, 11)] and len(written) == 2 * 288
+    assert state[energy_cloud.REFILL_KEY] == "2026-07-15"
+    assert w.refill(NIGHT + timedelta(hours=5)) == 0 and len(f.asked) == 2, "once a local day"
+
+
+def test_the_refill_waits_until_yesterday_is_whole_and_reaches_back_a_week_at_most():
+    f = Fleet()
+    w, state, *_ = cloud(f)  # nothing held: every day thin
+    assert w.refill(datetime(2026, 7, 15, 8, 30, tzinfo=timezone.utc)) == 0 and f.asked == [], "01:30 local: Tesla's day may still be open"
+    assert w.refill(NIGHT) == energy_cloud.REFILL_DAYS
+    assert f.asked[0] == date(2026, 7, 14) and f.asked[-1] == date(2026, 7, 8)
+
+
+def test_a_refused_refill_waits_an_hour_and_then_starts_the_pass_again():
+    f = Fleet(fail=TeslaError("Too many requests (429)", 429))
+    w, state, _l, written = cloud(f)
+    assert w.refill(NIGHT) == 1 and written == [] and energy_cloud.REFILL_KEY not in state
+    assert w.refill(NIGHT + timedelta(minutes=30)) == 0 and len(f.asked) == 1, "not asked again inside the hour"
+    f.fail, f.days = None, {date(2026, 7, 14): day_series(date(2026, 7, 14))}
+    assert w.refill(NIGHT + timedelta(hours=1, seconds=1)) == energy_cloud.REFILL_DAYS
+    assert state[energy_cloud.REFILL_KEY] == "2026-07-15" and len(written) == 288

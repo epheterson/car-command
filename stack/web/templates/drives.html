@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% import "_parts.html" as parts %}
 {% block title %}Drives · Car Command{% endblock %}
-{% macro drow(d, grouped) %}{% set r = as_drive(d) %}{% set rp = day_row(r, cur) %}{{ parts.row(root ~ '/drives/' ~ d.id ~ q, d.start_date|local('%-I:%M %p') if grouped else d.start_date|when, rp.title, rp.pills + (['by hand'] if d.get('by_hand') else []) + ([d.tag] if d.get('tag') else []), rp.big, rp.sub, '', colors.get(d.vin, 0) if car.garage else none, none, [d.get('from_ref'), d.get('to_ref')], 'drive') }}{% endmacro %}
+{% macro drow(d, grouped) %}{% set r = as_drive(d) %}{% set rp = day_row(r, cur) %}{{ parts.row(root ~ '/drives/' ~ d.id ~ q, d.start_date|local('%-I:%M %p') if grouped else d.start_date|when, rp.title, rp.pills + (['by hand'] if d.get('by_hand') else []) + (['no signal'] if d.get('no_signal') else []) + ([d.tag] if d.get('tag') else []), rp.big, rp.sub, '', colors.get(d.vin, 0) if car.garage else none, none, [d.get('from_ref'), d.get('to_ref')], 'drive') }}{% endmacro %}
 {% block body %}
 {% set dq = ('&vin=' ~ car.vin) if q else '' %}{% set raw = (flt or {}).get('raw', {}) %}
 {% set nflt = [raw.get('at'), raw.get('dest'), raw.get('min'), raw.get('q')]|select|list|length %}
@@ -11,6 +11,7 @@
   {% else %}<nav class="stepper" aria-label="Month"><a href="{{ root }}/drives?month={{ window.prev }}{{ dq }}" aria-label="{{ window.prev_label }}">‹</a><span class="now">{{ window.label }}</span>{% if not window.is_current %}<a href="{{ root }}/drives?month={{ window.next }}{{ dq }}" aria-label="{{ window.next_label }}">›</a>{% else %}<span class="off" aria-hidden="true">›</span>{% endif %}</nav>{% endif %}
 </div>
 <nav class="segs2" aria-label="Order">{% for k, dr, lbl in [("start", "desc", "Newest"), ("start", "asc", "Oldest"), ("miles", "desc", "Farthest"), ("time", "desc", "Longest"), ("wh", "desc", "Least efficient")] %}<a href="{{ root }}/drives{{ sort_base }}sort={{ k }}&amp;dir={{ dr }}"{% if sort == k and (desc == (dr == 'desc')) %} aria-current="page"{% endif %}>{{ lbl }}</a>{% endfor %}<a class="aside" href="{{ root }}/drives.csv{{ q }}" data-no-prefetch>CSV</a>{% if hidden %}<a href="{{ root }}/drives{{ q }}">Back to the list</a>{% else %}<a href="{{ root }}/drives?show=hidden{{ dq }}">Hidden</a>{% endif %}</nav>
+{% include "_logbook.html" %}
 <details class="fsheet"{% if nflt %} open{% endif %}>{% set e = ends or {'from': {}, 'to': {}} %}{% set fl, tl = e.from.label, e.to.label %}{% set words = (fl ~ (' ⇄ ' if raw.get('both') == 'on' else ' → ') ~ tl) if fl and tl else ('From ' ~ fl if fl else ('To ' ~ tl if tl else '')) %}{% set extra = nflt - (1 if fl else 0) - (1 if tl else 0) %}
 <summary>Filter{% if nflt %} · {% if words %}{{ words }}{% if extra %} + {{ extra }}{% endif %}{% else %}{{ nflt }} on{% endif %}{% endif %}</summary>
 <form method="get" action="{{ root }}/drives" class="row range">{% if q %}<input type="hidden" name="vin" value="{{ car.vin }}">{% endif %}

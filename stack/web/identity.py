@@ -495,18 +495,20 @@ def chart_after_look(chart: int | None, current: int, touched: bool, paint_befor
 
 
 # ---- what a car is, in one line -------------------------------------------------------------
-def describe(vin: str, make: str | None, model: str | None, row: dict | None, seen: date | None = None) -> dict:
-    """Everything a page shows of a car's identity. `row` is its cc_car_identity row, if any."""
+def describe(vin: str, make: str | None, model: str | None, row: dict | None, seen: date | None = None, reported_trim: str | None = None, reported_paint: str | None = None) -> dict:
+    """Everything a page shows of a car's identity. `row` is its cc_car_identity row, if any. `reported_trim` and
+    `reported_paint` are the names a connector car gives (the Lucid's, from 0.5.0): they fill a trim or a paint
+    name nothing else supplied, and never replace a detected or chosen one."""
     row = row or {}
     det = row.get("detected") or {}
     make = make_of(vin, make)
     model, carried_trim = model_of(vin, make, model, det.get("car_type"))
-    trim = trim_name(model, det.get("trim_badging")) or carried_trim
+    trim = trim_name(model, det.get("trim_badging")) or carried_trim or (reported_trim or "").strip() or None
     detected_paint = paint_of(det.get("exterior_color"), make)
     paint = paint_of(row.get("paint"), make) or detected_paint
     year = model_year(vin, seen)
     title = " ".join(str(x) for x in (year, make, model, trim) if x)
-    paint_name = (paint or {}).get("name")
+    paint_name = (paint or {}).get("name") or (reported_paint or "").strip() or None
     return {
         "vin": vin,
         "year": year,
@@ -662,6 +664,7 @@ class Worker(threading.Thread):
         after: Callable,
         vins: Callable,
         interval_s: int = 3600,
+        schedules: Callable | None = None,
     ) -> None:
         super().__init__(daemon=True, name="car-identity")
         self.connect, self.access, self.fleet, self.streamed, self.after, self.vins = (
@@ -673,6 +676,7 @@ class Worker(threading.Thread):
             vins,
         )
         self.interval_s = interval_s
+        self.schedules = schedules
         self.listed_at: datetime | None = None
         self.failed: dict[str, list[datetime]] = {}  # vin -> when Tesla's side failed, the last day
         self.stop = threading.Event()
@@ -744,6 +748,11 @@ class Worker(threading.Thread):
                 else:
                     self.failed.setdefault(vin, []).append(now)
                     continue
+            if self.schedules:
+                try:
+                    self.schedules(vin, fleet.schedules(token, base, vin))  # the car is awake: its schedules, kept in memory
+                except TeslaError:
+                    pass  # a car that will not say keeps what was last read
             with self.connect() as conn:
                 save_detected(conn, vin, found, now)
                 conn.commit()

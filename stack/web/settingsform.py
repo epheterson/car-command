@@ -15,6 +15,7 @@ from datetime import time as dtime
 import charge_hold
 import clockfmt
 import cost
+import fees
 import settings as settings_mod
 
 SECTIONS: tuple[tuple[str, str], ...] = (
@@ -68,10 +69,10 @@ def index(st: dict, cars: int, channels, sign_in: bool, energy: str = "", hide=(
 
 OWNS: dict[str, tuple[str, ...]] = {
     "cars": ("car_names",),  # renames have their own route; pack sizes live on the drives table, beside the car
-    "money": ("rate_plan", "manual_plan", "dc_price", "dc_per_min", "sc_price", "sc_per_min", "gas_mpg", "gas_price"),
+    "money": ("rate_plan", "manual_plan", "dc_price", "dc_per_min", "sc_price", "sc_per_min", *fees.FEE_KEYS, "gas_mpg", "gas_price"),
     "energy": (),  # the Tesla site and the backfill have their own forms and state
     "alerts": ("alert_routes", "alert_routed", "tire_low_psi", "tire_high_psi", "plug_reminder_at", "plug_reminder_below", "summary_at"),
-    "look": ("currency", "units", "theme", "week_start", "clock", "date_order", "timezone"),
+    "look": ("currency", "units", "theme", "phone_tabs", "week_start", "clock", "date_order", "timezone"),
     "commands": ("commands_on", "command_tiers", "charge_hold", "fleet_credit", "fleet_rates", "fleet_budget_on"),
     "maps": ("public_tiles", "public_geocoder", "satellite", "terrain", "maps_offer"),  # maps_offer: the one-time offer after the first import, see mapsoffer.py
     "data": ("min_drive_mi", "min_charge_kwh", "weather"),
@@ -148,6 +149,9 @@ def parse(section: str, form, was: dict, channels=(), kinds=()) -> dict:
         for key in FAST_KEYS:
             if on_page(key):
                 out[key] = bounded(form.get(key), 0.01, 5.0)
+        for key in fees.FEE_KEYS:
+            if on_page(key):
+                out[key] = bounded(form.get(key), *fees.bounds_of(key))
         # Fuel is kept in mpg and per gallon; a metric install's page shows L/100 km and per litre.
         # The field names say which unit was typed, so a page left open across a units switch
         # is read by them, not by the units now in force.
@@ -191,6 +195,11 @@ def parse(section: str, form, was: dict, channels=(), kinds=()) -> dict:
             out["units"] = "metric" if form.get("units") == "metric" else "imperial"
         if on_page("theme"):
             out["theme"] = form.get("theme") if form.get("theme") in ("light", "dark") else "system"
+        if on_page("phone_tab_1"):  # four slots, each a section or blank; the default four store as None
+            import nav as nav_mod  # here, not at the top: nav reads this module's SECTIONS
+
+            chosen = nav_mod.phone_tabs([form.get(f"phone_tab_{i}") for i in range(1, nav_mod.MAX_PHONE_TABS + 1)])
+            out["phone_tabs"] = None if chosen == nav_mod.PHONE_TABS else list(chosen)
         if on_page("week_start"):
             out["week_start"] = "sunday" if form.get("week_start") == "sunday" else "monday"
         if on_page("clock"):
@@ -329,7 +338,7 @@ def reprices(values: dict, was: dict) -> bool:
 
 
 def fast_rate_changed(values: dict, was: dict) -> bool:
-    return any(k in values and values[k] != was.get(k) for k in FAST_KEYS)
+    return any(k in values and values[k] != was.get(k) for k in FAST_KEYS + fees.FEE_KEYS)
 
 
 def fast_rates(st: dict) -> dict[str, float | None]:
@@ -347,6 +356,21 @@ def money_field(value) -> float | None:
     except ValueError:
         return None
     return round(v, 6) if 0 <= v < 100000 else None
+
+
+def raises_power(values: dict, was: dict) -> bool:
+    """Whether a Settings › Commands save gives the site more power over the cars: commands turned on, or a car's
+    tier raised. Turning things off, the hold and the budget do not."""
+    if values.get("commands_on") and not was.get("commands_on"):
+        return True
+    old = was.get("command_tiers") or {}
+    return any(tier > int(old.get(vin) or 1) for vin, tier in (values.get("command_tiers") or {}).items())
+
+
+def access_on(values: dict, was: dict) -> bool:
+    """Whether a save turns tier 3 on for a car that did not have it."""
+    old = was.get("command_tiers") or {}
+    return any(tier >= 3 and int(old.get(vin) or 1) < 3 for vin, tier in (values.get("command_tiers") or {}).items())
 
 
 def commands_form(form, was: dict) -> dict:

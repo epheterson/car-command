@@ -35,3 +35,9 @@ def seen_if_offline(car: dict, fix_at: datetime | None, now: datetime) -> dateti
         return None
     limit = DRIVING_QUIET if car.get("status") == "Driving" else PARKED_QUIET
     return seen if now - seen > limit else None
+
+
+def stale_drive(car: dict) -> bool:
+    """A car whose "Driving" is the cloud's last word repeated: out of reach while its status says it is on the
+    road. What reacts to a drive under way (alerts, the garage door) leaves such a car alone."""
+    return bool(car.get("offline")) and car.get("status") == "Driving"

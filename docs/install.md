@@ -140,6 +140,21 @@ The site is on port 3044. Its first page asks you to choose a password and for t
 
 `up -d` starts the connector (`cc`) with the rest; Lucid and other brands sign in through it (CarConnectivity) ([sources](sources.md)). Bringing up `web` also runs a one-shot `schema` container that creates the tables, so an install of imported history alone can run without it: `up -d db web`. Settings › Cars and sources says when CarConnectivity is not running, and the command to start it: `docker compose -f stack/docker-compose.yml up -d cc`.
 
+## Home Assistant over MQTT
+
+Car Command can publish each car's state to an MQTT broker, with Home Assistant's MQTT discovery, so the cars appear in Home Assistant as devices with no setup there. It is off until `MQTT_URL` is set in `.env` (or `-e MQTT_URL=...` for the one container): `mqtt://user:pass@host:1883`, or `mqtts://` for TLS. Home Assistant needs its MQTT integration pointed at the same broker.
+
+| Setting | Default | |
+| --- | --- | --- |
+| `MQTT_URL` | blank, off | The broker. A password with special characters is percent-encoded. |
+| `MQTT_PREFIX` | `carcommand` | Topics start with this. |
+| `MQTT_DISCOVERY_PREFIX` | `homeassistant` | Home Assistant's discovery prefix. |
+| `MQTT_LOCATION` | off | `1` also publishes each car's position as a device tracker. |
+
+Per car, one device with these entities: state (driving, charging, parked or asleep), battery %, range, charging power (kW), charge limit %, plugged in, lock, inside temperature, odometer and last updated. Distances and temperatures follow Settings › Units (km and °C when metric), and the entities' units to match. Everything is retained: the state topic is `PREFIX/<id>/state`, where `<id>` is a short hash of the VIN, so the VIN never reaches the broker, one JSON object, sent when something in it changes and all over again every ten minutes. `PREFIX/status` says `online`, and `offline` through the broker's last will if Car Command goes away, which makes every entity unavailable in Home Assistant. A broker that is down never affects the site; it reconnects with a wait that grows to two minutes, and Settings › Data › Integrations shows MQTT as connected, off, or the error.
+
+Location is off by default and is the one thing to think about: a car's position is retained on the broker for anyone who can read it. Turn it on only when the broker is on your own network and not reachable from outside it. Switching it off again clears the retained location entities.
+
 ## Try it with demo data
 
 `make demo` (in the one container, `docker exec carcommand carcommand demo`) generates six weeks of a fictional Model 3 around Springfield, Illinois as a TeslaFi export, imports it, and names its five places. The README's screenshots are of it.
@@ -174,6 +189,14 @@ In `stack/.env` or the one container's environment:
 
 Everything else (alert channels, the network) is in [`stack/.env.example`](../stack/.env.example).
 
+
+## HTTPS
+
+On plain http (`http://box:3044`) the sign-in cookie and any password cross the network in clear, readable by anyone on the same Wi-Fi. Settings › Sign-in and API says **Not encrypted** when you are on it. Over plain http, passkeys are unavailable (the browser allows them only on https at a name), and the commands that open the car (unlock, the trunk, the frunk, the windows, HomeLink, keyless driving) are sent only from the home network. Any one of these gives the site https:
+
+- **Tailscale Serve**, for your own devices: `tailscale serve --bg 3044` on the host, then open `https://<host>.<tailnet>.ts.net`.
+- **Caddy** in front, with a name you own: see [Behind a reverse proxy](#behind-a-reverse-proxy).
+- **A Cloudflare tunnel** with Access in front: see [Behind Cloudflare Access](#behind-cloudflare-access).
 
 ## Behind a reverse proxy
 
@@ -228,7 +251,7 @@ How a request is judged:
 - It is signed in when it carries a valid Access token in the `Cf-Access-Jwt-Assertion` header: RS256, from your team, for your application, not expired. Nothing else on the request is believed, so an e-mail header written by hand opens nothing.
 - The header is read only when the connection comes from a trusted address: by default any private, loopback or tailnet one (cloudflared beside the site). Narrow it with `CC_ACCESS_PROXY`, a comma-separated list of addresses or networks such as `172.18.0.0/16`. From anywhere else the header is ignored.
 - A header from a trusted address that does not verify is refused with a 401. It never falls through to a password or a token.
-- `CC_ACCESS_EMAILS`, a comma-separated list of e-mails, narrows who counts as signed in, and always applies to whoever pins. Unset, Cloudflare's own Access policy decides who is signed in, and pinning needs the setup code or the password.
+- `CC_ACCESS_EMAILS`, a comma-separated list of e-mails, narrows who counts as signed in, and always applies to whoever pins. Unset, Cloudflare's own Access policy decides who is signed in, and pinning needs the setup code or the password. It is also the list of owners: unset, anyone Access lets in reads and sends everyday commands, but nobody signed in through Access can unlock or open a car, mint a token or turn on what raises the site's power (see [commands.md](commands.md#safety)).
 - Cloudflare's keys are cached in memory and in the database, refreshed hourly, and keep working for up to a week if Cloudflare cannot be reached. After that, the header is refused.
 - Stopping Cloudflare Access needs the password when there is one; otherwise a signed-in person (a service token cannot).
 - A form token is tied to the signed-in identity, so a token one person loaded is no good for another.

@@ -1,6 +1,7 @@
 {% extends "settings_base.html" %}
-{# Settings › Powerwall: the house's energy, read from the Tesla account (its live status every five
-   minutes, and the history backfill). Status and management; setting it up is in Connect Tesla. #}
+{# Settings › Powerwall: the house's energy. Sources, in the order they are used: the home network (the gateway,
+   through a relay, every 15 s), then the Tesla account (its live status when the home network is quiet, and the
+   history backfill). Status and management; the Tesla account's setup is in Connect Tesla. #}
 {% from "_info.html" import info %}
 {% from "_energy.html" import backfill_rows with context %}
 {% block section %}
@@ -11,13 +12,28 @@
   <h2 class="sec">Now</h2>
   <div class="group-b">
     {% if not cloud.enabled and not reading %}
-    <div class="empty">Powerwall · solar, home, grid and battery flow, live and by day · needs a Tesla account with a Powerwall</div>
+    <div class="empty">Powerwall · solar, home, grid and battery flow, live and by day · from the home network or a Tesla account</div>
     {% elif reading %}
     <div class="set-row"><span class="set-l">Last reading<span class="set-s">{{ reading_age }} from {{ reading.source_label }}</span></span>
       <span class="set-v wrapv">{% if reading.soc is not none %}{{ reading.soc|num }}% · {% endif %}{% for p in reading.parts %}{{ p.label }} {{ p.arrow }}{{ p.kw }}{{ ' · ' if not loop.last }}{% endfor %}</span></div>
     {% else %}
     <div class="set-row"><span class="set-l">Last reading</span><span class="set-v">None yet</span></div>
     {% endif %}
+  </div>
+</section>
+
+<section class="group" id="sources">
+  <h2 class="sec">Sources {% call info("In this order") %}The home network first: the Powerwall's own gateway, read every 15 seconds through a relay on your network (pypowerwall's proxy), so nothing leaves the house. The Tesla account when the home network is quiet, and for history.{% endcall %}</h2>
+  <div class="group-b">
+    <details class="set-x" id="relay"><summary class="set-row"><span class="set-l">Home network<span class="set-s">{% if relay.url %}{{ relay.url }}{% if relay.from_env %} · from .env{% endif %}{% else %}Every 15 s, through a relay on your network{% endif %}</span></span>
+      <span class="set-v">{% if relay.state == 'none' %}Not set up{% else %}<span class="sstate"><span class="sdot {{ relay.state }}" aria-hidden="true"></span>{{ relay.text }}</span>{% endif %}</span></summary>
+      <form class="set-p" method="post" action="{{ root }}/settings/energy/relay{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="set-row"><label class="set-l" for="relay-url">Relay address<span class="set-s">{% if relay.from_env %}Blank keeps .env's{% else %}Blank turns it off{% endif %}</span></label><div class="set-c"><input class="field" id="relay-url" name="url" value="{{ relay.saved }}" placeholder="{{ relay.url if relay.from_env else 'http://192.168.1.20:8675' }}" autocomplete="off" inputmode="url"></div></div>
+        <div class="acts"><button type="submit" class="btn primary">Save</button></div>
+      </form>
+    </details>
+    <a class="set-row" href="#tesla"><span class="set-l">Tesla account<span class="set-s">When the home network is quiet, and for history</span></span>
+      <span class="set-v">{% if not cloud.connected %}Not connected{% elif cloud.enabled %}<span class="sstate"><span class="sdot {{ 'bad' if cloud.status and not cloud.status.ok else 'ok' }}" aria-hidden="true"></span>{{ 'Not answering' if cloud.status and not cloud.status.ok else 'On' }}</span>{% else %}Off{% endif %}</span></a>
   </div>
 </section>
 

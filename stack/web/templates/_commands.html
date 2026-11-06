@@ -1,94 +1,217 @@
-{# The car's commands (static/commands.js). The ones with a state sit in the car card's tiles
-   (_now_tiles.html) and its battery bar (limit_bar); the rest are the dock under the card: one
-   tap each, by what they touch, then an Adjust fold for those that take a value. The dock is drawn
-   once, so a result, the password or an open fold survives the card being sent again. Every
-   command asks for a second tap before anything is sent. #}
+{# The car's commands (static/commands.js), in three tiers of one card language. State tiles (state_tiles, drawn
+   in the car card so the stream refreshes them): each says what the car is now and what a tap does. Under the card
+   the dock: a quick row of one-tap commands, then a full-width panel of tabs (Charge, Climate, Seats, Guard, More,
+   Log) whose controls send a moment after the last tap. Only what the car has and the owner enabled is drawn.
+   A tier 3 command (unlock, trunk, frunk, windows, HomeLink, keyless driving) asks for a second tap, shown in
+   its own tile in amber; the password step-up is the server's. The dock is drawn once, so a result, the password
+   or an open tab survives the card being sent again. #}
 {% import "_icons.html" as ic %}
-
-{% macro btn(key, label, pressed=none, cls="") -%}
-<button type="button" class="btn sm{{ ' ' ~ cls if cls }}" data-cmd="{{ key }}"{% if pressed is not none %} aria-pressed="{{ 'true' if pressed else 'false' }}"{% endif %}>{{ label }}</button>
-{%- endmacro %}
 
 {# The charge limit on the car's own battery bar: the charge in gold, the floor hatched (no limit
    below 50 %), the maker's everyday band and the trip band above it, the limit a marker to drag.
-   Set shows once the marker has moved. Daily tops are each maker's app's own advice. #}
+   The marker sends the limit a moment after it stops moving. Daily tops are each maker's app's own advice. #}
 {% set DAILY_TOP = {'Tesla': 90, 'Lucid': 80} %}
 {% macro limit_bar(cmd, car) -%}
 {% set lim = (cmd.limit|round|int) if cmd.limit else 80 %}{% set soc = cmd.get('soc') %}{% set day = DAILY_TOP.get(car.get('make'), 80) %}
-<form class="cmd-arg lim" aria-label="Charge limit" data-current="{{ lim }}" style="--lim:{{ lim }};--day:{{ day }}">
+<form class="cmd-arg lim" aria-label="Charge limit" style="--lim:{{ lim }};--day:{{ day }}">
   <div class="gauge lim-bar">
     <span class="lim-floor" title="A limit can't be set below 50%"></span><span class="lim-trip" title="Trip: {{ day }} to 100%, for a long drive"></span><i class="lim-fill" style="width:{{ (soc if soc is not none else 0)|round(1) }}%"></i>
-    <input type="range" name="value" min="50" max="100" step="1" value="{{ lim }}" aria-label="Charge limit" aria-valuetext="{{ lim }}%">
+    <input type="range" name="value" data-send="charge_limit" data-group="charge_limit" min="50" max="100" step="1" value="{{ lim }}" aria-label="Charge limit" aria-valuetext="{{ lim }}%">
   </div>
   <div class="lim-scale" aria-hidden="true">
     <span class="lim-z lim-band" style="left:50%;width:calc((var(--day) - 50) * 1%)">Daily · 50–{{ day }}%</span>
     <span class="lim-z lim-band trip" style="left:calc(var(--day) * 1%);right:0" title="Trip: {{ day }} to 100%">Trip</span>
   </div>
-  <div class="lim-foot"><span class="lim-r"><button type="button" class="btn sm" data-cmd="charge_limit" hidden>Set</button><span class="muted small">Limit</span><output class="lim-v">{{ lim }}%</output></span></div>
+  <div class="lim-foot"><span class="lim-r"><span class="muted small">Limit</span><output class="lim-v">{{ lim }}%</output></span></div>
 </form>
 {%- endmacro %}
-
-{% macro arg(c, value, unit, min, max, step) -%}
-<form class="cmd-arg cmd-join" aria-label="{{ c.label }}"><span class="num"><input type="number" inputmode="decimal" name="value" value="{{ value }}" min="{{ min }}" max="{{ max }}" step="{{ step }}" aria-label="{{ c.label }}"><span class="u">{{ unit }}</span></span>{{ btn(c.key, 'Set') }}</form>
+{# The control icons are MingCute (Apache 2.0, see static/icons/LICENSE), lock and unlock Material Design Icons' (the same licence), drawn inline: the line form at rest, the fill
+   form when a part is on or open. They take the tile's colour: ink at rest, --driving in an active tile, amber when
+   the tile waits for its second tap. #}
+{% set MC = {'lock': ('<path fill="currentColor" d="M12 17a2 2 0 0 1-2-2c0-1.11.89-2 2-2a2 2 0 0 1 2 2a2 2 0 0 1-2 2m6 3V10H6v10zm0-12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10c0-1.11.89-2 2-2h1V6a5 5 0 0 1 5-5a5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3"/>', '<path fill="currentColor" d="M12 17a2 2 0 0 0 2-2a2 2 0 0 0-2-2a2 2 0 0 0-2 2a2 2 0 0 0 2 2m6-9a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2h1V6a5 5 0 0 1 5-5a5 5 0 0 1 5 5v2zm-6-5a3 3 0 0 0-3 3v2h6V6a3 3 0 0 0-3-3"/>'), 'unlock': ('<path fill="currentColor" d="M10 13a2 2 0 0 1 2 2c0 1.11-.89 2-2 2s-2-.89-2-2s.9-2 2-2m8-12c-2.76 0-5 2.24-5 5v2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2h-1V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2h2V6c0-2.76-2.24-5-5-5m-2 9v10H4V10z"/>', '<path fill="currentColor" d="M18 1c-2.76 0-5 2.24-5 5v2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12c1.11 0 2-.89 2-2V10a2 2 0 0 0-2-2h-1V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2h2V6c0-2.76-2.24-5-5-5m-8 12a2 2 0 0 1 2 2c0 1.11-.89 2-2 2a2 2 0 1 1 0-4"/>'), 'fan': ('<path fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="2" d="M11 11.075C8.995 9.688 6 6.092 9.224 3.674c.948-.711 3.263-1.486 5.576.826c.996.997.216 1.527-.72 2.165c-.37.25-.762.517-1.08.835c-.786.787-1.277 2.095-.537 3.575l.183.368q.126-.22.28-.442c1.387-2.005 4.983-5 7.4-1.776c.712.948 1.487 3.263-.826 5.576c-.996.996-1.527.215-2.164-.721c-.25-.369-.518-.761-.836-1.08c-.786-.786-2.094-1.277-3.575-.537l-.367.184q.22.126.442.279c2.005 1.387 5 4.983 1.776 7.401c-.948.711-3.263 1.487-5.576-.826c-.996-.997-.216-1.527.721-2.165c.368-.25.76-.517 1.08-.835c.785-.787 1.277-2.095.537-3.575l-.184-.368a6 6 0 0 1-.28.443c-1.387 2.004-4.982 5-7.4 1.775c-.712-.948-1.487-3.262.826-5.575c.996-.997 1.527-.216 2.164.72c.25.369.518.761.836 1.08c.786.786 2.095 1.277 3.575.537l.368-.184a6 6 0 0 1-.443-.279Z" clip-rule="evenodd"/>', '<path fill="currentColor" d="M9 3.001c1.024-.768 4-1.5 6.5 1c.953.953.635 1.899-1.5 3.5c-.962.721-2.3 1.9-1.5 3.5c1.5-2.167 5.5-6 8.5-2c.768 1.025 1.5 4-1 6.5c-.953.953-1.899.635-3.5-1.5c-.721-.961-1.9-2.3-3.5-1.5c2.166 1.5 6 5.5 2 8.5c-1.025.768-4 1.5-6.5-1c-.953-.953-.635-1.899 1.5-3.5c.961-.721 2.3-1.9 1.5-3.5c-1.5 2.167-5.5 6-8.5 2c-.768-1.025-1.5-4 1-6.5c.953-.953 1.899-.635 3.5 1.5c.721.962 1.9 2.3 3.5 1.5c-2.167-1.5-6-5.5-2-8.5"/>'), 'flash': ('<path fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="2" d="M13.182 10L14 2L4 14h6.818L10 22l10-12z"/>', '<path fill="currentColor" fill-rule="evenodd" d="M13.232 1.36c.632-.758 1.863-.24 1.763.742L14.289 9H20a1 1 0 0 1 .768 1.64l-10 12c-.632.759-1.863.24-1.763-.741L9.711 15H4a1 1 0 0 1-.768-1.64z" clip-rule="evenodd"/>'), 'car-window': ('<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4h5a2 2 0 0 1 2 2v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-5.67a4 4 0 0 1 .8-2.4L7.8 5.6A4 4 0 0 1 11 4z"/><path d="M4.5 12h15"/><path d="M15 15h1"/></g><path d="M8.3 5.9A3 3 0 0 1 11 5h7a1 1 0 0 1 1 1v6H5.2z" fill="currentColor" opacity=".38"/>', '<path fill="currentColor" fill-rule="evenodd" d="M7.4 5.8A7 7 0 0 1 13 3h5a3 3 0 0 1 3 3v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5.667a5 5 0 0 1 1-3zM13 5a5 5 0 0 0-4 2l-3 4h13V6a1 1 0 0 0-1-1zm2 9a1 1 0 1 0 0 2h1a1 1 0 1 0 0-2z" clip-rule="evenodd"/>'), 'parking-lights': ('<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m3 6l1 1M3 18l1-1m-2-5h1m18-6l-1 1m1 11l-1-1m2-5h-1M6 12c0 1.143.063 2.131.142 2.92c.105 1.05 1.227 1.576 2.153 1.068a4.25 4.25 0 0 0 2.205-3.726v-.524a4.25 4.25 0 0 0-2.205-3.726c-.926-.508-2.048.017-2.153 1.068A30 30 0 0 0 6 12m12 0c0 1.143-.063 2.131-.142 2.92c-.105 1.05-1.227 1.576-2.153 1.068a4.25 4.25 0 0 1-2.205-3.726v-.524a4.25 4.25 0 0 1 2.205-3.726c.926-.508 2.048.017 2.153 1.068c.079.789.142 1.777.142 2.92"/>', '<path fill="currentColor" fill-rule="evenodd" d="M2.293 5.293a1 1 0 0 1 1.414 0l1 1a1 1 0 0 1-1.414 1.414l-1-1a1 1 0 0 1 0-1.414m19.414 0a1 1 0 0 1 0 1.414l-1 1a1 1 0 1 1-1.414-1.414l1-1a1 1 0 0 1 1.414 0M5.147 8.98c.183-1.84 2.142-2.66 3.629-1.845a5.25 5.25 0 0 1 2.724 4.603v.524a5.25 5.25 0 0 1-2.724 4.602c-1.487.816-3.445-.005-3.63-1.845A31 31 0 0 1 5 12c0-1.18.065-2.201.147-3.02m10.077 7.884c1.487.815 3.445-.006 3.63-1.846c.081-.818.146-1.84.146-3.019s-.065-2.201-.147-3.02c-.184-1.839-2.143-2.66-3.629-1.845a5.25 5.25 0 0 0-2.724 4.603v.524a5.25 5.25 0 0 0 2.724 4.602M1 12a1 1 0 0 1 1-1h1a1 1 0 1 1 0 2H2a1 1 0 0 1-1-1m20-1h1a1 1 0 1 1 0 2h-1a1 1 0 1 1 0-2M4.707 16.293a1 1 0 0 1 0 1.414l-1 1a1 1 0 0 1-1.414-1.414l1-1a1 1 0 0 1 1.414 0m14.586 1.414a1 1 0 0 1 1.414-1.414l1 1a1 1 0 0 1-1.414 1.414z" clip-rule="evenodd"/>'), 'horn': ('<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 8s.376 4.899 0 8c-.24 1.977-1 5-1 5m6-14.5c2.084-.828 5.506-2.679 6.63-3.296a.25.25 0 0 1 .37.222v17.148a.25.25 0 0 1-.37.222c-1.124-.617-4.546-2.468-6.63-3.296c-2.466-.98-4.597-1.347-7-1.459c-1.104-.05-2-.936-2-2.041v-4c0-1.105.896-1.99 2-2.041c2.403-.112 4.534-.48 7-1.459"/>', '<path fill="currentColor" fill-rule="evenodd" d="M19.149 2.327C19.995 1.862 21 2.488 21 3.425v17.148c0 .937-1.005 1.563-1.851 1.098c-1.137-.623-4.503-2.442-6.518-3.243a19 19 0 0 0-3.822-1.091a51 51 0 0 1-.422 2.118q-.197.896-.417 1.787a1 1 0 0 1-1.94-.487a60 60 0 0 0 .791-3.662q-.427-.034-.868-.054C4.35 16.965 3 15.671 3 14v-4c0-1.671 1.35-2.966 2.953-3.04c2.314-.107 4.333-.457 6.678-1.39c2.015-.8 5.38-2.618 6.518-3.242M7.056 8.893c.029.5.063 1.19.085 1.972c.04 1.336.044 2.904-.059 4.242q-.511-.042-1.036-.066C5.443 15.015 5 14.538 5 14v-4c0-.538.443-1.014 1.046-1.042q.51-.024 1.01-.064" clip-rule="evenodd"/>'), 'power': ('<path fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2" d="M16.977 4.5a9 9 0 1 1-9.953 0M12 3v10"/>', '<path fill="currentColor" fill-rule="evenodd" d="M13.5 3a1.5 1.5 0 0 0-3 0v10a1.5 1.5 0 0 0 3 0zM7.854 5.75a1.5 1.5 0 1 0-1.661-2.5A10.49 10.49 0 0 0 1.5 12c0 5.799 4.701 10.5 10.5 10.5S22.5 17.799 22.5 12c0-3.654-1.867-6.87-4.693-8.75a1.5 1.5 0 0 0-1.66 2.5a7.5 7.5 0 1 1-8.292 0" clip-rule="evenodd"/>'), 'key-2': ('<path fill="currentColor" d="M16.24 8.26a.5.5 0 1 1-1 0a.5.5 0 0 1 1 0"/><path fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="2" d="M12.633 13.913a5.502 5.502 0 0 0 6.29-8.84a5.5 5.5 0 0 0-9.122 5.587l-6.08 6.081v2.829h4.242v-2.83h2.828v-2.828z" clip-rule="evenodd"/><path fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="2" d="M16.24 8.26a.5.5 0 1 1-1 0a.5.5 0 0 1 1 0Z"/>', '<path fill="currentColor" fill-rule="evenodd" d="M10.438 4.367a6.5 6.5 0 1 1 1.975 10.546h-.622v1.828a1 1 0 0 1-1 1H8.963v1.829a1 1 0 0 1-1 1H3.72a1 1 0 0 1-1-1v-2.83a1 1 0 0 1 .293-.707l5.673-5.672a6.5 6.5 0 0 1 1.752-5.995M14.24 8.26a1.5 1.5 0 1 1 3 0a1.5 1.5 0 0 1-3 0" clip-rule="evenodd"/>')} %}
+{# The trunk and frunk are the logo's car at its own proportions, cropped to the end each opens: lid down when shut, raised on its hinge when open. #}
+{% set _ = MC.update({'trunk': ('<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M-1 16.5H-9.8"/><path d="M-9.8 16.5C-9.43 16.5 -9.46 15.97 -9.39 15.6C-9.27 14.89 -9.03 14.21 -8.81 13.53C-8.58 12.83 -7.82 12.51 -7.1 12.36C-5.46 12.01 -3.81 11.69 -2.15 11.46C-1.2 11.32 -0.3 10.96 0.55 10.52L4.6 8.4C5.91 7.7 7.43 7.5 8.92 7.5C11 7.5 13.01 8.19 14.95 8.94"/><path d="M14.95 8.94C16.52 8.69 18.12 8.53 19.66 8.09"/><path d="M19.45 10.56C20.29 10.77 20.95 11.43 21.16 12.27C21.39 13.19 21.53 14.12 21.7 15.06C21.8 15.66 21.81 16.5 22.42 16.5"/><path d="M22.42 16.5H25"/></g>', '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M-1 16.5H-9.8"/><path d="M-9.8 16.5C-9.43 16.5 -9.46 15.97 -9.39 15.6C-9.27 14.89 -9.03 14.21 -8.81 13.53C-8.58 12.83 -7.82 12.51 -7.1 12.36C-5.46 12.01 -3.81 11.69 -2.15 11.46C-1.2 11.32 -0.3 10.96 0.55 10.52L4.6 8.4C5.91 7.7 7.43 7.5 8.92 7.5C11 7.5 13.01 8.19 14.95 8.94"/><path d="M14.95 8.94C16.52 8.69 18.12 8.53 19.66 8.09"/><path d="M19.45 10.56C20.29 10.77 20.95 11.43 21.16 12.27C21.39 13.19 21.53 14.12 21.7 15.06C21.8 15.66 21.81 16.5 22.42 16.5"/><path d="M22.42 16.5H25"/></g>'), 'trunk-shut': ('<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M-1 16.5H-9.8"/><path d="M-9.8 16.5C-9.43 16.5 -9.46 15.97 -9.39 15.6C-9.27 14.89 -9.03 14.21 -8.81 13.53C-8.58 12.83 -7.82 12.51 -7.1 12.36C-5.46 12.01 -3.81 11.69 -2.15 11.46C-1.2 11.32 -0.3 10.96 0.55 10.52L4.6 8.4C5.91 7.7 7.43 7.5 8.92 7.5C11 7.5 13.01 8.19 14.95 8.94C16.44 9.51 17.9 10.17 19.45 10.56C20.29 10.77 20.95 11.43 21.16 12.27C21.39 13.19 21.53 14.12 21.7 15.06C21.8 15.66 21.81 16.5 22.42 16.5"/><path d="M22.42 16.5H25"/></g>', '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M-1 16.5H-9.8"/><path d="M-9.8 16.5C-9.43 16.5 -9.46 15.97 -9.39 15.6C-9.27 14.89 -9.03 14.21 -8.81 13.53C-8.58 12.83 -7.82 12.51 -7.1 12.36C-5.46 12.01 -3.81 11.69 -2.15 11.46C-1.2 11.32 -0.3 10.96 0.55 10.52L4.6 8.4C5.91 7.7 7.43 7.5 8.92 7.5C11 7.5 13.01 8.19 14.95 8.94C16.44 9.51 17.9 10.17 19.45 10.56C20.29 10.77 20.95 11.43 21.16 12.27C21.39 13.19 21.53 14.12 21.7 15.06C21.8 15.66 21.81 16.5 22.42 16.5"/><path d="M22.42 16.5H25"/></g>'), 'hood': ('<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M-1 16.5H1.66"/><path d="M1.66 16.5C2.03 16.5 2 15.97 2.07 15.6C2.19 14.89 2.43 14.21 2.65 13.53C2.88 12.83 3.64 12.51 4.36 12.36"/><path d="M4.46 8.29C6.05 8.81 7.64 9.35 9.2 9.98C10.09 10.34 11.05 10.48 12.01 10.52"/><path d="M12.01 10.52L16.06 8.4C17.37 7.7 18.89 7.5 20.38 7.5C22.46 7.5 24.47 8.19 26.41 8.94C27.9 9.51 29.36 10.17 30.91 10.56C31.75 10.77 32.41 11.43 32.62 12.27C32.85 13.19 32.99 14.12 33.16 15.06C33.26 15.66 33.27 16.5 33.88 16.5"/><path d="M33.88 16.5H25"/></g>', '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M-1 16.5H1.66"/><path d="M1.66 16.5C2.03 16.5 2 15.97 2.07 15.6C2.19 14.89 2.43 14.21 2.65 13.53C2.88 12.83 3.64 12.51 4.36 12.36"/><path d="M4.46 8.29C6.05 8.81 7.64 9.35 9.2 9.98C10.09 10.34 11.05 10.48 12.01 10.52"/><path d="M12.01 10.52L16.06 8.4C17.37 7.7 18.89 7.5 20.38 7.5C22.46 7.5 24.47 8.19 26.41 8.94C27.9 9.51 29.36 10.17 30.91 10.56C31.75 10.77 32.41 11.43 32.62 12.27C32.85 13.19 32.99 14.12 33.16 15.06C33.26 15.66 33.27 16.5 33.88 16.5"/><path d="M33.88 16.5H25"/></g>'), 'hood-shut': ('<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M-1 16.5H1.66"/><path d="M1.66 16.5C2.03 16.5 2 15.97 2.07 15.6C2.19 14.89 2.43 14.21 2.65 13.53C2.88 12.83 3.64 12.51 4.36 12.36C6 12.01 7.65 11.69 9.31 11.46C10.26 11.32 11.16 10.96 12.01 10.52L16.06 8.4C17.37 7.7 18.89 7.5 20.38 7.5C22.46 7.5 24.47 8.19 26.41 8.94C27.9 9.51 29.36 10.17 30.91 10.56C31.75 10.77 32.41 11.43 32.62 12.27C32.85 13.19 32.99 14.12 33.16 15.06C33.26 15.66 33.27 16.5 33.88 16.5"/><path d="M33.88 16.5H25"/></g>', '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M-1 16.5H1.66"/><path d="M1.66 16.5C2.03 16.5 2 15.97 2.07 15.6C2.19 14.89 2.43 14.21 2.65 13.53C2.88 12.83 3.64 12.51 4.36 12.36C6 12.01 7.65 11.69 9.31 11.46C10.26 11.32 11.16 10.96 12.01 10.52L16.06 8.4C17.37 7.7 18.89 7.5 20.38 7.5C22.46 7.5 24.47 8.19 26.41 8.94C27.9 9.51 29.36 10.17 30.91 10.56C31.75 10.77 32.41 11.43 32.62 12.27C32.85 13.19 32.99 14.12 33.16 15.06C33.26 15.66 33.27 16.5 33.88 16.5"/><path d="M33.88 16.5H25"/></g>')}) %}
+{% set _ = MC.update({'car-window-vent': ('<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4h5a2 2 0 0 1 2 2v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-5.67a4 4 0 0 1 .8-2.4L7.8 5.6A4 4 0 0 1 11 4z"/><path d="M4.5 12h15"/><path d="M15 15h1"/></g><path d="M6.6 8.9H19V12H4.9z" fill="currentColor" opacity=".38"/>', '<g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4h5a2 2 0 0 1 2 2v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-5.67a4 4 0 0 1 .8-2.4L7.8 5.6A4 4 0 0 1 11 4z"/><path d="M4.5 12h15"/><path d="M15 15h1"/></g><path d="M6.6 8.9H19V12H4.9z" fill="currentColor" opacity=".38"/>')}) %}
+{% set _ = MC.update({'flash-off': (MC['flash'][0] ~ '<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 4l16 16"/>', MC['flash'][1] ~ '<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 4l16 16"/>')}) %}
+{% set MCP = {'trunk': 'trunk', 'frunk': 'hood'} %}
+{% macro mc(name, on=false) -%}
+<svg class="ctl-ic" viewBox="0 0 24 24" aria-hidden="true">{{ MC[name][1 if on else 0]|safe }}</svg>
 {%- endmacro %}
 
-{% macro control(c, short) -%}
-{% if c.key == 'charge_amps' %}{{ arg(c, 32, 'A', 5, 80, 1) }}{% elif c.key == 'climate_temp' %}{{ arg(c, 21, '°C', 15, 28, 0.5) }}{% elif c.key == 'volume' %}{{ arg(c, 5, 'of 11', 0, 11, 0.5) }}{% elif c.arg and c.arg[1] == 3 %}{{ arg(c, 3 if 'heat' in c.key else 2, 'of 3', 0, 3, 1) }}{% elif c.key == 'sched_charge' %}<form class="cmd-arg cmd-join" aria-label="{{ c.label }}" data-minutes><input class="field time" type="text" autocomplete="off" name="value" value="{{ '00:00'|tod }}" placeholder="{{ '21:00'|tod }}" aria-label="{{ c.label }}">{{ btn(c.key, 'Set') }}</form>{% else %}<button type="button" class="btn sm" data-cmd="{{ c.key }}" aria-label="{{ c.label }}">{{ short }}</button>{% endif %}
+{# One state tile: what the car is now, and below it what a tap does. A tile with no move to offer is disabled, has
+   no line under its state and says why in its tooltip. `hairy` tiles show the second tap in the tile itself. #}
+{% macro tile(key, icon, word, act, on=false, hairy=false, why=none, tip=none, name=none, state=none) -%}
+<button type="button" class="ctl-t{{ ' on' if on }}"{% if key and not why %} data-cmd="{{ key }}"{% if hairy %} data-hairy data-confirm="{{ act|replace('Tap to', 'Tap again to') }}"{% endif %}{% else %} disabled{% endif %}{% if name %} data-name="{{ name }}"{% endif %}{% if state %} title="{{ why or state }}" aria-label="{{ state }}. {{ why or act }}"{% elif why %} title="{{ why }}"{% elif tip %} title="{{ tip }}" aria-label="{{ tip }}. {{ word }}, {{ act }}"{% endif %}>{{ icon }}<span class="ctl-w">{{ word }}</span>{% if key and not why %}<span class="ctl-a" data-say>{{ act }}</span>{% endif %}</button>
 {%- endmacro %}
 
-{# The dock's one-tap commands, by what they touch; a password-each-time one carries a lock. #}
-{% set ACTS = [('flash', 'lights', 'Flash lights'), ('honk', 'horn', 'Honk'), ('wake', 'wake', 'Wake'), ('trunk', 'trunk', 'Open trunk'), ('trunk_close', 'trunk', 'Close trunk'), ('frunk', 'frunk', 'Open frunk'), ('frunk_close', 'frunk', 'Close frunk'), ('windows_vent', 'window', 'Vent windows'), ('windows_close', 'window', 'Close windows'), ('homelink', 'garage', 'HomeLink'), ('remote_start', 'key', 'Keyless driving')] %}
-{# The Adjust fold, by what each row touches: charging, the cabin, the seats and wheel, security, media. #}
-{% set ADJUST = [
-  ('Charging current', [('charge_amps', none)]),
-  ('Charge port', [('charge_port_open', 'Open'), ('charge_port_close', 'Close')]),
-  ('Charge at', [('sched_charge', none), ('sched_charge_off', 'Off')]),
-  ('Battery preconditioning', [('precondition_on', 'On'), ('precondition_off', 'Off')]),
-  ('Cabin', [('climate_temp', none)]),
-  ('Keep climate', [('keep_on', 'Keep'), ('dog_on', 'Dog'), ('camp_on', 'Camp'), ('keeper_off', 'Off')]),
-  ('Defrost', [('defrost_on', 'On'), ('defrost_off', 'Off')]),
-  ('Max A/C', [('max_ac_on', 'On'), ('max_ac_off', 'Off')]),
-  ('Overheat protection', [('overheat_on', 'On'), ('overheat_fan', 'Fan'), ('overheat_off', 'Off')]),
-  ('Bioweapon defense', [('bioweapon_on', 'On'), ('bioweapon_off', 'Off')]),
-  ("Driver's seat heat", [('seat_heat', none)]),
-  ('Passenger seat heat', [('seat_heat_passenger', none)]),
-  ('Rear left seat heat', [('seat_heat_rear_left', none)]),
-  ('Rear centre seat heat', [('seat_heat_rear_center', none)]),
-  ('Rear right seat heat', [('seat_heat_rear_right', none)]),
-  ("Driver's seat vent", [('seat_vent', none)]),
-  ('Passenger seat vent', [('seat_vent_passenger', none)]),
-  ('Steering wheel heat', [('wheel_heat', none), ('wheel_heat_on', 'On'), ('wheel_heat_off', 'Off')]),
-  ('Sentry at home', [('sentry_home_on', 'On'), ('sentry_home_off', 'Off')]),
-  ('Sentry at work', [('sentry_work_on', 'On'), ('sentry_work_off', 'Off')]),
-  ('Enhanced deterrence', [('deterrence_on', 'On'), ('deterrence_off', 'Off')]),
-  ('Alarm', [('alarm_on', 'On'), ('alarm_silent', 'Silent'), ('alarm_off', 'Off'), ('alarm_silence', 'Silence it')]),
-  ('Headlights', [('lights_on', 'On'), ('lights_off', 'Off')]),
-  ('Media', [('media_prev', 'Back'), ('media_toggle', 'Play/pause'), ('media_next', 'Next')]),
-  ('Volume', [('volume', none)]),
-] %}
+{# The six state tiles, from the car's readings: the bold line is always the state, the line under it what a tap
+   does; a reading the car has not given names the part, never a guessed state. Inside the car card, so a command's result and the live stream redraw them. #}
+{% macro state_tiles(cmd, car) -%}
+{% if cmd and not cmd.reason %}
+{% set a = cmd.allowed or [] %}{% set have = {} %}{% for c in (cmd.more or []) %}{% set _ = have.update({c.key: c}) %}{% endfor %}
+{% set ks = (have.keys()|list) + (a|list) %}
+{% macro hairy(k) %}{{ 'y' if k in have and have[k].tier == 3 }}{% endmacro %}
+{% set locked = car.get('locked') %}{% set clim = cmd.climate %}{% set charging = car.get('status') == 'Charging' %}{% set plugged = car.get('plugged') %}
+{% set tr, fr, wi = car.get('trunk_open'), car.get('frunk_open'), car.get('windows_open') %}
+{% set out = [] %}{% set aux = [] %}{% set opens = [] %}
+{% if 'lock' in ks %}
+  {% if locked is true %}{% set k = 'unlock' if 'unlock' in ks else none %}{% set _ = out.append(tile(k, mc('lock'), 'Locked', 'Tap to unlock', hairy=hairy('unlock'), why=none if k else 'Unlocking is off for this car (Settings › Commands)')) %}
+  {% elif locked is false %}{% set _ = out.append(tile('lock', mc('unlock', true), 'Unlocked', 'Tap to lock', on=true)) %}
+  {% else %}{% set _ = out.append(tile('lock', mc('lock'), 'Doors', 'Tap to lock')) %}{% endif %}
+{% endif %}
+{# Frunk before trunk, so the two read as one car nose to tail beside the lock. A Tesla's trunk button toggles and
+   its open frunk only shuts by hand; a Lucid has a close for each. One the car has not reported reads closed (a sleeping Lucid says neither, and a frunk or trunk left open is the rare case), with the tap to open. #}
+{% for part, name, was in [('frunk', 'Frunk', fr), ('trunk', 'Trunk', tr)] if part in ks or (part ~ '_close') in ks %}
+  {% set close = (part ~ '_close') if (part ~ '_close') in ks else (part if part == 'trunk' and part in ks and (part ~ '_close') not in have else none) %}
+  {% set open_k = part if part in ks else none %}
+  {% if was is true %}{% set _ = opens.append(tile(close, mc(MCP[part], true), name, 'Tap to close' if close else 'Closes by hand', state=name ~ ' open', on=true, hairy=hairy(close) if close else '', why=none if close else name ~ ' closes by hand')) %}
+  {% elif was is false %}{% set _ = opens.append(tile(open_k, mc(MCP[part] ~ '-shut'), name, 'Tap to open', state=name ~ ' closed', hairy=hairy(open_k) if open_k else '', why=none if open_k else 'Opening it is off for this car (Settings › Commands)')) %}
+  {% elif open_k %}{% set _ = opens.append(tile(open_k, mc(MCP[part] ~ '-shut'), name, 'Tap to open', state=name ~ ' closed', hairy=hairy(open_k))) %}
+  {% else %}{% set _ = opens.append(tile(close, mc(MCP[part], true), name, 'Tap to close', state=name ~ ' open', hairy=hairy(close))) %}{% endif %}
+{% endfor %}
+{% if 'climate_on' in ks %}
+  {% set sf = car.get('climate_set_f') %}
+  {% if clim is true %}{% set _ = aux.append(tile('climate_off', mc('fan', clim is true), ('On · ' ~ (sf|temp) ~ '°') if sf is not none else 'Climate on', 'Tap to stop', on=true)) %}
+  {% elif clim is false %}{% set _ = aux.append(tile('climate_on', mc('fan', clim is true), 'Climate off', 'Tap to start')) %}
+  {% else %}{% set _ = aux.append(tile('climate_on', mc('fan', clim is true), 'Climate', 'Tap to start')) %}{% endif %}
+{% endif %}
+{% if 'charge_start' in ks %}
+  {% if charging %}{% set _ = aux.append(tile('charge_stop', mc('flash', true), 'Charging', 'Tap to stop', on=true, name='Stop charging')) %}
+  {% elif plugged is true %}{% set _ = aux.append(tile('charge_start', mc('flash'), 'Plugged in', 'Tap to start')) %}
+  {% elif plugged is false %}{% set _ = aux.append(tile(none, mc('flash-off'), 'Charge', '', state='Unplugged', why='Unplugged: the cable is out')) %}
+  {% else %}{% set _ = aux.append(tile('charge_start', mc('flash'), 'Not charging' if car.get('status') else 'Charge', 'Tap to start')) %}{% endif %}
+{% endif %}
+{% if 'windows_vent' in ks or 'windows_close' in ks %}
+  {% if wi is true %}{% set k = 'windows_close' if 'windows_close' in ks else none %}{% set _ = aux.append(tile(k, mc('car-window-vent', true), 'Windows', 'Tap to close', state='Windows open', on=true, hairy=hairy(k) if k else '', why=none if k else 'Closing them is off for this car (Settings › Commands)')) %}
+  {% elif wi is false %}{% set k = 'windows_vent' if 'windows_vent' in ks else none %}{% set _ = aux.append(tile(k, mc('car-window'), 'Windows', 'Tap to vent', state='Windows closed', hairy=hairy(k) if k else '', why=none if k else 'Venting is off for this car (Settings › Commands)')) %}
+  {% elif 'windows_vent' in ks %}{% set _ = aux.append(tile('windows_vent', mc('car-window'), 'Windows', 'Tap to vent', state='Windows closed', hairy=hairy('windows_vent'))) %}
+  {% else %}{% set _ = aux.append(tile('windows_close', mc('car-window-vent', true), 'Windows', 'Tap to close', state='Windows open', hairy=hairy('windows_close'))) %}{% endif %}
+{% endif %}
+{% set tiles = out + opens + aux %}
+<div class="ctl-tiles main" role="group" aria-label="Controls">{% for t in tiles %}{{ t }}{% endfor %}</div>
+{% endif %}
+{%- endmacro %}
+{# The panel's controls. A segmented group sends the tapped option (a value for those that take one); a switch sends
+   its on or off command by the way it flips; a stepper sends its value; each a moment after the last tap. #}
+{# The arrow that opens the dock: the card's last line, so the panel it opens follows it directly. #}
+{% macro more_arrow(cmd, car) -%}
+{% if cmd and not cmd.reason %}<button type="button" class="ctl-more" data-dock-toggle aria-expanded="false" aria-controls="dock-fold-{{ car.vin }}" aria-label="More controls" title="More controls"><span class="dock-chev" aria-hidden="true"></span></button>{% endif %}
+{%- endmacro %}
+{% macro seg(label, items, group, sel=none) -%}
+<span class="ctl-seg" role="group" aria-label="{{ label }}" data-group="{{ group }}">{% for k, text in items %}<button type="button" data-send="{{ k }}" aria-pressed="{{ 'true' if sel == k else 'false' }}">{{ text }}</button>{% endfor %}</span>
+{%- endmacro %}
+{% macro sw(label, on_k, off_k, state) -%}
+<button type="button" class="ctl-sw" role="switch" aria-label="{{ label }}" aria-checked="{{ 'true' if state else 'false' }}" data-send-on="{{ on_k }}" data-send-off="{{ off_k }}" data-group="{{ on_k }}"><i></i></button>
+{%- endmacro %}
+{# A round − and + around a big value, in the unit shown; conv 'f' sends the value as °C. #}
+{% macro stepper(key, value, lo, hi, step, suffix, label, conv='', big=true) -%}
+<span class="ctl-step{{ ' big' if big }}" data-stepper data-send="{{ key }}" data-group="{{ key }}" data-min="{{ lo }}" data-max="{{ hi }}" data-step="{{ step }}" data-value="{{ value }}" data-suffix="{{ suffix }}"{% if conv %} data-conv="{{ conv }}"{% endif %}><button type="button" data-dir="-1" aria-label="Less {{ label }}">&minus;</button><output aria-label="{{ label }}">{{ value }}{{ suffix }}</output><button type="button" data-dir="1" aria-label="More {{ label }}">+</button></span>
+{%- endmacro %}
+{% macro row(label, hint=none) -%}
+<div class="ctl-row"><span class="ctl-l">{{ label }}{% if hint %} <small class="muted">{{ hint }}</small>{% endif %}</span><span class="ctl-c">{{ caller() }}</span></div>
+{%- endmacro %}
+{% macro block(label, cls='', note=none) -%}
+<div class="ctl-b{{ ' ' ~ cls if cls }}"><span class="ctl-cap">{{ label }}{% if note %} <span class="ctl-note">{{ note }}</span>{% endif %}</span>{{ caller() }}</div>
+{%- endmacro %}
+{% macro rows(spec, ks, hints={}) -%}
+{% for label, items in spec %}{% set present = items|selectattr(0, 'in', ks)|list %}{% if present %}{% call row(label, hints.get(label)) %}{{ seg(label, present, label) }}{% endcall %}{% endif %}{% endfor %}
+{%- endmacro %}
 
-{% macro dock(cmd, car, root) -%}
+{# A seat on the cabin map: tap to step off, 1, 2, 3 in the mode shown; a seat without that mode is greyed. #}
+{% macro seat(name, heat, vent, ks, cls) -%}
+<button type="button" class="ctl-seat {{ cls }}" data-seat data-name="{{ name }}" data-heat="{{ heat if heat in ks }}" data-vent="{{ vent if vent and vent in ks }}"><span class="ctl-sn">{{ name }}</span><span class="ctl-lv"><i></i><i></i><i></i></span><span class="ctl-st"></span></button>
+{%- endmacro %}
+
+{% set SEATS = [('Driver', 'seat_heat', 'seat_vent'), ('Passenger', 'seat_heat_passenger', 'seat_vent_passenger'), ('Rear left', 'seat_heat_rear_left', ''), ('Rear centre', 'seat_heat_rear_center', ''), ('Rear right', 'seat_heat_rear_right', '')] %}
+{% set CHARGE_ROWS = [('Charge port', [('charge_port_open', 'Open'), ('charge_port_close', 'Close')]), ('Battery preconditioning', [('precondition_off', 'Off'), ('precondition_on', 'On')])] %}
+{% set CLIMATE_ROWS = [('Keep climate', [('keeper_off', 'Off'), ('keep_on', 'Keep'), ('dog_on', 'Dog'), ('camp_on', 'Camp')]), ('Max A/C', [('max_ac_off', 'Off'), ('max_ac_on', 'On')]), ('Overheat protection', [('overheat_off', 'Off'), ('overheat_on', 'On'), ('overheat_fan', 'Fan')]), ('Bioweapon defense', [('bioweapon_off', 'Off'), ('bioweapon_on', 'On')])] %}
+{% set GUARD_ROWS = [('Sentry at home', [('sentry_home_off', 'Off'), ('sentry_home_on', 'On')]), ('Sentry at work', [('sentry_work_off', 'Off'), ('sentry_work_on', 'On')]), ('Enhanced deterrence', [('deterrence_off', 'Off'), ('deterrence_on', 'On')]), ('Alarm', [('alarm_off', 'Off'), ('alarm_on', 'On'), ('alarm_silent', 'Silent'), ('alarm_silence', 'Silence it')])] %}
+{% set MORE_ROWS = [('Headlights', [('lights_off', 'Off'), ('lights_on', 'On')]), ('Media', [('media_prev', 'Back'), ('media_toggle', 'Play/pause'), ('media_next', 'Next')])] %}
+{# The quick row: one tap each, by what it touches; a tier 3 one asks for a second tap in the button. #}
+{% set QUICK = [('flash', 'parking-lights', 'Flash', 'Flash the lights'), ('honk', 'horn', 'Honk', 'Honk the horn'), ('wake', 'power', 'Wake', 'Wake the car'), ('remote_start', 'key-2', 'Keyless', 'Start keyless driving'), ('homelink', 'garage', 'Garage', 'Open or close the garage (HomeLink)')] %}
+{# The panel's tabs: id, name, tooltip, the commands that earn it a place. #}
+{% set TABS = [('charge', 'Charge', 'Charging', ['charge_limit', 'charge_amps', 'charge_port_open', 'charge_port_close', 'precondition_on', 'sched_charge', 'sched_charge_end', 'depart']), ('climate', 'Climate', 'Climate and cabin', ['climate_temp', 'wheel_heat', 'wheel_heat_on', 'defrost_on', 'keep_on', 'dog_on', 'camp_on', 'keeper_off', 'max_ac_on', 'overheat_on', 'bioweapon_on']), ('seats', 'Seats', 'Seat heat and ventilation', ['seat_heat', 'seat_heat_passenger', 'seat_heat_rear_left', 'seat_heat_rear_center', 'seat_heat_rear_right', 'seat_vent', 'seat_vent_passenger']), ('guard', 'Security', 'Sentry and alarm', ['sentry_on', 'sentry_home_on', 'sentry_work_on', 'deterrence_on', 'alarm_on', 'alarm_silence']), ('more', 'More', 'Lights and media', ['lights_on', 'media_toggle', 'volume'])] %}
+
+{% macro dock(cmd, car, root, u=none, step=none) -%}
 {% if cmd and cmd.reason %}<p class="cmd-why muted small">{{ cmd.reason }}</p>
 {% elif cmd %}{% set have = {} %}{% for c in (cmd.more or []) %}{% set _ = have.update({c.key: c}) %}{% endfor %}
+{% set ks = (have.keys()|list) + ((cmd.allowed or [])|list) %}
+{% set metric = u.metric if u and u.metric is defined else false %}
+{% set tabs = [] %}{% for id, short, long, keys in TABS if keys|select('in', ks)|list %}{% set _ = tabs.append((id, short, long)) %}{% endfor %}
+{% set first = 'climate' if tabs|selectattr(0, 'equalto', 'climate')|list else (tabs[0][0] if tabs else 'log') %}
+{% set quick = QUICK|selectattr(0, 'in', ks)|list %}
+{% set DAILY = {'Tesla': 90, 'Lucid': 80} %}
 <section class="cmd-more dock" data-cmd-url="{{ root }}/cars/{{ car.vin }}/command" data-cmd-vin="{{ car.vin }}" data-step-url="{{ root }}/commands/step-up" aria-label="Commands">
   {% if cmd.signin %}<a class="btn sm" href="{{ root }}/settings/sources/tesla/start">Sign in again to allow commands</a>{% endif %}
-  {# Where the car has said which way the windows, trunk and frunk are, only the move that changes
-     them shows, in words that say it. A Tesla's trunk button toggles, and its open frunk only
-     closes by hand; a Lucid has a close for each. #}
-  {% set skip = [] %}
-  {% for open_key, close_key, state in [('windows_vent', 'windows_close', 'windows_open'), ('trunk', 'trunk_close', 'trunk_open'), ('frunk', 'frunk_close', 'frunk_open')] if close_key in have %}
-    {% if car.get(state) is true %}{% set _ = skip.append(open_key) %}{% elif car.get(state) is false %}{% set _ = skip.append(close_key) %}{% endif %}
-  {% endfor %}
-  {% set acts = ACTS|selectattr(0, 'in', have)|rejectattr(0, 'in', skip)|list %}
-  {% if acts %}<div class="dock-acts">{% for key, icon, label in acts %}{% set label = 'Close trunk' if key == 'trunk' and 'trunk_close' not in have and car.get('trunk_open') else label %}{% set shut = key == 'frunk' and 'frunk_close' not in have and car.get('frunk_open') %}<button type="button" class="dock-b{{ ' guarded' if have[key].tier == 3 }}" data-cmd="{{ key }}" aria-label="{{ 'Frunk is open' if shut else label }}"{% if shut %} disabled{% elif have[key].tier == 3 %} title="{{ label }}: asks for your password"{% endif %}>{{ ic.icon(icon) }}<span data-say>{{ 'Frunk open' if shut else label }}</span></button>{% endfor %}</div>{% endif %}
-  <p class="cmd-said" data-cmd-said role="status" aria-live="polite">{% if cmd.partial %}This sign-in allows charging commands only.{% endif %}</p>
-  <form class="cmd-step" data-step-up hidden><label class="cmd-l" for="step-{{ car.vin }}">Password, for five minutes</label><span class="cmd-c cmd-join"><input class="field" id="step-{{ car.vin }}" type="password" name="password" autocomplete="current-password"><button type="submit" class="btn sm primary">OK</button></span></form>
-  <div class="dock-more">
-    {% set rows = [] %}{% for label, keys in ADJUST %}{% set ks = keys|selectattr(0, 'in', have)|list %}{% if ks %}{% set _ = rows.append((label, ks)) %}{% endif %}{% endfor %}
-    {% if rows %}<details class="dock-fold"><summary>Adjust</summary><div class="dock-rows">
-      {% for label, ks in rows %}<div class="cmd-row"><span class="cmd-l">{{ label }}{% if label == 'Defrost' and car.get('window_heating') is not none %} <small class="muted" title="Defrost and the rear window heater, as the car last said">{{ 'on' if car.window_heating else 'off' }}</small>{% elif label == 'Keep climate' and car.get('climate_keeper') %} <small class="muted" title="As the car last said">{{ car.climate_keeper }}</small>{% endif %}</span><span class="cmd-c">{% if ks|length >= 2 and ks|rejectattr(1, 'none')|list|length == ks|length %}<span class="cmd-pair" role="group" aria-label="{{ label }}">{% for k, s in ks %}{{ control(have[k], s) }}{% endfor %}</span>{% else %}{% for k, s in ks %}{{ control(have[k], s) }}{% endfor %}{% endif %}</span></div>
-      {% endfor %}</div></details>{% endif %}
-    <details class="dock-fold" data-cmd-log="{{ root }}/cars/{{ car.vin }}/commands"><summary>Log</summary><div class="cmd-log"><span class="muted small">Loading…</span></div></details>
+  {% set ways = step or {} %}{% if ways.pin or ways.password %}{% set pin_only = ways.pin and not ways.password %}
+  <form class="cmd-step" data-step-up hidden><label class="cmd-l" for="step-{{ car.vin }}">{{ 'PIN or password' if ways.pin and ways.password else 'PIN' if ways.pin else 'Password' }}, for two minutes</label><span class="cmd-c cmd-join"><input class="field" id="step-{{ car.vin }}" type="password" name="password"{% if pin_only %} inputmode="numeric" autocomplete="off" maxlength="8"{% else %} autocomplete="current-password"{% endif %}><button type="submit" class="btn sm primary">OK</button></span></form>{% endif %}
+  <div class="dock-panel">
+    <div class="ctl-foot" data-cmd-said data-tone="{{ 'note' if cmd.partial else 'idle' }}"><i aria-hidden="true"></i><span data-said role="status" aria-live="polite">{% if cmd.partial %}This sign-in allows charging commands only.{% endif %}</span></div>
+    <div class="dock-fold" id="dock-fold-{{ car.vin }}" data-dock-fold hidden>
+    {% if quick %}<div class="ctl-quick" role="group" aria-label="One-tap commands">{% for key, icon, label, tip in quick %}<button type="button" class="ctl-q" data-cmd="{{ key }}"{% if have[key] is defined and have[key].tier == 3 %} data-hairy data-confirm="Tap again: {{ label }}"{% endif %} title="{{ tip }}" aria-label="{{ tip }}">{{ ic.icon(icon) if icon == 'garage' else mc(icon) }}<span data-say>{{ label }}</span></button>{% endfor %}</div>{% endif %}
+    <div class="dock-tabs" role="tablist" aria-label="Adjust and log">{% for id, short, long in tabs %}<button type="button" class="dock-tab" role="tab" id="tab-{{ id }}-{{ car.vin }}" aria-controls="pane-{{ id }}-{{ car.vin }}" aria-selected="{{ 'true' if id == first else 'false' }}" title="{{ long }}">{{ short }}</button>{% endfor %}<button type="button" class="dock-tab" role="tab" id="tab-log-{{ car.vin }}" aria-controls="pane-log-{{ car.vin }}" aria-selected="{{ 'true' if first == 'log' else 'false' }}" title="The commands sent to this car">Log</button></div>
+    {% for id, short, long in tabs %}<div class="dock-pane" role="tabpanel" id="pane-{{ id }}-{{ car.vin }}" aria-labelledby="tab-{{ id }}-{{ car.vin }}"{% if id != first %} hidden{% endif %}>
+      {% if id == 'charge' %}
+        <div class="ctl-blocks">
+          {% if 'charge_limit' in ks %}{% set lim = (cmd.limit|round(0)|int) if cmd.limit else 80 %}{% set day = DAILY.get(car.get('make'), 80) %}
+          {% set m = car.get('charge_minutes_left')|int %}{% set now_note %}{% if car.get('status') == 'Charging' %}{% if car.get('charging_power_kw') %}{{ car.charging_power_kw|num(1) }} kW{% endif %}{% if car.get('charging_power_kw') and (car.get('charge_full_at') or m) %} · {% endif %}{% if car.get('charge_full_at') %}full {{ car.charge_full_at|local('%-I:%M %p') }}{% elif m %}full in {% if m >= 60 %}{{ m // 60 }} h {% endif %}{{ m % 60 }} min{% endif %}{% endif %}{% endset %}
+          {% call block('Charge limit', 'grow', now_note|trim or none) %}<output class="ctl-big" data-out="charge_limit">{{ lim }}%</output>
+            <input type="range" class="ctl-range" data-send="charge_limit" data-group="charge_limit" data-suffix="%" min="50" max="100" step="5" value="{{ lim }}" aria-label="Charge limit">
+            <div class="ctl-ticks" aria-hidden="true"><span>50</span><span>60</span><span>70</span><span>80</span><span>90</span><span>100</span></div>
+            <div class="ctl-chips"><button type="button" class="ctl-chip" data-chip="{{ day }}">Daily {{ day }}%</button><button type="button" class="ctl-chip" data-chip="100">Trip 100%</button></div>{% endcall %}
+          {% endif %}
+          {% if 'charge_amps' in ks %}{% set top = 48 if car.get('make') == 'Tesla' else 80 %}{% set amps = (car.get('charge_amps_set')|round(0)|int) if car.get('charge_amps_set') else none %}
+          {% call block('Current') %}{% if amps %}{{ stepper('charge_amps', amps, 5, top, 1, ' A', 'charging current') }}<span class="ctl-sub">of {{ top }} A</span>{% else %}<span class="ctl-sub" title="The car has not said its charging current, so it can't be stepped from a guess">Not reported yet</span>{% endif %}{% endcall %}
+          {% endif %}
+        </div>
+        <div class="ctl-rows">
+          {{ rows(CHARGE_ROWS, ks) }}
+          {% if cmd.where and cmd.where.options and ('depart' in ks or 'sched_charge' in ks) %}{% call row('Applies at') %}<select class="field" data-where aria-label="Where schedules apply">{% for g in cmd.where.options|map(attribute='group')|unique %}<optgroup label="{{ g }}">{% for o in cmd.where.options if o.group == g %}<option value="{{ o.id }}"{% if o.id == cmd.where.default %} selected{% endif %}>{{ o.name }}</option>{% endfor %}</optgroup>{% endfor %}</select>{% endcall %}{% endif %}
+          {% if 'sched_charge' in ks %}{% call row('Charge at') %}<input class="field time" type="text" autocomplete="off" data-send="sched_charge" data-group="sched_charge" data-minutes value="{{ '00:00'|tod }}" placeholder="{{ '21:00'|tod }}" aria-label="Charge at">{% if 'sched_charge_off' in ks %}{{ seg('Scheduled charging', [('sched_charge_off', 'Off')], 'sched_charge') }}{% endif %}{% endcall %}{% endif %}
+          {% if 'sched_charge_end' in ks %}{% call row('Charge done by') %}<input class="field time" type="text" autocomplete="off" data-send="sched_charge_end" data-group="sched_charge_end" data-minutes value="{{ '06:00'|tod }}" placeholder="{{ '06:00'|tod }}" aria-label="Charge done by">{% endcall %}{% endif %}
+          {% if 'depart' in ks %}{% call row('Depart by', 'warms the car') %}<input class="field time" type="text" autocomplete="off" data-send="depart" data-group="depart" data-minutes value="{{ '07:00'|tod }}" placeholder="{{ '07:00'|tod }}" aria-label="Depart by">{% if 'depart_off' in ks %}{{ seg('Scheduled departure', [('depart_off', 'Off')], 'depart') }}{% endif %}{% endcall %}{% endif %}
+          {% if 'depart_offpeak' in ks %}{% call row('Depart by, off-peak', 'charges by then') %}<input class="field time" type="text" autocomplete="off" data-send="depart_offpeak" data-group="depart" data-minutes value="{{ '07:00'|tod }}" placeholder="{{ '07:00'|tod }}" aria-label="Depart by, off-peak charging">{% endcall %}{% endif %}
+        </div>
+      {% elif id == 'climate' %}
+        <div class="ctl-split"><div class="ctl-blocks">
+          {% set ins = car.get('inside_f') if car.get('inside_f') is not none else (car.get('meters') or {}).get('inside_f') %}{% set outs = car.get('outside_f') if car.get('outside_f') is not none else (car.get('meters') or {}).get('outside_f') %}
+          {% set env = ((ins|temp ~ '° inside') if ins is not none else '') ~ (' · ' if ins is not none and outs is not none else '') ~ ((outs|temp ~ '° outside') if outs is not none else '') %}
+          {% if 'climate_temp' in ks %}{% set sf = car.get('climate_set_f') %}
+          {% if metric %}{% set tv = (((sf - 32) * 5 / 9 * 2)|round / 2) if sf is not none else 21 %}{% set lo, hi, st = 15, 28, 0.5 %}{% else %}{% set tv = sf|round(0)|int if sf is not none else 70 %}{% set lo, hi, st = 60, 82, 1 %}{% endif %}
+          {% call block('Cabin', note=env) %}{{ stepper('climate_temp', tv, lo, hi, st, '°', 'cabin temperature', '' if metric else 'f') }}{% endcall %}
+          {% elif env %}{% call block('Cabin', note=env) %}{% endcall %}{% endif %}
+          {% if 'wheel_heat' in ks %}{% call block('Steering wheel') %}<span class="ctl-seg" role="group" aria-label="Steering wheel heat" data-group="wheel_heat">{% for v, text in [(0, 'Off'), (1, '1'), (2, '2'), (3, '3')] %}<button type="button" data-send="wheel_heat" data-value="{{ v }}" aria-pressed="false">{{ text }}</button>{% endfor %}</span>{% endcall %}
+          {% elif 'wheel_heat_on' in ks %}{% call block('Steering wheel') %}{{ seg('Steering wheel heat', [('wheel_heat_off', 'Off'), ('wheel_heat_on', 'On')], 'wheel_heat') }}{% endcall %}{% endif %}
+          {% if 'defrost_on' in ks %}{% set wh = car.get('window_heating') %}{% call block('Defrost') %}{% if wh is not none %}{{ sw('Defrost', 'defrost_on', 'defrost_off', wh) }}{% else %}{{ seg('Defrost', [('defrost_off', 'Off'), ('defrost_on', 'On')], 'defrost_on') }}{% endif %}{% endcall %}{% endif %}
+        </div>
+        <div class="ctl-rows">{{ rows(CLIMATE_ROWS, ks, {'Keep climate': car.get('climate_keeper')}) }}</div></div>
+      {% elif id == 'seats' %}
+        <div class="ctl-seats">
+          <div class="ctl-cabin"><span class="ctl-front">Front</span>
+            <div class="ctl-sr f">{% for name, h, v in SEATS[:2] %}{{ seat(name, h, v, ks, 'front') }}{% endfor %}</div>
+            <div class="ctl-sr r">{% for name, h, v in SEATS[2:] %}{{ seat(name, h, v, ks, 'rear') }}{% endfor %}</div>
+          </div>
+          <div class="ctl-side">
+            <span class="ctl-seg ctl-modes" role="group" aria-label="Seat mode"><button type="button" data-mode="heat" aria-pressed="true">Heat</button>{% if 'seat_vent' in ks or 'seat_vent_passenger' in ks %}<button type="button" data-mode="vent" aria-pressed="false">Vent</button>{% endif %}</span>
+            <span class="ctl-hint">Tap a seat: off, 1, 2, 3</span>
+            <button type="button" class="btn sm" data-seats-off>All seats off</button>
+          </div>
+        </div>
+      {% elif id == 'guard' %}
+        <div class="ctl-rows">
+          {% if 'sentry_on' in ks %}{% set g = car.get('sentry') %}{% call row(guard_name(car.get('make')) if guard_name is defined else 'Sentry') %}{% if g is not none %}{{ sw('Sentry', 'sentry_on', 'sentry_off', g) }}{% else %}{{ seg('Sentry', [('sentry_off', 'Off'), ('sentry_on', 'On')], 'sentry_on') }}{% endif %}{% endcall %}{% endif %}
+          {{ rows(GUARD_ROWS, ks) }}
+        </div>
+        {% set evs = car.get('sentry_events') or [] %}{% if evs %}<ul class="sev" aria-label="Recent {{ guard_name(car.get('make')) if guard_name is defined else 'Sentry' }} events">{% for e in evs[:5] %}<li class="sev-r{{ ' bad' if e.level and e.level >= 2 }}"><span class="sev-w">{{ e.level_word or 'Event' }}{% if e.type %} <span class="muted small">{{ e.type }}</span>{% endif %}</span>{% if e.pictures %}<span class="muted small">{{ e.pictures }} clip{{ '' if e.pictures == 1 else 's' }}</span>{% endif %}<span class="muted small" title="{{ e.at|local }}">{{ e.at|when }}</span></li>{% endfor %}</ul>{% endif %}
+      {% elif id == 'more' %}
+        <div class="ctl-rows">
+          {{ rows(MORE_ROWS, ks) }}
+          {% if 'volume' in ks %}{% call row('Volume') %}{{ stepper('volume', 5, 0, 11, 0.5, '', 'volume', '', false) }}{% endcall %}{% endif %}
+        </div>
+      {% endif %}
+    </div>{% endfor %}
+    <div class="dock-pane" role="tabpanel" id="pane-log-{{ car.vin }}" aria-labelledby="tab-log-{{ car.vin }}" data-cmd-log="{{ root }}/cars/{{ car.vin }}/commands"{% if first != 'log' %} hidden{% endif %}><div class="cmd-log"><span class="muted small">Loading…</span></div></div>
+    </div>
   </div>
 </section>{% endif %}
 {%- endmacro %}

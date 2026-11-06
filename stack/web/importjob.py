@@ -121,16 +121,16 @@ class Upload:
 class Store:
     """The staged files, the one job, and the thread that runs it.
 
-    `loader(path, progress) -> dict` loads one TeslaFi file; `mate(url, progress, item_done)`
-    runs a TeslaMate import; `after()` names the places at the end. All three are injected, so
+    `loader(path, progress) -> dict` loads one TeslaFi file; `mate(url, car, progress)` loads one
+    TeslaMate car and `tessie(token, car, progress)` one Tessie car; `after()` names the places at the end. All are injected, so
     the state machine is testable without a database."""
 
-    def __init__(self, root: str | os.PathLike | None, loader=None, mate=None, after=None, threaded: bool = True) -> None:
+    def __init__(self, root: str | os.PathLike | None, loader=None, mate=None, after=None, threaded: bool = True, tessie=None) -> None:
         self.root = Path(root or os.environ.get("CC_IMPORT_DIR") or DEFAULT_DIR)
         self.staged_dir, self.job_dir = self.root / "staged", self.root / "job"
-        self.loader, self.mate, self.after, self.threaded = loader, mate, after, threaded
+        self.loader, self.mate, self.tessie, self.after, self.threaded = loader, mate, tessie, after, threaded
         self.lock = threading.RLock()
-        self.secret: str | None = None  # a TeslaMate address, in memory only
+        self.secret: str | None = None  # a TeslaMate address or a Tessie token, in memory only
         self.typed: str | None = None  # the address of a refused attempt, handed back to the form once, never saved
         self.saved_at = 0.0
         self.state: dict = {"staged": [], "job": None, "notice": None}
@@ -321,7 +321,23 @@ class Store:
             self.state.update(notice=None, job=self._new_job("teslamate", items))
             self.save(force=True)
             jid = self.state["job"]["id"]
-        self._launch(self._run_teslamate, jid)
+        self._launch(self._run_cars, jid)
+        return None
+
+    def start_tessie(self, token: str, cars: list[dict]) -> str | None:
+        """One item per car on the token; the token stays in memory for the job and is never written to the state file."""
+        with self.lock:
+            if self.busy():
+                return "An import is already running."
+            if not cars:
+                return "That token has no cars."
+            self._clear_job_files()
+            items = [{"name": c.get("name") or c["vin"][-6:], "vin": c["vin"], "size": 0, "state": "pending", "detail": "", "pct": 0, "car": c} for c in cars]
+            self.secret = token
+            self.state.update(notice=None, job=self._new_job("tessie", items))
+            self.save(force=True)
+            jid = self.state["job"]["id"]
+        self._launch(self._run_cars, jid)
         return None
 
     def dismiss(self) -> None:
@@ -420,9 +436,11 @@ class Store:
             LOG.exception("history import crashed")
             self._finish(jid, explain(err))
 
-    def _run_teslamate(self, jid: str) -> None:
+    def _run_cars(self, jid: str) -> None:
+        """A TeslaMate or Tessie job: its cars one after the other, each by the runner for the job's kind."""
         try:
             job = self._job(jid)
+            runner = self.tessie if job["kind"] == "tessie" else self.mate
             n_total = len(job["items"])
             for k, it in enumerate(job["items"]):
                 with self.lock:
@@ -430,12 +448,12 @@ class Store:
                     job["step"] = f"Reading {it['name']}"
                     self.save(force=True)
                 try:
-                    got = self.mate(self.secret, it["car"], lambda pct, step=None, it=it, nd=k: self._progress(jid, it, step or f"Reading {it['name']}", pct, nd, n_total))
+                    got = runner(self.secret, it["car"], lambda pct, step=None, it=it, nd=k: self._progress(jid, it, step or f"Reading {it['name']}", pct, nd, n_total))
                 except Skip as why:
                     with self.lock:
                         it["state"], it["detail"] = "skipped", str(why)
                 except Exception as err:  # noqa: BLE001
-                    LOG.warning("teslamate import of one car failed: %s", type(err).__name__)
+                    LOG.warning("%s import of one car failed: %s", job["kind"], type(err).__name__)
                     with self.lock:
                         it["state"], it["detail"] = "skipped", explain(err)
                 else:
@@ -459,6 +477,10 @@ def explain(err: BaseException) -> str:
         return "Some of it overlaps history already held and the two could not be merged. Try again."
     if state or type(err).__name__ in ("OperationalError", "InterfaceError", "PoolTimeout"):
         return "The database did not answer. Try again in a minute."
+    from tessie_import import TessieError
+
+    if isinstance(err, TessieError):
+        return str(err)  # written for a person, and never holds the token
     if isinstance(err, (EOFError, gzip.BadGzipFile, zlib.error)):
         return "The file ends early or is damaged. Download the export again and upload that."
     if isinstance(err, (UnicodeError, ValueError, KeyError)):
@@ -554,5 +576,23 @@ def load_teslamate_car(connect, tm_connect):
         with connect() as conn:
             counts = teslamate_load.write_car(conn, out, vin, name, "Tesla", model, USABLE_KWH.get(model or ""), "teslamate import", say=lambda *_: None)
         return result_of(out, counts, name)
+
+    return run
+
+
+def load_tessie_car(connect, tz):
+    """A `tessie` runner for Store: one car's history from Tessie, month by month, through the writer."""
+
+    def run(token: str | None, car: dict, progress) -> dict:
+        import tessie_import as ti
+
+        if not token:
+            raise Skip("The token was not kept; start again.")
+        name = car.get("name") or car["vin"]
+        with connect() as conn:
+            got = ti.import_car(conn, ti.http_fetcher(token), car["vin"], name, tz, progress=progress, say=lambda *_: None)
+        if got["first"] is None:
+            raise Skip("Nothing to add: Tessie holds no history for this car that another source does not already have, or it is all loaded.")
+        return result_of(got, {"trips": got["trips"], "charging_sessions": got["charging_sessions"], "cc_positions": got["cc_positions"]}, name)
 
     return run

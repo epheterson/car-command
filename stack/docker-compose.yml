@@ -123,6 +123,14 @@ services:
       # Optional: Discord webhook for events (charge started/finished, parked, low battery, connector down).
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - TESLAFI_TOKENS=${TESLAFI_TOKENS:-}
+      # Only while importing from Tessie (make import-tessie): the token from dash.tessie.com/settings/api. Take it out of .env afterwards.
+      - TESSIE_TOKEN=${TESSIE_TOKEN:-}
+      # Optional: a pypowerwall proxy on the house's network (docs/sources.md); the Powerwall is read there, Tesla's cloud only when it is quiet.
+      - POWERWALL_RELAY_URL=${POWERWALL_RELAY_URL:-}
+      - MQTT_URL=${MQTT_URL:-}
+      - MQTT_PREFIX=${MQTT_PREFIX:-}
+      - MQTT_DISCOVERY_PREFIX=${MQTT_DISCOVERY_PREFIX:-}
+      - MQTT_LOCATION=${MQTT_LOCATION:-}
       # A Tesla, live and free: the TeslaMate database to follow. Empty = none.
       - TESLAMATE_DB_URL=${TESLAMATE_DB_URL:-}
       # Connect Tesla (Settings › Cars and sources): your own Tesla developer app and the domain
@@ -227,6 +235,7 @@ services:
     environment:
       - DRIVEWAY_RTSP=${DRIVEWAY_RTSP:-}
       - DRIVEWAY_ZONE=${DRIVEWAY_ZONE:-}
+      - DRIVEWAY_STREET=${DRIVEWAY_STREET:-}
       - DRIVEWAY_KEEP_DAYS=${DRIVEWAY_KEEP_DAYS:-7}
     volumes:
       - carcommand_driveway:/data

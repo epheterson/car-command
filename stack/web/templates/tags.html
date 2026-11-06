@@ -22,6 +22,7 @@
   {% if totals.kwh %}<div class="fig"><span class="n">{{ totals.kwh|num(1) }}<small>kWh</small></span><span class="l">Energy{% if totals.cost %}, {{ est(totals.get('cost_estimate'), 'at a home rate partly priced at the regional average') }}{{ cur }}{{ totals.cost|num(2) }} at home rates{% endif %}</span></div>{% endif %}
   {% if away %}<div class="fig"><span class="n">{{ away|length }}</span><span class="l">Charges away{% if totals.charge_kwh %}, {{ totals.charge_kwh|num }} kWh{% endif %}</span></div>{% endif %}
 </div></section>
+{% include "_logbook.html" %}
 {% if routes %}<section><div id="map" class="map tall"></div></section>
 <script>
 // the map starts once its deferred scripts have run (DOMContentLoaded); it never waits for the brand's arrival

@@ -79,6 +79,7 @@ NOW = {"tz": ZoneInfo("America/Los_Angeles"), "clock": "12", "date_order": "mdy"
 def register(env, tz: ZoneInfo | None = None, clock: str = "12", date_order: str = "mdy", place_icons=None) -> None:
     NOW.update(tz=tz or ZoneInfo("America/Los_Angeles"), clock=clock, date_order=date_order)
     clockfmt.PREFS.update(clock=clock, date_order=date_order)
+    env.filters["sched_head"] = lambda lines: __import__("schedules").head(lines)  # the schedule tile's bold time and its words
     env.filters["dfmt"] = lambda d, fmt="%b %-d, %Y": tied(d.strftime(adapt(fmt, NOW["clock"], NOW["date_order"]))) if d else ""  # a date or naive time, no zone
     env.filters["local"] = lambda dt, fmt="%a %b %-d, %-I:%M %p": tied(dt.astimezone(NOW["tz"]).strftime(adapt(fmt, NOW["clock"], NOW["date_order"]))) if dt else ""
     # pass_context keeps Jinja from evaluating these on a constant (a placeholder, '21:00'|tod) once,
@@ -146,6 +147,11 @@ def register(env, tz: ZoneInfo | None = None, clock: str = "12", date_order: str
     env.globals["alarm_word"] = nowpage.alarm_word
     env.globals["security_notes"] = nowpage.security_notes
     env.globals["occupant_level"] = nowpage.occupant_level
+    import lucidfields
+
+    env.globals["lucid_notes"] = lucidfields.notes
+    env.globals["slow_reason"] = lucidfields.slow_reason
+    env.globals["update_line"] = lucidfields.update_line
     env.globals["gauge_of"] = nowpage.gauge
     import daypage
 

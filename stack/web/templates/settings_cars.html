@@ -26,26 +26,28 @@
 {% for c in (cars or []) %}{% set p = c.pack %}{% set idn = c.get('ident') %}
 <section class="group car" aria-label="{{ c.name }}">
   <div class="group-b">
-    <div class="set-row car-h"><span class="dot c{{ colors.get(c.vin, 0) }}" role="img" title="Chart colour" aria-label="Chart colour"></span><span class="set-l"><b class="car-nm">{{ c.name }}</b>{% if idn and idn.line %}<span class="set-s">{{ idn.line }}</span>{% elif c.model %}<span class="set-s">{{ c.model }}</span>{% endif %}</span></div>
+    {% set srcname = c.get('source_name') or c.name %}
+    {# The car's name is its header; the pencil opens its nickname. #}
+    <details class="set-x car-edit"><summary class="set-row car-h"><span class="dot c{{ colors.get(c.vin, 0) }}" role="img" title="Chart colour" aria-label="Chart colour"></span><span class="set-l"><b class="car-nm">{{ c.name }}</b>{% if idn and idn.line %}<span class="set-s">{{ idn.line }}</span>{% elif c.model %}<span class="set-s">{{ c.model }}</span>{% endif %}</span><span class="car-ed" title="Nickname" aria-label="Edit nickname"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="2" d="m18.864 8.671l-3.536-3.535M8.964 18.57L20.278 7.257a2 2 0 0 0 0-2.828l-.707-.707a2 2 0 0 0-2.828 0L5.429 15.036l-1.06 4.596z"/></svg></span></summary>
+      <form class="set-p" method="post" action="{{ root }}/settings/cars/{{ c.vin }}/name{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+        <div class="set-row"><label class="set-l" for="nm-{{ c.vin }}">Nickname<span class="set-s">Blank goes back to {{ srcname }}</span></label><div class="set-c"><input class="field" id="nm-{{ c.vin }}" name="name" value="{{ c.name if c.name != srcname else '' }}" placeholder="{{ srcname }}" maxlength="40" autocomplete="off"></div></div>
+        <div class="acts"><button type="submit" class="btn primary">Save</button></div>
+      </form>
+    </details>
     {% for src in c.sources %}
     <div class="set-row"><span class="set-l">{{ src.name }}<span class="set-s">{% if not loop.first %}Also recording, to compare{% elif c.sources|length > 1 %}Writes its history{% else %}Its data and history{% endif %}{% if loop.first and c.newest %} · newest {{ c.newest|when }}{% endif %}</span></span>
       <span class="set-v">{% if src.state == 'ok' %}<span class="sstate"><span class="sdot ok" aria-hidden="true"></span>working</span>{% elif src.state %}{{ state(src) }}{% elif loop.first %}no live source{% endif %}</span></div>
     {% endfor %}
-    {% set srcname = c.get('source_name') or c.name %}
-    <details class="set-x"><summary class="set-row"><span class="set-l">Name {% call i.info("Name") %}Shown on every page and picker instead of the source's name. The source keeps its own. Blank goes back to it.{% endcall %}</span><span class="set-v"{% if srcname != c.name %} title="Source name: {{ srcname }}"{% endif %}>{{ c.name }}</span></summary>
-      <form class="set-p" method="post" action="{{ root }}/settings/cars/{{ c.vin }}/name{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
-        <div class="set-row"><label class="set-l" for="nm-{{ c.vin }}">Shown as</label><div class="set-c"><input class="field" id="nm-{{ c.vin }}" name="name" value="{{ c.name }}" placeholder="{{ srcname }}" maxlength="40" autocomplete="off"></div></div>
-        <div class="acts"><button type="submit" class="btn primary">Save</button></div>
-      </form>
-    </details>
     {% if c.choices|length > 1 %}<div class="set-row stack"><span class="set-l">History from</span>{{ parts.writer_choice(c.vin, c.choices, root, csrf) }}</div>{% endif %}
     {% if c.switch or c.silent %}<div class="set-notes">{{ switching(c) }}</div>{% endif %}
-    <details class="set-x pack"><summary class="set-row"><span class="set-l">Pack {% call i.info("Where the pack comes from") %}Used for every energy figure. From the car's source, else its model, unless you set it.{% endcall %}</span><span class="set-v">{% if p.kwh %}<b>{{ '%.1f kWh'|format(p.kwh) }}</b> · {{ p.text }}{% else %}unknown{% endif %}</span></summary>
+    {# A pack the car reports is the pack: shown, not edited. A model's figure or a typed one opens to change. #}
+    {% if p.origin == 'reported' %}<div class="set-row"><span class="set-l">Pack size<span class="set-s">{{ p.text[:1]|upper }}{{ p.text[1:] }}</span></span><span class="set-v"><b>{{ '%.1f kWh'|format(p.kwh) }}</b></span></div>
+    {% else %}<details class="set-x car-pack"><summary class="set-row"><span class="set-l">Pack size {% call i.info("Where the pack comes from") %}Used for every energy figure. From the car's source, else its model, unless you set it.{% endcall %}{% if p.kwh and p.text %}<span class="set-s">{{ p.text[:1]|upper }}{{ p.text[1:] }}</span>{% endif %}</span><span class="set-v">{% if p.kwh %}<b>{{ '%.1f kWh'|format(p.kwh) }}</b>{% else %}unknown{% endif %}</span></summary>
       <form class="set-p" method="post" action="{{ root }}/settings/cars{{ q }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
         <div class="set-row"><label class="set-l" for="cap-{{ c.vin }}">Usable pack<span class="set-s">{% if p.figure %}Blank goes back to {{ p.figure_by }}{% else %}Blank leaves it unknown{% endif %}</span></label><div class="set-c">{{ s.num('capacity_' ~ c.vin, '%.1f'|format(p.kwh) if p.kwh else '', unit='kWh', step='0.1', min=5, max=400, w=5, placeholder=('%.1f'|format(p.figure) if p.figure else 'unknown'), id='cap-' ~ c.vin) }}</div></div>
         <div class="acts">{% if p.origin == 'you' and p.figure %}<button type="submit" form="pack-reset-{{ c.vin }}" class="btn sm">Use {{ p.figure_by }} ({{ '%.1f'|format(p.figure) }} kWh)</button>{% endif %}<button type="submit" class="btn primary">Save</button></div>
       </form>
-    </details>
+    </details>{% endif %}
     {% if idn %}{% set mine = colors.get(c.vin, 0) %}{% set det = idn.detected_paint %}{% set custom = idn.paint if idn.paint_set and not idn.paint.name else none %}
     <details class="set-x"><summary class="set-row"><span class="set-l">Paint</span><span class="set-v looksum">{% if idn.paint %}<span class="paintsw" style="--paint:{{ idn.paint.hex }}" role="img" title="Paint: {{ idn.paint.name or 'your own' }}" aria-label="Paint: {{ idn.paint.name or 'your own' }}"></span>{{ idn.paint.name or 'Your own paint' }}{% else %}No paint set{% endif %}{% if not c.get('matched') %} · <span class="dot c{{ mine }}" role="img" title="Chart colour: {{ c.get('chart_name') or 'chart colour' }}" aria-label="Chart colour: {{ c.get('chart_name') or 'chart colour' }}"></span>{{ c.get('chart_name') or 'chart colour' }} on charts{% endif %}</span></summary>
       <form class="set-p look" method="post" action="{{ root }}/settings/cars{{ q }}" data-look><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="look" value="{{ c.vin }}"><input type="hidden" name="chart_set_{{ c.vin }}" value="" data-chart-set>

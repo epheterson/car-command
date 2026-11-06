@@ -29,11 +29,13 @@
 Car Command is a logbook and dashboard for the electric cars in your household, running on a machine you own: a home server or NAS with Docker. It records every drive and every charge from the cars themselves: where each car went, the energy it took, what that cost at your own electricity rates, and how the battery is holding up. Everything is kept in your own database.
 
 - **Every car on one site**, of several makes: Tesla directly (streaming live, about once a second), Lucid, and the other [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) brands (Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity). Tesla live data needs the [stream](docs/tesla-stream.md) (a Tailscale account and a Tesla developer app billed per use), or a TeslaFi or TeslaMate you already run.
-- **Your history comes with you**: years of drives and charges import from TeslaFi or TeslaMate.
-- **Real costs**: each charge priced from your time-of-use plan by the hour the car drew power, a price you set for a place, or what Tesla billed for a Supercharger. A home charge no plan covers falls back to the regional average, marked `≈`.
-- **Solar and Powerwall**: with a Tesla Powerwall at home, each home charge is split into sun, Powerwall and grid, and the sun counts as free.
-- **The rest of owning an EV**: battery health and parked drain, efficiency by temperature and speed, a service log with reminders and tire sets, alerts (Discord, Telegram, email, Pushover), CSV and JSON export.
-- **Commands, if you want them**: start and stop charging, the charge limit, climate and locks from the Now card, off until you turn them on; Teslas through Tesla's own signing proxy. A charging hold can keep a home charge out of the expensive hours. See [docs/commands.md](docs/commands.md).
+- **Your history comes with you**: years of drives and charges import from TeslaFi, TeslaMate or Tessie. Miles driven out of coverage still count: the odometer on the far side adds them as a drive marked no signal.
+- **Real costs**: each charge priced from your time-of-use plan by the hour the car drew power, a price you set for a place, or what Tesla billed for a Supercharger, idle and congestion fees included. A home charge no plan covers falls back to the regional average, marked `≈`.
+- **Solar and Powerwall**: with a Tesla Powerwall at home, each home charge is split into sun, Powerwall and grid, and the sun counts as free. Now shows the Powerwall live beside the cars, read on your own network.
+- **The rest of owning an EV**: battery health and parked drain, efficiency by temperature and speed, a service log with reminders and tire sets, a mileage logbook by tag, alerts (Discord, Telegram, email, Pushover), CSV and JSON export.
+- **Commands, if you want them**: charging, the charge limit, climate, locks, the trunks and more from the Now card, off until you turn them on; the ones that open or disarm a car ask for Face ID, a PIN or the password first; Teslas through Tesla's own signing proxy. A charging hold can keep a home charge out of the expensive hours. See [docs/commands.md](docs/commands.md).
+- **The garage door, hands free** (optional): with Home Assistant for the door and a driveway camera, the door opens as your car turns in and closes behind it as it leaves; one switch on Now turns it all off.
+- **Home Assistant**: each car's state published over MQTT with discovery, so the cars appear as devices with no setup there; position only if you turn it on. See [docs/install.md](docs/install.md#home-assistant-over-mqtt).
 - **Phone widgets and other apps**: any app can [connect](docs/api.md) with a sign-in and read each car's state, but not where it is.
 
 ## Quick start
@@ -90,6 +92,7 @@ Also: the same miles priced in gas, trip tags, an [API](docs/api.md), dark mode 
 | Tesla, direct | about once a second with the [stream](docs/tesla-stream.md); none without it | both | yes | import from TeslaFi or TeslaMate |
 | TeslaFi (feed and export) | each minute | both | yes | the export |
 | TeslaMate (database) | as TeslaMate records | both | yes | its database |
+| Tessie (API) | none, history only | both | yes | its API |
 | Lucid ([connector](https://github.com/epheterson/CarConnectivity-connector-lucid)) | each minute, 15 s driving | route only | yes | none |
 | Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity ([CarConnectivity](https://github.com/tillsteinbach/CarConnectivity#connectors)) | per connector | route | per connector | none |
 
@@ -99,16 +102,17 @@ Add sources under **Settings › Cars and sources**. The CarConnectivity brands 
 
 Your cars' data stays in your own database. What leaves your machine:
 
-- **Your sources** (Tesla, TeslaFi, a CarConnectivity connector) receive your sign-in, to send your car's data.
+- **Your sources** (Tesla, TeslaFi, Tessie, a CarConnectivity connector) receive your sign-in, to send your car's data.
 - **Map backgrounds** (off by default): OpenFreeMap receives the map tiles you view.
 - **Place names** (off by default): OpenStreetMap's Nominatim receives each new stop's position, rounded to about 100 m. The [local maps add-on](docs/maps.md) names places on your machine instead; it downloads its regions from Geofabrik.
 - **Weather** (off by default): Open-Meteo receives each drive's start, rounded to about 1 km, and its date.
 - **Find my plan**: OpenEI receives the utility you pick (or a ZIP code, only if you type one). Your home's ZIP code is matched to its utilities on your machine. A bill you upload is read on your machine and never stored; only its rate schedule, provider, start date and prices are kept.
+- **Home Assistant over MQTT** (off by default): your broker receives each car's state, and its position only if you turn that on.
 - **Alerts**: the service you choose (Discord, Pushover, Telegram, email) receives the alert.
 
 ## Documentation
 
-[Install](docs/install.md) · [Sources](docs/sources.md) · [Tesla app](docs/tesla-app.md) · [Tesla live stream](docs/tesla-stream.md) · [Troubleshooting](docs/troubleshooting.md) · [Costs](docs/costs.md) · [Local maps](docs/maps.md) · [API](docs/api.md) · [Roadmap](docs/roadmap.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[Install](docs/install.md) · [Sources](docs/sources.md) · [Tesla app](docs/tesla-app.md) · [Tesla live stream](docs/tesla-stream.md) · [Commands](docs/commands.md) · [Troubleshooting](docs/troubleshooting.md) · [Costs](docs/costs.md) · [Local maps](docs/maps.md) · [API](docs/api.md) · [Roadmap](docs/roadmap.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 <!-- Star history: hidden until there are stars to chart.
      To show it, delete this comment's first and last lines.
@@ -129,7 +133,7 @@ Your cars' data stays in your own database. What leaves your machine:
 - **Prices:** US EIA, Eurostat and the EU Weekly Oil Bulletin; US utility plans from [OpenEI](https://openei.org/wiki/Utility_Rate_Database); utilities by ZIP code from NREL's [U.S. Electric Utility Companies and Rates: Look-up by Zipcode](https://data.openei.org/submissions/6225) ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), filtered and re-encoded).
 - **Terrain:** [Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (Mapzen/Tilezen) on AWS Open Data, a blend of SRTM, USGS 3DEP, EU-DEM and other national models; each source and its attribution is listed in [joerd's attribution.md](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
 - **Weather:** [Open-Meteo](https://open-meteo.com).
-- **Icons:** [Lucide](https://lucide.dev) (ISC).
+- **Icons:** [Lucide](https://lucide.dev) (ISC) and [MingCute](https://github.com/Richard9394/MingCute) (Apache-2.0).
 
 ## License
 

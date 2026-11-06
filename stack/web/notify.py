@@ -14,6 +14,8 @@ import urllib.parse
 import urllib.request
 
 import identity
+import reach
+from lucidfields import REMIND_DAYS
 from places import car_at_home
 
 LOG = logging.getLogger("carcommand.notify")
@@ -95,6 +97,16 @@ def event_kinds(prev: dict | None, now: dict) -> list[tuple[str, str]]:
     if now.get("update_available") is True and prev.get("update_available") is not True:
         ver, mins = now.get("update_version"), now.get("update_install_min")
         out.append(("update", f"A software update is waiting on {name}" + (f": {ver}" if ver else "") + (f", about {mins} min to install." if mins else ".")))
+    # Connector 0.5.0's: the alarm actually sounding (not only arming), a fault the car flags on a module, an update
+    # that did not install, and the Electrify America plan running out (once at each reminder day, as it passes it).
+    if now.get("alarm_sounding") is True and prev.get("alarm_sounding") is not True:
+        out.append(("alarm", f"The alarm on {name} is sounding at {where}."))
+    fault, was_fault = now.get("mpb_fault"), prev.get("mpb_fault")
+    if fault in FAULTS and was_fault not in FAULTS:
+        out.append(("fault", f"{name} is flagging a {FAULTS[fault]} fault on one of its modules."))
+    if now.get("update_state") in FAILED_UPDATE and prev.get("update_state") not in FAILED_UPDATE:
+        out.append(("update", f"The software update on {name} did not install."))
+    out.extend(("ea_plan", t) for t in ea_plan_ending(prev, now))
     if now.get("keyfob_low") is True and prev.get("keyfob_low") is not True:
         out.append(("keyfob", f"A key fob for {name} has a low battery."))
     # The car's own tire warning, once when it comes on. Not a threshold applied here:
@@ -105,6 +117,23 @@ def event_kinds(prev: dict | None, now: dict) -> list[tuple[str, str]]:
         out.append(("tire", f"{name} is warning about a tire" + (f" ({_n(low, 1)} psi at the lowest)." if low is not None else ".")))
     out.extend(("tire", t) for t in tire_limits(prev, now, TIRE_LOW, TIRE_HIGH))
     return out
+
+
+FAULTS = {"warning": "warning", "critical": "critical", "hardware-fault": "hardware"}
+FAILED_UPDATE = ("failed", "failed-drivable")
+
+
+def ea_plan_ending(prev: dict, now: dict) -> list[str]:
+    """One message as the days left on a car's Electrify America plan pass each of lucidfields.REMIND_DAYS (30 and 7),
+    not while it stays below one. A plan that is renewed (days left rising) starts over."""
+    left, was = now.get("ea_days_left"), prev.get("ea_days_left")
+    if left is None or was is None or left < 0:
+        return []
+    name = now.get("name") or "The car"
+    if not any(was > d >= left for d in REMIND_DAYS):
+        return []
+    ends = now.get("ea_plan_ends")
+    return [f"{name}'s {now.get('ea_plan') or 'Electrify America'} plan ends in {left} day{'' if left == 1 else 's'}" + (f" ({ends:%b} {ends.day})" if ends else "") + "."]
 
 
 # The alarm's states that mean it is going off, in the words a message uses.
@@ -121,7 +150,7 @@ def occupant_level(car: dict) -> int:
 
 # Kept from the reading before when the car stops saying (asleep, out of reach), so an alert
 # that went once does not go again the next time the car wakes still saying the same thing.
-CARRIED = ("alarm_status", "sentry_usb", "living_object", "occupant_warning", "keyfob_low")
+CARRIED = ("alarm_status", "sentry_usb", "living_object", "occupant_warning", "keyfob_low", "alarm_sounding", "mpb_fault", "update_state")
 
 
 def carried(now: dict, prev: dict | None) -> dict:
@@ -131,8 +160,13 @@ def carried(now: dict, prev: dict | None) -> dict:
     return {**now, **{k: prev[k] for k in CARRIED if now.get(k) is None and prev.get(k) is not None}}
 
 
+# Unlocking, opening and keyless driving, every try, sent or refused: on every channel, whatever its
+# switches say. Not one of KINDS, so Settings › Alerts has no switch for it.
+ACCESS_KIND = "access"
+ALWAYS = (ACCESS_KIND,)
+
 # Sent with Pushover's high priority, which sounds through quiet hours.
-URGENT = ("occupant",)
+URGENT = ("occupant", ACCESS_KIND)
 
 
 TIRE_LOW: float | None = None  # from Settings, applied at startup and on save
@@ -182,8 +216,10 @@ KINDS = {
     "sentry": "Sentry reacting",
     "sentry_usb": "Sentry with no USB drive",
     "battery_warning": "Battery health warning",
-    "update": "Software update waiting",
+    "update": "Software update waiting or failed",
     "keyfob": "Key fob battery low",
+    "fault": "Car fault flagged",
+    "ea_plan": "Electrify America plan ending",
     "tire": "Tire warning",
     "connector": "Connector down or back",
     "drive_summary": "Drive summary",
@@ -202,7 +238,7 @@ GROUPS = (
     ("Charging", ("charge_start", "charge_done", "low_battery", "plug_reminder", "charge_hold")),
     ("Driving", ("driving", "arrived", "parked")),
     ("Security", ("occupant", "alarm", "unlocked", "door", "window", "port", "garage_open", "sentry", "sentry_usb")),
-    ("Car health", ("battery_warning", "tire", "update", "keyfob")),
+    ("Car health", ("battery_warning", "tire", "update", "keyfob", "fault", "ea_plan")),
     ("Summaries", ("drive_summary", "daily_summary")),
     ("System", ("connector", "data", "login", "command", "tesla_api")),
 )
@@ -228,7 +264,7 @@ def hidden_kinds(makes, *, commandable: bool, ha: bool, connector: bool) -> set[
     if not ha:
         out.add("garage_open")
     if not connector:
-        out.add("connector")
+        out.update(("connector", "fault", "ea_plan"))
     return out
 
 
@@ -319,6 +355,10 @@ WATCHED = (
     "living_object",
     "occupant_warning",
     "keyfob_low",
+    "alarm_sounding",
+    "mpb_fault",
+    "update_state",
+    "ea_days_left",
 )
 HELD_KINDS = ("low_battery", "unlocked", "door")  # event_kinds' own reading of these is replaced by the Watcher's (_held)
 LOW_REARM = 5.0
@@ -371,7 +411,9 @@ class Watcher:
         self.lock = threading.Lock()
 
     def step(self, car: dict) -> list[tuple[str, str]]:
-        if not car.get("vin") or not fresh_reading(car):
+        # A stale Driving (reach.py) is the maker's cloud repeating its last values: a stale "Driving" is no
+        # change to compare, and would keep a drive that ended at the last fix looking current (driving_at).
+        if not car.get("vin") or not fresh_reading(car) or reach.stale_drive(car):
             return []
         with self.lock:
             return self._step(car)

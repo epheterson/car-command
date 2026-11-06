@@ -395,7 +395,8 @@ def test_an_export_stops_where_a_live_source_began(monkeypatch, export, tmp_path
     monkeypatch.setattr(teslafi_load, "write_history", lambda conn, vin, name, make, model, cap, out, *a: written.append(out) or {"trips": len(out["trips"])})
     monkeypatch.setattr(teslafi_load, "fill_after_import", lambda conn, vin, tz: (0, 0))
     out = teslafi_load.parse(export[0])
-    mid = out["first"] + (out["last"] - out["first"]) / 2
+    starts = sorted(t["start_date"] for t in out["trips"])
+    mid = starts[len(starts) // 2]  # live logging began at a drive's start, so drives fall either side whatever day the demo ends on
     monkeypatch.setattr(teslafi_load, "live_since", lambda conn, vin: mid)
     got = importjob.load_teslafi_file(Conn)(export[0], lambda *a: None)
     assert written and all(t["start_date"] < mid for t in written[-1]["trips"]) and written[-1]["positions"] and max(p[0] for p in written[-1]["positions"]) < mid
@@ -697,3 +698,99 @@ def test_a_refused_teslamate_address_comes_back_in_the_open_form_once(client, ba
     assert typed not in json.dumps(store.view()), "never part of the saved or polled state"
     client.post("/settings/import/teslamate", data={"csrf_token": token(bare), "url": ""})
     assert store.take_typed() is None
+
+
+# ---- Tessie
+def test_a_tessie_job_goes_car_by_car_and_keeps_its_token_only_in_memory(tmp_path):
+    seen = []
+
+    def tessie(tok, car, progress):
+        seen.append((tok, car["vin"]))
+        progress(50, "Alpha: Sep 2026")
+        if car["vin"] == "VIN-BRAVO":
+            raise Skip("Nothing to add.")
+        return {"drives": 7, "charges": 2, "days": 90, "positions": 5, "detail": "Alpha"}
+
+    s = Store(tmp_path, threaded=False, tessie=tessie)
+    assert s.start_tessie("tok-SECRET", [{"vin": "VIN-ALPHA", "name": "Alpha"}, {"vin": "VIN-BRAVO", "name": "Bravo"}]) is None
+    job = s.view()["job"]
+    assert seen == [("tok-SECRET", "VIN-ALPHA"), ("tok-SECRET", "VIN-BRAVO")]
+    assert job["state"] == "done" and job["kind"] == "tessie" and job["items"][1]["state"] == "skipped" and job["result"]["drives"] == 7
+    assert "SECRET" not in (tmp_path / "state.json").read_text() and s.secret is None
+    assert s.start_tessie("t", []) == "That token has no cars."
+    s.state["job"]["state"] = "interrupted"
+    assert s.resume() == "Nothing to resume.", "a restart loses the token: the form again, and the months already loaded are skipped"
+
+
+def test_a_refused_tessie_token_is_said_without_the_token(tmp_path):
+    from tessie_import import TessieAuth
+
+    def tessie(tok, car, progress):
+        raise TessieAuth("Tessie refused the token. Make a new one at dash.tessie.com/settings/api.")
+
+    s = Store(tmp_path, threaded=False, tessie=tessie)
+    s.start_tessie("tok-SECRET", [{"vin": "V", "name": "Alpha"}])
+    job = s.view()["job"]
+    assert job["state"] == "failed" and "refused the token" in job["items"][0]["detail"] and "SECRET" not in str(job)
+
+
+def test_the_tessie_runner_writes_a_car_through_the_importer(monkeypatch):
+    import tessie_import as ti
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(ti, "http_fetcher", lambda token: "fetch-" + token)
+    seen = {}
+
+    def fake(conn, fetch, vin, name, tz, progress=None, say=None):
+        seen.update(fetch=fetch, vin=vin, name=name)
+        return {"trips": 4, "charging_sessions": 1, "cc_positions": 90, "first": ti.ts(1_780_000_000), "last": ti.ts(1_790_000_000)}
+
+    monkeypatch.setattr(ti, "import_car", fake)
+    run = importjob.load_tessie_car(Conn, None)
+    got = run("tok", {"vin": "VIN-ALPHA", "name": "Alpha"}, lambda *a: None)
+    assert seen == {"fetch": "fetch-tok", "vin": "VIN-ALPHA", "name": "Alpha"} and got["drives"] == 4 and got["charges"] == 1 and got["positions"] == 90 and "Alpha" in got["detail"]
+    monkeypatch.setattr(ti, "import_car", lambda *a, **k: {"trips": 0, "first": None})
+    with pytest.raises(Skip, match="Nothing to add"):
+        run("tok", {"vin": "V", "name": "Alpha"}, lambda *a: None)
+    with pytest.raises(Skip, match="not kept"):
+        run(None, {"vin": "V"}, lambda *a: None)
+
+
+def test_the_tessie_form_is_a_password_field_and_the_job_is_named(bare):  # noqa: F811
+    html = render(view())
+    assert 'id="imp-tessie"' in html and 'name="token"' in html and 'type="password"' in html and "/settings/import/tessie" in html and 'value="tok' not in html
+    assert ">Tessie<" in render(view(job=job("done", kind="tessie")))
+
+
+def test_the_tessie_route_lists_the_cars_then_runs_them(client, bare, store, monkeypatch):  # noqa: F811
+    import tessie_import as ti
+
+    seen = []
+    monkeypatch.setattr(ti, "http_fetcher", lambda tok, **k: lambda path, **p: {"results": [{"vin": "VIN-ALPHA", "last_state": {"display_name": "Alpha"}}]})
+    monkeypatch.setattr(store, "tessie", lambda tok, car, progress: seen.append((tok, car["vin"])) or {"drives": 1, "charges": 0, "days": 1, "positions": 0, "detail": "Alpha"})
+    r = client.post("/settings/import/tessie", data={"csrf_token": token(bare), "token": " tok-1 "})
+    assert r.status_code == 303 and seen == [("tok-1", "VIN-ALPHA")] and store.view()["job"]["kind"] == "tessie"
+    assert "tok-1" not in json.dumps(store.view())
+
+
+def test_the_tessie_route_says_why_without_the_token(client, bare, store, monkeypatch):  # noqa: F811
+    import tessie_import as ti
+
+    def refuse(tok, **k):
+        def fetch(path, **p):
+            raise ti.TessieAuth("Tessie refused the token. Make a new one at dash.tessie.com/settings/api.")
+
+        return fetch
+
+    monkeypatch.setattr(ti, "http_fetcher", refuse)
+    client.post("/settings/import/tessie", data={"csrf_token": token(bare), "token": "tok-2"})
+    notice = store.view()["notice"]
+    assert notice["kind"] == "err" and "refused the token" in notice["text"] and "tok-2" not in notice["text"] and store.view()["job"] is None
+    client.post("/settings/import/tessie", data={"csrf_token": token(bare), "token": ""})
+    assert "token is needed" in store.view()["notice"]["text"]

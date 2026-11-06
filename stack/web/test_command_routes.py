@@ -10,7 +10,7 @@ import pytest
 import auth
 import commands as cm
 import tesla_cmd
-from test_empty import EmptyConnection, bare, client  # noqa: F401 - fixtures
+from test_empty import EmptyConnection, bare  # noqa: F401 - fixtures
 
 TESLA, LUCID = "5YJ3E1EA0SF000001", "LUCIDBRAVO0000002"
 CONTROL, READ, STATUS, ONE_CAR = "ctl-" + "a" * 40, "read-" + "b" * 40, "stat-" + "c" * 40, "one-" + "d" * 40
@@ -41,6 +41,14 @@ class FakeProxy:
 
 
 @pytest.fixture
+def client(bare):  # noqa: F811
+    """A browser on the home network: over the test client's plain http, tier 3 goes only from there."""
+    from fastapi.testclient import TestClient
+
+    return TestClient(bare.app, follow_redirects=False, client=("192.168.1.20", 50000))
+
+
+@pytest.fixture
 def site(bare, monkeypatch):  # noqa: F811
     """Two cars (a Tesla through the proxy, a Lucid on the connector), commands on, sign-in on."""
     log, alerts, settings = [], [], {**bare.settings_mod.DEFAULTS, "commands_on": True, "command_tiers": {TESLA: 3}}
@@ -59,6 +67,8 @@ def site(bare, monkeypatch):  # noqa: F811
     monkeypatch.setattr(bare, "tesla_access", lambda refresh=True: (jwt(["vehicle_device_data", "vehicle_charging_cmds", "vehicle_cmds"]), "https://fleet.example.test"))
     monkeypatch.setattr(bare.recorder, "notify", lambda text, kind="other": alerts.append((kind, text)))
     monkeypatch.setattr(bare, "COMMAND_LIMIT", cm.Limiter())
+    monkeypatch.setattr(bare, "background", lambda fn, *a: fn(*a))
+    monkeypatch.setattr(bare, "owner", lambda request: True)  # the open test site stands in for a signed-in owner
     bare.STEP_UPS.clear()
     tree = {LUCID: {"charging": {"commands": {"start-stop": {"val": None}}, "settings": {"target_level": {"val": 80}}}, "doors": {"commands": {"lock-unlock": {"val": None}}}}}
     bare._cache["garage_tree"] = (bare.datetime.now(bare.timezone.utc), tree)
@@ -77,7 +87,7 @@ def test_a_tap_on_the_site_sends_through_the_proxy_and_is_logged(site, client): 
     r = client.post(f"/cars/{TESLA}/command", json={"command": "charge_limit", "value": 85}, headers=csrf(site["app"]))
     assert r.status_code == 200 and r.json()["ok"] and r.json()["said"].startswith("Charge limit set to 85%")
     assert site["proxy"].sent == [("POST", f"https://localhost:4443/api/1/vehicles/{TESLA}/command/set_charge_limit", {"percent": 85})]
-    assert site["log"] == [{"vin": TESLA, "command": "charge_limit", "arg": 85, "tier": 1, "source": "site", "ip": "testclient", "ok": True, "detail": None, "ms": site["log"][0]["ms"]}]
+    assert site["log"] == [{"vin": TESLA, "command": "charge_limit", "arg": 85, "tier": 1, "source": "site", "ip": "192.168.1.20", "ok": True, "detail": None, "ms": site["log"][0]["ms"]}]
     assert site["alerts"] == [], "a tier 1 command is logged, not announced"
 
 
@@ -128,25 +138,28 @@ def test_tier_three_asks_for_the_password_again_then_goes(site, client):  # noqa
         assert client.post("/commands/step-up", data={"password": "correct horse"}, headers=token).json()["ok"]
         r = client.post(f"/cars/{TESLA}/command", json={"command": "unlock"}, headers=token)
         assert r.status_code == 200 and site["proxy"].sent[-1][1].endswith("/command/door_unlock")
-        assert ("command", "Alpha: Unlock sent from site") in site["alerts"]
+        assert ("access", "Alpha: Unlock sent from site · password") in site["alerts"]
+        assert ("access", "Alpha: Unlock refused from site. Confirm it first.") in site["alerts"], "the try without a confirmation is told too"
+        assert site["log"][-1]["source"] == "site · password"
         client.cookies.clear()
         r = client.post(f"/cars/{TESLA}/command", json={"command": "unlock"}, headers=csrf(app))
         assert r.status_code in (401, 400), "another browser has not entered it"
     finally:
         app.AUTH.update(enabled=False, password=None)
-        app.FAILURES.clear(app.sign_in_key.__globals__["auth"].throttle_key({}, "testclient"))
+        app.FAILURES.clear(app.sign_in_key.__globals__["auth"].throttle_key({}, "192.168.1.20"))
 
 
-def test_a_cloudflare_sign_in_this_recent_is_the_step_up(site):
+def test_a_cloudflare_sign_in_is_not_a_step_up_and_with_nothing_set_up_it_says_what_to_add(site, client):  # noqa: F811
     class Req:
         class state:
-            cf = {"email": "owner@example.test", "iat": __import__("time").time() - 60}
+            cf = {"email": "owner@example.test", "iat": __import__("time").time() - 5}
 
         cookies = {}
 
-    assert site["app"].stepped_up(Req())
-    Req.state.cf = {"email": "owner@example.test", "iat": __import__("time").time() - 600}
-    assert not site["app"].stepped_up(Req())
+    assert not site["app"].stepped_up(Req()), "the identity provider waves a signed-in phone through: it proves nothing new"
+    r = client.post(f"/cars/{TESLA}/command", json={"command": "unlock"}, headers=csrf(site["app"]))
+    assert r.status_code == 409 and r.json()["said"] == "Add a passkey or a PIN in Settings › Access to do this from here."
+    assert site["proxy"].sent == []
 
 
 def test_ten_a_car_a_minute(site, client):  # noqa: F811
@@ -187,7 +200,46 @@ def test_a_control_token_for_one_car_commands_that_car_only(site, client):  # no
 
 def test_tier_three_is_never_sent_by_a_token(site, client):  # noqa: F811
     r = client.post(f"/api/cars/{TESLA}/command", json={"command": "unlock"}, headers={"Authorization": f"Bearer {CONTROL}"})
-    assert r.status_code == 409 and site["proxy"].sent == []
+    assert r.status_code == 403 and "everyday commands only" in r.json()["said"] and site["proxy"].sent == []
+    site["app"].TOKENS[auth.token_hash(CONTROL)]["tier_cap"] = 2
+    r = client.post(f"/api/cars/{TESLA}/command", json={"command": "unlock"}, headers={"Authorization": f"Bearer {CONTROL}"})
+    assert r.status_code == 403 and "everyday and car settings commands only" in r.json()["said"], "a cap of 2 is the most there is"
+    assert [k for k, _ in site["alerts"]] == ["access", "access"], "each try is told"
+
+
+def test_a_control_token_sends_tier_two_only_when_it_was_made_to(site, client):  # noqa: F811
+    r = client.post(f"/api/cars/{TESLA}/command", json={"command": "sentry_on"}, headers={"Authorization": f"Bearer {CONTROL}"})
+    assert r.status_code == 403 and "everyday commands only" in r.json()["said"], "a token made before caps sends everyday commands"
+    site["app"].TOKENS[auth.token_hash(CONTROL)]["tier_cap"] = 2
+    r = client.post(f"/api/cars/{TESLA}/command", json={"command": "sentry_on"}, headers={"Authorization": f"Bearer {CONTROL}"})
+    assert r.status_code == 200 and r.json()["ok"]
+
+
+def test_an_expired_control_token_is_no_token(site, client):  # noqa: F811
+    site["app"].TOKENS[auth.token_hash(CONTROL)]["expires_at"] = site["app"].datetime.now(site["app"].timezone.utc) - site["app"].timedelta(seconds=1)
+    r = client.post(f"/api/cars/{TESLA}/command", json={"command": "flash"}, headers={"Authorization": f"Bearer {CONTROL}"})
+    assert r.status_code == 401 and "reconnect" in r.json()["error"] and site["proxy"].sent == []
+
+
+def test_an_mcp_token_never_reaches_a_command(site, client):  # noqa: F811
+    raw = "mcp-" + "e" * 40
+    site["app"].TOKENS[auth.token_hash(raw)] = {"label": "mcp", "vin": None, "kind": "mcp", "last4": raw[-4:]}
+    try:
+        for path in (f"/api/cars/{TESLA}/command", f"/cars/{TESLA}/command"):
+            r = client.post(path, json={"command": "flash"}, headers={"Authorization": f"Bearer {raw}"})
+            assert r.status_code in (400, 401, 403), path  # the site's path wants its form token, which no token carries
+        assert site["proxy"].sent == [] and site["log"] == []
+    finally:
+        site["app"].TOKENS.pop(auth.token_hash(raw), None)
+
+
+def test_only_an_owner_sends_tier_three_and_the_try_is_told(site, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(site["app"], "owner", lambda request: False)
+    monkeypatch.setattr(site["app"], "stepped_up", lambda request: True)
+    r = client.post(f"/cars/{TESLA}/command", json={"command": "unlock"}, headers=csrf(site["app"]))
+    assert r.status_code == 403 and r.json()["said"] == cm.OWNERS_ONLY and site["proxy"].sent == []
+    assert site["alerts"] == [("access", f"Alpha: Unlock refused from site. {cm.OWNERS_ONLY}")]
+    assert client.post(f"/cars/{TESLA}/command", json={"command": "flash"}, headers=csrf(site["app"])).status_code == 200, "everyday commands still go"
 
 
 def test_a_command_the_connector_does_not_offer_is_unavailable_and_not_sent(site, client):  # noqa: F811
@@ -304,3 +356,143 @@ def test_a_lucid_seat_goes_to_the_connector_as_seat_mode_and_level(site, client,
     r = client.post(f"/cars/{LUCID}/command", json={"command": "seat_heat_passenger", "value": 1}, headers=csrf(site["app"]))
     assert r.status_code == 200 and r.json()["ok"], r.json()
     assert sent[0][1].endswith(f"garage/{LUCID}/climatization/commands/seat-climate") and sent[0][2] == {"value": "front-passenger heat low"}
+
+
+def test_a_lucid_schedule_goes_to_the_connector_with_no_place_and_the_other_end_kept(site, client, monkeypatch):  # noqa: F811
+    site["tree"][LUCID]["charging"]["commands"]["charging-schedule"] = {"val": None}
+    site["settings"]["command_tiers"] = {LUCID: 2}
+    sent = []
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(site["app"].httpx, "request", lambda method, url, **kw: sent.append((method, url, kw["json"])) or R())
+    url = f"{site['app'].REST_URL}/garage/{LUCID}/charging/commands/charging-schedule"
+    for command, value, body in (("sched_charge", 23 * 60, "23:00-"), ("sched_charge_end", 6 * 60 + 30, "-06:30"), ("sched_charge_off", None, "off")):
+        r = client.post(f"/cars/{LUCID}/command", json={"command": command, "value": value}, headers=csrf(site["app"]))
+        assert r.status_code == 200 and r.json()["ok"], (command, r.json())
+        assert sent[-1] == ("POST", url, {"value": body})
+    assert site["proxy"].sent == [], "a Lucid never goes through the Tesla proxy"
+    assert sent and all("lat" not in repr(x) for x in sent), "a Lucid schedule has no place"
+
+
+def test_a_lucid_connector_that_does_not_offer_the_schedule_is_refused_before_sending(site, client, monkeypatch):  # noqa: F811
+    site["settings"]["command_tiers"] = {LUCID: 2}
+    monkeypatch.setattr(site["app"].httpx, "request", lambda *a, **k: pytest.fail("sent to a connector that does not offer it"))
+    r = client.post(f"/cars/{LUCID}/command", json={"command": "sched_charge", "value": 600}, headers=csrf(site["app"]))
+    assert r.status_code == 403 and not r.json()["ok"]
+
+
+def test_the_command_view_offers_a_lucid_the_two_times_and_no_place(site, monkeypatch):  # noqa: F811
+    app = site["app"]
+    site["tree"][LUCID]["charging"]["commands"]["charging-schedule"] = {"val": None}
+    site["settings"]["command_tiers"] = {LUCID: 2}
+    monkeypatch.setattr(app, "car_identities", lambda cars: {})
+    view = app.command_view(site["cars"][LUCID])
+    assert {"sched_charge", "sched_charge_end", "sched_charge_off"} <= view["allowed"] and "where" not in view
+    assert "depart" not in view["allowed"], "Lucid's API has no departure timer"
+
+
+ROWS = [
+    {"id": 7, "name": "Alpha House", "latitude": 37.7, "longitude": -122.1, "icon": "home", "auto": False, "radius_m": 150},
+    {"id": 8, "name": "Bravo Office", "latitude": 37.8, "longitude": -122.2, "icon": "work", "auto": False, "radius_m": 150},
+]
+HOME_ANSWER = {
+    "response": {
+        "vehicle_state": {"car_version": "2025.2.6 x"},
+        "charge_state": {"home_location": {"latitude": 37.5, "longitude": -122.25}},
+        "preconditioning_schedule_data": {"precondition_schedules": [{"enabled": True, "precondition_time": 450, "latitude": 37.7, "longitude": -122.1}]},
+    }
+}
+
+
+class SchedFleet:
+    def __init__(self, answer):
+        self.answer = answer
+
+    def schedules(self, token, base, vin):
+        return self.answer
+
+
+@pytest.fixture
+def sched(site, monkeypatch):  # noqa: F811
+    app = site["app"]
+    monkeypatch.setattr(app, "sched_rows", lambda: ROWS)
+    monkeypatch.setattr(app, "tesla_app", lambda: SchedFleet(HOME_ANSWER))
+    app.SCHEDULES.clear()
+    yield site
+    app.SCHEDULES.clear()
+
+
+def depart(client, site, **body):  # noqa: F811
+    return client.post(f"/cars/{TESLA}/command", json={"command": "depart", "value": 450, **body}, headers=csrf(site["app"]))
+
+
+def test_a_schedule_with_no_place_known_is_refused_and_sends_nothing(sched, client):  # noqa: F811
+    r = depart(client, sched)
+    assert r.status_code == 403 and "where the car is" in r.json()["said"] and sched["proxy"].sent == []
+
+
+def test_a_schedule_goes_to_the_place_picked_and_is_read_back_by_name(sched, client):  # noqa: F811
+    r = depart(client, sched, where="place:8")
+    assert r.status_code == 200 and r.json()["ok"]
+    ((_, url, body),) = sched["proxy"].sent
+    assert url.endswith("/command/add_precondition_schedule") and (body["lat"], body["lon"]) == (37.8, -122.2)
+    assert sched["log"][-1]["arg"] == 450 and "37.8" not in repr(sched["log"][-1]) and "Bravo" not in repr(sched["log"][-1]), "no place in the log"
+    kept = sched["app"].SCHEDULES[TESLA]
+    assert kept["precondition"] == [{"time": 450, "at": "Alpha House"}] and "37.7" not in repr(kept["precondition"])
+    assert sched["app"].schedules.lines(kept)[0] == "warm by 7:30 AM (Alpha House)"
+
+
+def test_without_a_pick_it_is_teslas_home_else_where_the_car_is(sched, client):  # noqa: F811
+    sched["cars"][TESLA].update(lat=37.9, lon=-122.9)
+    depart(client, sched)
+    assert (sched["proxy"].sent[-1][2]["lat"], sched["proxy"].sent[-1][2]["lon"]) == (37.9, -122.9), "no Tesla Home read yet: here"
+    sched["app"].SCHEDULES[TESLA] = sched["app"].schedules.parse(HOME_ANSWER)
+    depart(client, sched)
+    assert (sched["proxy"].sent[-1][2]["lat"], sched["proxy"].sent[-1][2]["lon"]) == (37.5, -122.25), "Tesla's own Home"
+    depart(client, sched, where="car")
+    assert sched["proxy"].sent[-1][2]["lat"] == 37.9
+
+
+def test_a_pick_that_is_not_an_offered_place_is_refused_whatever_it_says(sched, client):  # noqa: F811
+    for where in ("place:999", "37.8,-122.2", "tesla:work"):
+        r = depart(client, sched, where=where)
+        assert r.status_code == 403 and r.json()["said"] == "Choose where it applies.", where
+    assert sched["proxy"].sent == []
+
+
+def test_off_needs_no_place_and_old_firmware_gets_the_legacy_command(sched, client):  # noqa: F811
+    r = client.post(f"/cars/{TESLA}/command", json={"command": "depart_off"}, headers=csrf(sched["app"]))
+    assert r.status_code == 200 and [u.rsplit("/", 1)[1] for _, u, _ in sched["proxy"].sent] == ["remove_precondition_schedule", "remove_charge_schedule"]
+    sched["proxy"].sent.clear()
+    sched["cars"][TESLA].update(software="2024.20.9")
+    r = depart(client, sched)
+    assert r.status_code == 200 and sched["proxy"].sent[0][1].endswith("/command/set_scheduled_departure") and "lat" not in sched["proxy"].sent[0][2]
+
+
+def test_the_command_view_offers_the_places_by_name_with_tesla_s_home_the_default(sched, monkeypatch):  # noqa: F811
+    app = sched["app"]
+    monkeypatch.setattr(app, "command_way", lambda car: "tesla")
+    monkeypatch.setattr(app, "tesla_command_scope", lambda: {"charging": True, "all": True})
+    monkeypatch.setattr(app, "car_identities", lambda cars: {})
+    app.SCHEDULES[TESLA] = app.schedules.parse(HOME_ANSWER)
+    view = app.command_view(dict(sched["cars"][TESLA], lat=37.9, lon=-122.9))
+    names = [o["name"] for o in view["where"]["options"]]
+    assert names[:3] == ["Home", "Alpha House", "Bravo Office"] and "Where the car is now" in names and view["where"]["default"] == "tesla:home"
+    assert "37.9" not in repr(view["where"]) and "122" not in repr(view["where"])
+
+
+def test_commands_offer_a_passkey_or_pin_until_one_locks_them(site, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(site["app"], "PASSKEYS", [])
+    monkeypatch.setitem(site["app"].AUTH, "pin", None)
+    r = client.get("/settings/commands")
+    assert "lock-offer" in r.text and "#confirming\">Add a passkey or PIN" in r.text
+    monkeypatch.setitem(site["app"].AUTH, "pin", "set")
+    assert "lock-offer" not in client.get("/settings/commands").text
+    monkeypatch.setitem(site["app"].AUTH, "pin", None)
+    monkeypatch.setattr(site["app"], "PASSKEYS", [{"id": "k"}])
+    assert "lock-offer" not in client.get("/settings/commands").text

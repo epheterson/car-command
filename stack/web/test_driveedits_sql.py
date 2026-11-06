@@ -27,6 +27,7 @@ CREATE TABLE charging_sessions (id SERIAL PRIMARY KEY, vin VARCHAR, session_star
 CREATE TABLE cc_trip_routes (vin VARCHAR, start_date TIMESTAMPTZ);
 CREATE TABLE cc_drive_tags (trip_id INTEGER PRIMARY KEY, tag VARCHAR NOT NULL, note TEXT);
 CREATE TABLE cc_hidden (kind VARCHAR, ref_id INTEGER, PRIMARY KEY (kind, ref_id));
+CREATE TABLE cc_tesla_raw (vin VARCHAR NOT NULL, at TIMESTAMPTZ NOT NULL, kind VARCHAR NOT NULL, record JSONB NOT NULL, PRIMARY KEY (vin, at, kind));
 """
 
 
@@ -205,7 +206,7 @@ def test_a_reimport_far_from_an_edit_leaves_it_alone_and_one_whose_drive_is_gone
 
 
 def test_a_reading_left_out_leaves_the_top_speed_and_the_climb(conn):
-    a = drive(conn, T0, 40, 100.0, 140.0, fixes=5)
+    a = drive(conn, T0, 40, 100.0, 115.0, fixes=5)  # 15 mph on average, so the readings (30-34) are above it
     spike = T0 + 20 * M  # the third of five readings, a minute apart across 40 min: 6.67 min steps, so find it by position
     spike = conn.execute("SELECT at FROM cc_positions ORDER BY at OFFSET 2 LIMIT 1").fetchone()["at"]
     conn.execute("UPDATE cc_positions SET speed = 190 WHERE vin = %s AND at = %s", (VIN, spike))

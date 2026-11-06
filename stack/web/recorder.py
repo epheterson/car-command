@@ -13,7 +13,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from notify import CHANNELS, URGENT, connector_down, send_discord, send_email, send_pushover, send_telegram, send_webhook
+from notify import ALWAYS, CHANNELS, URGENT, connector_down, send_discord, send_email, send_pushover, send_telegram, send_webhook
 
 LOG = logging.getLogger("carcommand.recorder")
 
@@ -153,8 +153,9 @@ class Recorder:
         return [c for c in CHANNELS if c in have]
 
     def notify(self, text: str, kind: str = "other", vin: str | None = None) -> None:
-        to = self.routes.get(kind)
-        muted = kind in self.muted or to == set()
+        always = kind in ALWAYS
+        to = None if always else self.routes.get(kind)
+        muted = not always and (kind in self.muted or to == set())
         results: dict[str, bool] = {}
         if muted:
             LOG.info("event (muted %s): %s", kind, text)

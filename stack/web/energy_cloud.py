@@ -1,9 +1,11 @@
 """The Powerwall, read from Tesla's cloud through the account Car Command already has.
 
-Two jobs, one worker. `live_status`, asked every five minutes while a site is switched on, is the
-house now (kept in memory for Now) and a row of cc_energy. And a history backfill, only when someone
-starts it: five-minute power, one day a request, newest first, throttled, kept place by place in
-cc_state so a restart or a refusal resumes where it was.
+Three jobs, one worker. `live_status`, asked every five minutes while a site is switched on (less
+often as Tesla's allowance runs low), is the house now (kept in memory for Now) and a row of
+cc_energy. Each night the last REFILL_DAYS days that hold fewer than DAY_ROWS readings are read
+again from the history, a request a day, so a slowed poll or an outage leaves no thin day behind.
+And a history backfill, only when someone starts it: five-minute power, one day a request, newest
+first, throttled, kept place by place in cc_state so a restart or a refusal resumes where it was.
 
 Nothing here touches the network on its own: the Fleet client, the token and the time are
 handed in.
@@ -16,6 +18,7 @@ import logging
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import energy
 import fleet_usage
@@ -23,6 +26,10 @@ from tesla_fleet import TeslaError
 
 LOG = logging.getLogger("energy_cloud")
 BACKFILL_KEY = "energy_backfill"
+REFILL_KEY = "energy_refill"  # cc_state: the local day the nightly refill last finished
+REFILL_DAYS = 7  # the nightly refill looks this far back
+REFILL_HOUR = 2  # local hour from which yesterday is whole on Tesla's side
+REFILL_RETRY_S = 3600  # after a refusal, the refill waits this long
 LIVE_EVERY_S = 300
 STEP_GAP_S = 2.0  # between history requests
 BACKOFF_FIRST_S, BACKOFF_MAX_S = 60, 1800  # after a rate limit or a failed write, doubling
@@ -94,17 +101,21 @@ def progress(get) -> dict:
 
 
 class CloudWorker(threading.Thread):
-    def __init__(self, *, fleet, access, site, tz, get, put, write, have_day, live, sleep=time.sleep, now=lambda: datetime.now(timezone.utc)):
+    def __init__(self, *, fleet, access, site, tz, get, put, write, have_day, live, local=lambda now: False, sleep=time.sleep, now=lambda: datetime.now(timezone.utc)):
         super().__init__(daemon=True, name="energy-cloud")
         self.fleet, self.access, self.site, self.tz = fleet, access, site, tz
         self.get, self.put, self.write, self.have_day, self.live = get, put, write, have_day, live
+        self.local = local  # whether the house's own network answered lately: then the cloud is not asked for the live reading
         self.sleep, self.now = sleep, now
         self.last_live: datetime | None = None
+        self.refill_after: datetime | None = None
         self.status: dict | None = None
         self._stop_event = threading.Event()
 
     # ---- the live reading
     def fallback(self, now: datetime) -> None:
+        if self.local(now):
+            return
         if self.last_live is not None and (now - self.last_live).total_seconds() < fleet_usage.slowed(LIVE_EVERY_S):
             return
         site, got, fleet = self.site(), self.access(), self.fleet()
@@ -122,6 +133,37 @@ class CloudWorker(threading.Thread):
             self.write([{"at": now.replace(minute=now.minute // 5 * 5, second=0, microsecond=0), **{f: reading[f] for f in energy.FIELDS}}])  # on the five-minute grid: history upserts over it
         except Exception as err:  # noqa: BLE001
             LOG.warning("energy cloud: could not write a reading (%s)", type(err).__name__)
+
+    # ---- the nightly refill
+    def refill(self, now: datetime) -> int:
+        """Once a local day, after REFILL_HOUR: each of the last REFILL_DAYS whole days holding
+        fewer than DAY_ROWS readings, newest first, read again from the history (it upserts over
+        the live rows). Returns the requests made. A refusal or a failed write waits REFILL_RETRY_S
+        and the pass starts again; it is marked finished only when every day was looked at."""
+        local = now.astimezone(ZoneInfo(self.tz))
+        today = local.date()
+        if local.hour < REFILL_HOUR or self.get(REFILL_KEY) == today.isoformat() or (self.refill_after and now < self.refill_after):
+            return 0
+        site, got, fleet = self.site(), self.access(), self.fleet()
+        if not (site and got and fleet):
+            return 0
+        asked = 0
+        for back in range(1, REFILL_DAYS + 1):
+            day = today - timedelta(days=back)
+            try:
+                if self.have_day(day):
+                    continue
+                asked += 1
+                rows = rows_from_series(fleet.energy_power_day(got[0], got[1], site, day, self.tz))
+                if rows:
+                    self.write(rows)
+            except Exception as err:  # noqa: BLE001 - a refusal, a rate limit or a failed write: try the pass again later
+                LOG.warning("energy cloud refill: %s", getattr(err, "public", None) or type(err).__name__)
+                self.refill_after = now + timedelta(seconds=REFILL_RETRY_S)
+                return asked
+            self.sleep(fleet_usage.slowed(STEP_GAP_S))
+        self.put(REFILL_KEY, today.isoformat())
+        return asked
 
     # ---- the backfill
     def _keep(self, prog: dict) -> dict:
@@ -229,6 +271,7 @@ class CloudWorker(threading.Thread):
                 now = datetime.now(timezone.utc)
                 if self.site():
                     self.fallback(now)
+                    self.refill(now)
                     if progress(self.get)["state"] == "running":
                         wait = self.wait_s()
                         if wait > 0:

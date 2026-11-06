@@ -155,6 +155,22 @@ def test_notify_routes_each_kind_to_its_channels(monkeypatch):
     assert [t for c, t in sent if c == "webhook"] == ["charge_hold:Paused"], "the kind travels with the text"
 
 
+def test_unlocking_and_opening_go_everywhere_whatever_the_switches_say(monkeypatch):
+    import notify
+    import recorder as rec
+
+    sent = []
+    monkeypatch.setattr(rec, "send_discord", lambda url, text: sent.append(("discord", text)))
+    monkeypatch.setattr(rec, "send_pushover", lambda tok, user, text, priority=0: sent.append(("pushover", priority)))
+    r = rec.Recorder(fetch_live=lambda: {}, connect=None, webhook_url="https://example.invalid/hook")
+    r.telegram, r.email, r.pushover = (None, None), (None, None, None), ("a", "u")
+    r.muted, r.routes = {notify.ACCESS_KIND, "command"}, {notify.ACCESS_KIND: set(), "command": set()}
+    r.notify("Bravo: Unlock refused", notify.ACCESS_KIND)
+    r.notify("Bravo: Sentry off sent", "command")
+    assert sent == [("discord", "Bravo: Unlock refused"), ("pushover", 1)], "muted and routed nowhere, and still sent, loudly"
+    assert notify.ACCESS_KIND not in notify.KINDS, "no switch for it in Settings › Alerts"
+
+
 def test_a_silent_connector_is_down_though_the_fetch_worked():
     """The site reads history when the connector stops answering, so fetch_live never fails;
     the connector check is what counts the minutes."""

@@ -1,0 +1,6 @@
+{# Confirm it's you, before a Settings change that raises power: a passkey, else the PIN or the password. static/confirm.js
+   works it; the same row is cloned in when a form needs it, and drawn here when the server refused one. #}
+{% macro row(step, why="Confirm it's you to save this.", hidden=false) -%}
+<div class="notice confirm" data-cf-row role="group" aria-label="Confirm it's you"{% if hidden %} hidden{% endif %}><span data-cf-said role="status">{{ why }}</span>
+  <span class="confirm-c">{% if step.passkey %}<button type="button" class="btn sm primary" data-cf-pk>Use passkey</button>{% endif %}{% if step.pin or step.password %}<span class="cmd-join"><input class="field" type="password" data-cf-secret aria-label="{{ 'PIN or password' if step.pin and step.password else 'PIN' if step.pin else 'Password' }}" placeholder="{{ 'PIN or password' if step.pin and step.password else 'PIN' if step.pin else 'Password' }}"{% if step.pin and not step.password %} inputmode="numeric"{% endif %} autocomplete="off"><button type="button" class="btn sm" data-cf-go>OK</button></span>{% endif %}</span></div>
+{%- endmacro %}

@@ -7,10 +7,14 @@
 {% import "_settings.html" as s %}
 {% macro cf_tip() %}{% if cf_proxy_unset %}{% call info("Narrow the token") %}Any private address may present the Cloudflare token. Set CC_ACCESS_PROXY to your tunnel's address to narrow it.{% endcall %}{% endif %}{% endmacro %}
 {% block section %}
-<form id="access" method="post" action="{{ root }}/settings/tokens/anywhere" class="groups settings" data-savebar><input type="hidden" name="csrf_token" value="{{ csrf }}">
+{% set step = step if step is defined else {} %}
+<form id="access" method="post" action="{{ root }}/settings/tokens/anywhere" class="groups settings" data-savebar data-power="switch"><input type="hidden" name="csrf_token" value="{{ csrf }}">
 <section class="group" id="signin">
   <h2 class="sec">Sign-in</h2>
   <div class="group-b">
+    {% if plain_http %}
+    <div class="set-row" id="plain-http"><span class="set-l">Connection {% call info("Why it matters") %}On plain http the sign-in cookie and any password can be read by anyone on the same network. Passkeys need https. The commands that open the car go only from the home network.{% endcall %}<span class="set-s"><a href="https://github.com/epheterson/car-command/blob/main/docs/install.md#https">Set up https</a></span></span><span class="set-v warn">Not encrypted</span></div>
+    {% endif %}
     {% if cf_team and cf_pinned %}
     <div class="set-row"><span class="set-l">Cloudflare Access{{ cf_tip() }}<span class="set-s">{{ cf_team }}.cloudflareaccess.com{% if cf_user %} · signed in as {{ cf_user }}{% endif %}</span></span>
       {% if cf_env %}<span class="set-v wrapv">Set in .env (CF_ACCESS_TEAM)</span>{% else %}<div class="set-c"><button type="submit" class="btn sm danger" form="cfoff">Stop using Cloudflare Access</button></div>{% endif %}</div>
@@ -73,6 +77,37 @@
   </div>
 </section>
 
+<section class="group" id="confirming">
+  <h2 class="sec">Confirming commands {% call info("What this is for") %}Unlocking, opening the frunk or trunk, the windows, keyless driving and HomeLink ask for one of these first. A passkey confirms each command with Face ID or Touch ID; the PIN or the password covers two minutes.{% endcall %}</h2>
+  {% if pin_error or passkey_error %}<p class="notice err" role="alert">{{ pin_error or passkey_error }}</p>{% endif %}
+  <p class="notice err" role="alert" data-pk-said hidden></p>
+  {% if is_owner is defined and not is_owner %}<p class="notice warn">Cloudflare Access decides who gets in, but not who owns the site. Name the owners in CC_ACCESS_EMAILS in .env to unlock and open the cars, mint tokens or change these.</p>{% endif %}
+  <div class="group-b">
+    {% if not may_change_confirming and (is_owner is not defined or is_owner) %}
+    <div class="set-row"><span class="set-l">Confirm it's you <span class="set-s">to add, remove or change these</span></span>
+      <div class="set-c">{% if step.passkey %}<button type="button" class="btn sm primary" data-pk-step>Use passkey</button>{% endif %}{% if step.pin or step.password %}<span class="cmd-join"><input class="field" type="password" data-step-secret aria-label="{{ 'PIN or password' if step.pin and step.password else 'PIN' if step.pin else 'Password' }}" placeholder="{{ 'PIN or password' if step.pin and step.password else 'PIN' if step.pin else 'Password' }}"{% if step.pin and not step.password %} inputmode="numeric"{% endif %} autocomplete="off"><button type="button" class="btn sm" data-step-go>OK</button></span>{% endif %}</div></div>
+    {% endif %}
+    {% if step.here %}
+    {% for k in passkey_rows %}
+    <div class="set-row"><span class="set-l">{{ k.name }}<span class="set-s">Passkey · added {{ k.created|when }} · {{ 'used ' ~ (k.last_used|when) if k.last_used else 'not used yet' }}</span></span>
+      <div class="set-c"><button type="submit" class="btn sm danger" form="pkrm-{{ loop.index }}" aria-label="Remove {{ k.name }}"{% if not may_change_confirming %} disabled{% endif %}>Remove</button></div></div>
+    {% endfor %}
+    <div class="set-row"><span class="set-l">{{ 'Another passkey' if passkey_rows else 'Passkey' }}{% if not passkey_rows %} <span class="set-s">Face ID or Touch ID for each command</span>{% endif %}</span>
+      <div class="set-c"><button type="button" class="btn sm{{ ' primary' if not passkey_rows }}" data-pk-add data-pk-url="{{ root }}/passkeys"{% if not may_change_confirming %} disabled{% endif %}>Add a passkey</button></div></div>
+    {% else %}
+    <div class="set-row"><span class="set-l">Passkeys {% call info("Why not here") %}A browser offers passkeys only on https at the site's name. Open Car Command at its https address to add one; the PIN works on any address.{% endcall %}</span><span class="set-v wrapv">Needs https and a domain</span></div>
+    {% endif %}
+    {% if passkeys_elsewhere %}<div class="set-row"><span class="set-l">Passkeys for another address<span class="set-s">{{ passkeys_elsewhere }} · they confirm commands there</span></span></div>{% endif %}
+    <details class="set-x" id="pin"{% if pin_error %} open{% endif %}><summary class="set-row"><span class="set-l">Command PIN<span class="set-s">{{ 'Set' if step.pin else 'Not set' }} · works on every address</span></span></summary>
+      <div class="set-p">
+        <div class="set-row"><label class="set-l" for="pin-new">{{ 'New PIN' if step.pin else 'PIN' }}</label><div class="set-c"><input class="field" id="pin-new" type="password" name="pin" form="pinset" inputmode="numeric" autocomplete="off" minlength="6" maxlength="8" pattern="[0-9]{6,8}" required{% if not may_change_confirming %} disabled{% endif %}></div></div>
+        <div class="set-row"><label class="set-l" for="pin-again">Again</label><div class="set-c"><input class="field" id="pin-again" type="password" name="confirm" form="pinset" inputmode="numeric" autocomplete="off" minlength="6" maxlength="8" pattern="[0-9]{6,8}" required{% if not may_change_confirming %} disabled{% endif %}></div></div>
+        <div class="acts">{% call info("The PIN") %}Six to eight digits. Five wrong tries hold back more for a while, and every wrong one sends an alert.{% endcall %}{% if step.pin %}<button type="submit" class="btn danger" form="pinoff" name="remove" value="1"{% if not may_change_confirming %} disabled{% endif %}>Remove</button>{% endif %}<button type="submit" class="btn primary" form="pinset"{% if not may_change_confirming %} disabled{% endif %}>Save the PIN</button></div>
+      </div>
+    </details>
+  </div>
+</section>
+
 <section class="group">
   <h2 class="sec">API tokens {% call info("Read, status, MCP and admin tokens") %}A read token reads the /api/ endpoints, for every car or one. A status token reads only the car's state and its stream, with no location; apps you connect get one. An MCP token lets an AI assistant ask about your cars through /mcp, read-only. An admin token can also change setup under /api/admin/. All are listed in docs/api.md.{% endcall %}</h2>
   {% if minted %}
@@ -94,7 +129,7 @@
   <div class="group-b">
     {% for t in tokens %}
     <div class="set-row"><span class="set-l">{{ t.label }}{% if t.last4 %} <span class="muted">…{{ t.last4 }}</span>{% endif %}<span class="badge kind{{ ' admin' if t.kind == 'admin' }}">{{ {'admin': 'Admin', 'status': 'Status', 'control': 'Control', 'mcp': 'MCP'}.get(t.kind, 'Read') }}</span>
-        <span class="set-s">{{ t.car }}{{ ' · with coordinates' if t.kind == 'mcp' and t.coords }} · made {{ t.created_at|when }} · {{ 'used ' ~ (t.last_used_at|when) if t.last_used_at else 'never used' }}</span></span>
+        <span class="set-s">{{ t.car }}{{ ' · with coordinates' if t.kind == 'mcp' and t.coords }}{% if t.kind == 'control' %} · {{ 'everyday and car settings' if t.tier_cap == 2 else 'everyday' }} commands{% endif %}{% if t.expires_at %} · {% if t.expires_at < now_utc %}<span class="danger">expired {{ t.expires_at|when }}</span>{% else %}until {{ t.expires_at|when }}{% endif %}{% endif %} · made {{ t.created_at|when }} · {{ 'used ' ~ (t.last_used_at|when) if t.last_used_at else 'never used' }}</span></span>
       <div class="set-c"><button type="submit" class="btn sm danger" form="revoke-{{ t.hash[:16] }}" aria-label="Revoke {{ t.label }}">Revoke</button></div></div>
     {% if t.kind == 'status' %}
     <div class="set-row"><span class="set-l">Share where each car is <span class="set-s">place name, home or away · {{ 'on' if t.share_place else 'off' }}</span></span>
@@ -119,6 +154,8 @@
         <div class="set-row"><span class="set-l">Kind</span><div class="set-c"><div class="segmented" role="radiogroup" aria-label="Kind"><label><input type="radio" name="kind" value="read" form="mint" checked><span>Read</span></label><label><input type="radio" name="kind" value="status" form="mint"><span>Status</span></label><label><input type="radio" name="kind" value="control" form="mint"><span>Control</span></label><label><input type="radio" name="kind" value="mcp" form="mint"><span>MCP</span></label><label><input type="radio" name="kind" value="admin" form="mint"><span>Admin</span></label></div></div></div>
         <div class="set-row kind-says" aria-live="polite"><span class="set-s" data-k="read">Reads everything the site shows.</span><span class="set-s" data-k="status">Reads only a car's state and stream, no location.</span><span class="set-s" data-k="control">Reads, and sends the commands Settings › Commands allows.</span><span class="set-s" data-k="mcp">Lets an AI assistant ask about your cars, read-only.</span><span class="set-s" data-k="admin">Reads, and can change setup under /api/admin.</span></div>
         <div class="set-row"><label class="set-l" for="tok-car">For</label><div class="set-c"><select class="sel" id="tok-car" name="vin" form="mint"><option value="">All cars</option>{% for v in (token_vehicles or []) %}<option value="{{ v.vin }}">{{ v.name }}</option>{% endfor %}</select></div></div>
+        <div class="set-row control-only"><span class="set-l">Sends {% call info("What a control token may send") %}Everyday: charging, climate, seats, lights, lock. Car settings adds Sentry, arming the alarm, overheat protection and scheduled charging. Unlocking and opening are never sent by a token: they need you.{% endcall %}</span><div class="set-c"><div class="segmented" role="radiogroup" aria-label="What it sends"><label><input type="radio" name="cap" value="1" form="mint" checked><span>Everyday</span></label><label><input type="radio" name="cap" value="2" form="mint"><span>+ Car settings</span></label></div></div></div>
+        <div class="set-row"><label class="set-l" for="tok-days">Expires</label><div class="set-c"><select class="sel" id="tok-days" name="days" form="mint">{% for d, l in [(0, 'Never'), (7, 'In a week'), (30, 'In a month'), (90, 'In three months'), (365, 'In a year')] %}<option value="{{ d }}"{{ ' selected' if d == 0 }}>{{ l }}</option>{% endfor %}</select></div></div>
         <div class="set-row mcp-only"><label class="set-l" for="tok-coords">Coordinates {% call info("What an assistant sees") %}Off: places come as the names you gave them, or the city. On: answers also carry street addresses, latitude and longitude, speed and heading.{% endcall %}</label><div class="set-c"><label class="switch"><input type="checkbox" role="switch" id="tok-coords" name="coords" form="mint" aria-label="Include coordinates"><span aria-hidden="true"></span></label></div></div>
         <div class="acts"><button type="submit" class="btn primary" form="mint">Mint a token</button></div>
       </div>
@@ -138,7 +175,7 @@
   <div class="group-b">
     <div class="set-row"><span class="set-l">Allow admin tokens from anywhere {% call info("Where admin tokens work") %}Off: admin tokens work only from the local network or the tailnet, and requests through Cloudflare are refused. On: they work from anywhere.{% endcall %}
         <span class="set-s{{ ' danger' if admin_anywhere }}">{% if admin_anywhere %}On: admin tokens are now allowed from anywhere{% else %}Local network and tailnet only{% endif %}</span></span>
-      <div class="set-c"><label class="switch danger"><input type="checkbox" role="switch" id="anywhere" name="anywhere" aria-label="Allow admin tokens from anywhere"{% if admin_anywhere %} checked{% endif %}><span aria-hidden="true"></span></label></div></div>
+      <div class="set-c"><label class="switch danger"><input type="checkbox" data-power-switch role="switch" id="anywhere" name="anywhere" aria-label="Allow admin tokens from anywhere"{% if admin_anywhere %} checked{% endif %}><span aria-hidden="true"></span></label></div></div>
   </div>
 </section>
 {{ s.savebar() }}
@@ -160,10 +197,42 @@
 <form id="cfset" method="post" action="{{ root }}/settings/signin/cloudflare/set"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
 {% if not auth_enabled %}<form id="signon" method="post" action="{{ root }}/settings/signin/on"><input type="hidden" name="csrf_token" value="{{ csrf }}">{% if signin_next %}<input type="hidden" name="next" value="{{ signin_next }}">{% endif %}</form>{% else %}<form id="signoff" method="post" action="{{ root }}/settings/signin/off"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form><form id="everywhere" method="post" action="{{ root }}/settings/signin/everywhere"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}
 {% if auth_enabled and not password_in_env %}<form id="pw" method="post" action="{{ root }}/settings/password"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}
-<form id="mint" method="post" action="{{ root }}/settings/tokens"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+<form id="pinset" method="post" action="{{ root }}/settings/pin"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+<form id="pinoff" method="post" action="{{ root }}/settings/pin"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+{% for k in passkey_rows or [] %}<form id="pkrm-{{ loop.index }}" method="post" action="{{ root }}/settings/passkeys/remove"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="id" value="{{ k.id }}"></form>{% endfor %}
+<form id="mint" method="post" action="{{ root }}/settings/tokens" data-power="always"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
 {% for a in remembered_apps or [] %}<form id="forget-{{ loop.index }}" method="post" action="{{ root }}/settings/connect/forget"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="redirect_uri" value="{{ a.redirect_uri }}"><input type="hidden" name="client" value="{{ a.client }}"></form>{% endfor %}
 {% for t in tokens %}{% if t.kind == 'status' %}<form id="place-{{ t.hash[:16] }}" method="post" action="{{ root }}/settings/tokens/{{ t.hash }}/place"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endif %}<form id="revoke-{{ t.hash[:16] }}" method="post" action="{{ root }}/settings/tokens/{{ t.hash }}/revoke"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endfor %}
 <script>
+/* Confirming commands: a passkey made or used here, or the PIN or password, then the page again */
+(() => {
+  const csrf = document.querySelector('meta[name="csrf-token"]').content, root = document.querySelector('meta[name="cc-root"]').content;
+  const said = document.querySelector("[data-pk-said]");
+  const tell = (text) => { said.textContent = text; said.hidden = !text; };
+  const post = (url, body, form) => fetch(url, { method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": csrf, "Content-Type": form ? "application/x-www-form-urlencoded" : "application/json" }, body: form ? new URLSearchParams(body).toString() : JSON.stringify(body) })
+    .then((r) => r.json().catch(() => ({ ok: false, said: "The site didn't answer (" + r.status + ")." })));
+  const ready = window.CCPasskey && window.PublicKeyCredential && window.isSecureContext;
+  document.querySelector("[data-pk-add]")?.addEventListener("click", (e) => {
+    if (!ready) return tell("This browser can't make a passkey here.");
+    e.target.disabled = true;
+    post(root + "/passkeys/challenge", { purpose: "add" })
+      .then((o) => { if (!o.ok) throw new Error(o.said); return navigator.credentials.create({ publicKey: CCPasskey.creation(o.options) }); })
+      .then((cred) => post(root + "/settings/passkeys/add", { passkey: CCPasskey.made(cred) }))
+      .then((out) => { if (!out.ok) throw new Error(out.said); location.reload(); })
+      .catch((err) => { e.target.disabled = false; tell(CCPasskey.quiet(err) ? "" : err.message || "That passkey couldn't be added."); });
+  });
+  document.querySelector("[data-pk-step]")?.addEventListener("click", () => {
+    post(root + "/passkeys/challenge", { purpose: "step" })
+      .then((o) => { if (!o.ok) throw new Error(o.said); return navigator.credentials.get({ publicKey: CCPasskey.request(o.options) }); })
+      .then((cred) => post(root + "/passkeys/step", { passkey: CCPasskey.answer(cred) }))
+      .then((out) => { if (!out.ok) throw new Error(out.said); location.reload(); })
+      .catch((err) => tell(CCPasskey.quiet(err) ? "" : err.message || "Passkey not recognised."));
+  });
+  const secret = document.querySelector("[data-step-secret]");
+  const stepGo = () => post(root + "/commands/step-up", { password: secret.value }, true).then((out) => { secret.value = ""; if (out.ok) location.reload(); else tell(out.said); });
+  document.querySelector("[data-step-go]")?.addEventListener("click", stepGo);
+  secret?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); stepGo(); } });
+})();
 document.querySelectorAll("[data-copy-token]").forEach((b) => b.addEventListener("click", () => {
   if (!navigator.clipboard) return;
   navigator.clipboard.writeText(b.dataset.copyToken).then(() => { b.textContent = "Copied"; setTimeout(() => { b.textContent = "Copy"; }, 1500); }, () => {});

@@ -11,6 +11,7 @@
 <section class="daycar">
   {% if car.garage %}<h2 class="daycar-h"><span class="dot c{{ colors.get(b.vin, 0) }}"></span>{{ b.name }}</h2>{% endif %}
   {# the update the car says is waiting, and the maker's notes where its model has them #}
+  {% if b.get('install') %}<section class="swup" aria-label="Update progress"><span class="swup-h"><b>{{ b.install }}</b></span></section>{% endif %}
   {% set w = b.get('waiting') %}{% if w %}<section class="swup" aria-label="Update waiting">
     <span class="swup-h"><b>{{ w.version }}</b> waiting{% if w.minutes %}<small> · about {{ w.minutes }} min to install</small>{% endif %}</span>
     {% if w.notes %}<details class="swup-n"><summary>Release notes</summary><ul>{% for line in w.notes %}<li>{{ line }}</li>{% endfor %}</ul></details>{% endif %}

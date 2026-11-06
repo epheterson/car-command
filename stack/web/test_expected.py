@@ -61,3 +61,14 @@ def test_a_lucid_trunk_opens_and_closes_by_name():
     assert e.apply(car(make="Lucid", trunk_open=False), T0 + timedelta(seconds=3))["trunk_open"] is True
     e.note("ALPHA", "frunk_close", None, car(make="Lucid", frunk_open=True), T0)
     assert e.apply(car(make="Lucid", frunk_open=True), T0 + timedelta(seconds=3))["frunk_open"] is False
+
+
+def test_climate_off_holds_through_a_lucid_still_saying_on_for_two_minutes():
+    # 10-27: off at 16:29:16; the car reported on at +13 s and +74 s, off at +135 s. The card bounced back to on at +74 s.
+    e = Expected()
+    e.note("ALPHA", "climate_off", None, car(climate="on"), T0)
+    for s in (13, 74, 120):
+        assert e.apply(car(climate="on", updated=T0 + timedelta(seconds=s)), T0 + timedelta(seconds=s + 2))["climate"] == "off", s
+    assert e.apply(car(climate="off", updated=T0 + timedelta(seconds=135)), T0 + timedelta(seconds=137))["climate"] == "off"
+    e.note("ALPHA", "climate_off", None, car(climate="on"), T0)  # a car that never turned it off is believed once it has had its time
+    assert e.apply(car(climate="on", updated=T0 + timedelta(seconds=160)), T0 + timedelta(seconds=162))["climate"] == "on"

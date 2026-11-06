@@ -440,10 +440,10 @@ def test_the_allowlist_holds_on_both_pages(world, monkeypatch):
     assert allow(app, client).status_code == 303
 
 
-def test_tokens_do_not_expire_and_a_revoked_one_gets_401(world):
+def test_an_apps_token_does_not_expire_and_a_revoked_one_gets_401(world):
     app, client = world
     raw = exchange(client, code_of(allow(app, client))).json()["token"]
-    assert "expires" not in str(app.auth.API_DDL) and all("expires" not in t for t in app.TOKENS.values())
+    assert all(t.get("expires_at") is None for t in app.TOKENS.values()), "only a control token is made with an end date"
     stranger = client.__class__(client.app, follow_redirects=False)
     head = {"Authorization": f"Bearer {raw}"}
     assert stranger.get("/api/now", headers=head).status_code != 401
@@ -1019,6 +1019,7 @@ def test_minting_and_revoking_do_their_database_work_off_the_event_loop(world, m
         real = getattr(app, name)
         monkeypatch.setattr(app, name, lambda *a, _real=real, _name=name, **kw: (on_loop.append(_name) if asyncio._get_running_loop() else None, _real(*a, **kw))[1])
     monkeypatch.setattr(app, "settings_render", lambda request, section, **kw: app.JSONResponse({"ok": True}))
+    monkeypatch.setattr(app, "may_change_confirming", lambda request: True)
     r = client.post("/settings/tokens", data={"label": "x", "kind": "read", "csrf_token": app.csrf})
     assert r.status_code == 200 and len(app.fake.tokens) == 1
     h = app.fake.tokens[0]["hash"]

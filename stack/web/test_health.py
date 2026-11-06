@@ -115,6 +115,15 @@ def test_gather_reads_the_feed_shape():
     assert live["raw_newest"] == NOW and live["odo_7d"] == 10.0 and "rebuild" not in live
 
 
+def test_a_car_written_by_the_tesla_stream_is_read_from_the_stream_and_a_sleeping_one_is_not_quiet():
+    # 10-28: both Teslas moved to the stream and Now said "Nothing has ever arrived from Tesla (direct)": gather had no case for it
+    asleep = gather(Conn({"cc_tesla_raw": NOW - 23 * H, "MAX(odometer) - MIN(odometer)": 3.3, "SUM(destination_odometer": 3.3}), "V1", "Alpha", "tesla", NOW)
+    assert asleep["raw_newest"] == NOW - 23 * H and asleep["odo_7d"] == 3.3
+    assert not [f for f in check(asleep, NOW) if f["kind"] == "quiet"], "asleep, its stretch carried on by the rebuild: not quiet"
+    silent = check({"vin": "V1", "name": "Alpha", "source": "tesla", "raw_newest": NOW - 2 * D}, NOW)
+    assert silent[0]["kind"] == "quiet" and silent[0]["text"] == "Nothing from Tesla (direct) for Alpha in 2 days."
+
+
 def test_worker_stores_the_answer_and_alerts_once_a_day():
     sent = []
     conn = Conn({"MAX(at) FROM cc_teslafi_rows": NOW - H, "(data->>'odometer')": 114.6, "GREATEST": NOW - 27 * D, "SUM(destination_odometer": 0.0, "carState": 1})

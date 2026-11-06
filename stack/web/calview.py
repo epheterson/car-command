@@ -115,7 +115,7 @@ def month_chart(levels: list[tuple[datetime, float]], drives: list[dict], charge
     bands = []
     for r in drives:
         a, b = r.get("start_date"), r.get("destination_date")
-        if a and b and b > t0 and a < t1:
+        if a and b and b > t0 and a < t1 and not r.get("gap_window"):  # a window only bounds a drive: no band of driving time
             miles = u.distance(r.get("miles") or 0)
             bands.append([a, b, "driving", f"Drive {miles:,.1f} {d} · {r.get('from') or '?'} → {r.get('to') or '?'}"])
     for c in charges:

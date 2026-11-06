@@ -8,7 +8,7 @@ from datetime import datetime
 import energy_cloud
 
 IDLE_W = 50.0  # under this a flow is not worth an arrow
-SOURCES = {"cloud": "Tesla"}
+SOURCES = {"cloud": "Tesla", "relay": "the home network"}
 
 
 def kw(watts) -> str:
@@ -45,6 +45,20 @@ def row(reading: dict | None) -> dict | None:
         "age_s": reading.get("age_s"),
         "source_label": SOURCES.get(reading.get("source"), ""),
     }
+
+
+def relay_view(saved: str, env: str, status: dict | None, now) -> dict:
+    """The home network on Settings › Powerwall: its address (Settings' own, else .env's), and how it is answering."""
+    url = saved or env
+    if not url:
+        state, text = "none", "Not set up"
+    elif not status:
+        state, text = "wait", "Starting"
+    elif status.get("ok"):
+        state, text = "ok", "Working"
+    else:
+        state, text = "bad", "Not answering" + (f" ({status['error']})" if status.get("error") else "")
+    return {"url": url, "saved": saved, "from_env": bool(env and not saved), "state": state, "text": text}
 
 
 def glance(cfg: dict) -> str:

@@ -8,7 +8,9 @@ is not opened. `snapshot` writes one frame as JPEG to stdout.
 
 DRIVEWAY_ZONE, from .env, is the driveway itself as a polygon of frame fractions ("x,y x,y ..."): a
 car counts only once the bottom middle of its box, where it meets the ground, is inside it, so a car
-on the street does not start the door until it turns in. Unset, the whole frame counts.
+on the street does not start the door until it turns in. Unset, the whole frame counts. DRIVEWAY_STREET, the same
+way, is the stretch of street a car comes home along: a car moving in it toward the driveway counts there, seconds
+before it turns in (the site asks only while its car is on its way). Unset, only the driveway counts.
 
 The stream's address (with its login) is DRIVEWAY_RTSP, from .env; it is never logged or printed.
 A watch that saw a car keeps its last KEPT frames under /data for DRIVEWAY_KEEP_DAYS (7; 0 keeps them all), to tune against;
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import random
 import shutil
@@ -38,6 +41,7 @@ CARS = {2: "car", 5: "bus", 7: "truck"}  # COCO classes that are a vehicle in a 
 PERSON = 0  # COCO: someone in the driveway stops a close
 SCORE = 0.35
 MOVED = 0.02  # a box's centre must move this share of the frame width between first and last sight
+TOWARD = 0.01  # on the street: its ground point this share of the frame width nearer the driveway than first seen
 SEEN_IN = 2  # frames a new car must be seen in before it counts
 BASELINE_S = 1.0  # the first second of a watch is what is parked
 CLEAR_Y = 0.9  # leaving: a car whose near edge is above this share of the frame height is all out of the garage
@@ -71,11 +75,28 @@ def inside(poly: list | None, x: float, y: float) -> bool:
     return hit
 
 
+def gap(poly: list, x: float, y: float) -> float:
+    """How far (x, y) is from the polygon's edge, in pixels: how near a car on the street is to the driveway."""
+    best = math.inf
+    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+        dx, dy = x2 - x1, y2 - y1
+        k = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy or 1)))
+        best = min(best, math.hypot(x - x1 - k * dx, y - y1 - k * dy))
+    return best
+
+
 def iou(a, b) -> float:
     x1, y1, x2, y2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
     inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
     union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
     return inter / union if union > 0 else 0.0
+
+
+def within(a, b) -> float:
+    """The share of box a that lies inside box b."""
+    x1, y1, x2, y2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+    area = (a[2] - a[0]) * (a[3] - a[1])
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1) / area if area > 0 else 0.0
 
 
 def nms(boxes: list, thresh: float = 0.45) -> list:
@@ -113,10 +134,12 @@ def decode(pred, scale: float):
 class Tracker:
     """A watch's view of the cars: those of the first BASELINE_S are parked; a car not over one of
     them, seen in SEEN_IN frames and moved MOVED of the width since first seen, has arrived, once
-    it stands in the zone (if there is one)."""
+    it stands in the zone (if there is one), or, with a street, once it comes TOWARD nearer along it."""
 
-    def __init__(self, area: list | None = None) -> None:
-        self.area = area
+    def __init__(self, area: list | None = None, street: list | None = None) -> None:
+        self.area, self.street = area, street if area else None
+        self.street_from = -math.inf  # the street counts from this time: near when the car is expected, not before
+        self.where: str | None = None  # where the car that answered was: "driveway" or "street"
         self.parked: list = []
         self.started: float | None = None
         self.tracks: list[dict] = []  # {box, first, n}
@@ -136,7 +159,19 @@ class Tracker:
                 continue
             track["box"], track["n"] = b, track["n"] + 1
             moved = abs((b[0] + b[2]) / 2 - (track["first"][0] + track["first"][2]) / 2) + abs((b[1] + b[3]) / 2 - (track["first"][1] + track["first"][3]) / 2)
-            if track["n"] >= SEEN_IN and moved >= MOVED * W and inside(self.area, (b[0] + b[2]) / 2, b[3]):
+            if track["n"] < SEEN_IN:
+                continue
+            if moved >= MOVED * W and inside(self.area, (b[0] + b[2]) / 2, b[3]):
+                self.where = "driveway"
+                return b
+            f = track["first"]
+            if (
+                self.street
+                and t >= self.street_from
+                and inside(self.street, (b[0] + b[2]) / 2, b[3])
+                and gap(self.area, (f[0] + f[2]) / 2, f[3]) - gap(self.area, (b[0] + b[2]) / 2, b[3]) >= TOWARD * W
+            ):
+                self.where = "street"
                 return b
         return None
 
@@ -163,15 +198,17 @@ class Leaver:
         if t - self.started < BASELINE_S:
             self.parked += [b for b in cars if all(iou(b, p) < 0.5 for p in self.parked)]
             return None
-        for b in cars:
-            if any(iou(b, p) > 0.5 for p in self.parked):
-                continue
-            track = max(self.tracks, key=lambda tr: iou(tr["box"], b), default=None)
+        taken: list = []  # one box a frame for each track: a second is another car, not this one again
+        for b in sorted(cars, key=lambda b: -max((iou(tr["box"], b) for tr in self.tracks), default=0.0)):
+            if any(iou(b, p) > 0.5 or within(b, p) > 0.8 for p in self.parked):
+                continue  # a parked car, or the part of it the car going out has not yet covered
+            track = max((tr for tr in self.tracks if all(tr is not k for k in taken)), key=lambda tr: iou(tr["box"], b), default=None)
             if track is None or iou(track["box"], b) < 0.2:
                 if b[3] >= GARAGE_Y * H:
                     self.tracks.append({"box": b, "first": b, "n": 1})
                 continue
             track["box"], track["n"] = b, track["n"] + 1
+            taken.append(track)
             if track["n"] >= SEEN_IN and track["first"][3] - b[3] >= MOVED * H and b[3] < CLEAR_Y * H:
                 feet = [((p[0] + p[2]) / 2, p[3]) for p in boxes if p[5] == PERSON]
                 people = [f for f in feet if inside(self.area, *f) and not (b[0] <= f[0] <= b[2] and b[1] <= f[1] <= b[3])]
@@ -327,14 +364,15 @@ class Watch:
         self.detector = None
         self.running: dict | None = None
 
-    def run(self, seconds: float, store: bool = True, car: str | None = None, leaving: bool = False) -> dict:
+    def run(self, seconds: float, store: bool = True, car: str | None = None, leaving: bool = False, street_after: float = 0.0) -> dict:
         """Watch, or wait on the watch already running (its frames are kept under the car it was first asked for).
-        `leaving`: for a car going out, not coming in; a watch the other way already running answers busy."""
+        `leaving`: for a car going out, not coming in; a watch the other way already running answers busy.
+        `street_after`: seconds from now before a car on the street counts (the driveway counts at once)."""
         with self.lock:
             if self.running is not None and self.running["leaving"] != leaving:
                 return {"seen": False, "why": "busy", "frames": 0}
             if self.running is None:
-                self.running = {"done": threading.Event(), "stop": threading.Event(), "answer": None, "car": car, "leaving": leaving}
+                self.running = {"done": threading.Event(), "stop": threading.Event(), "answer": None, "car": car, "leaving": leaving, "street_from": time.time() + street_after}
                 threading.Thread(target=self._watch, args=(self.running, seconds, store), daemon=True).start()
             mine = self.running
         mine["done"].wait(seconds + 30)
@@ -352,7 +390,9 @@ class Watch:
             area = zone(os.environ.get("DRIVEWAY_ZONE"))
             if w["leaving"] and area is None:
                 raise ValueError("a car leaving needs DRIVEWAY_ZONE")
-            tracker = Leaver(area) if w["leaving"] else Tracker(area)
+            tracker = Leaver(area) if w["leaving"] else Tracker(area, zone(os.environ.get("DRIVEWAY_STREET")))
+            if not w["leaving"]:
+                tracker.street_from = w["street_from"]
             for t, frame in self.frame_source(w["stop"]):
                 n += 1
                 recent = (recent + [(t, frame)])[-KEPT:]
@@ -372,6 +412,8 @@ class Watch:
                     }
                     if w["leaving"]:
                         answer.update(leaving=True, people=len(people))
+                    else:
+                        answer["on"] = tracker.where
                     if store:
                         answer["kept"] = keep(recent, answer["box"], w.get("car"), "out" if w["leaving"] else None, trail)
                     break
@@ -423,10 +465,11 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
                 leaving = body.get("leaving") is True
                 seconds = min(600.0 if leaving else 300.0, max(5.0, float(body.get("seconds") or 90)))
+                street_after = min(seconds, max(0.0, float(body.get("street_after") or 0)))
             except (ValueError, TypeError):
                 return self._send(400, {"error": "seconds"})
             car = str(body.get("car") or "")[:40] or None
-            return self._send(200, WATCH.run(seconds, car=car, leaving=leaving))
+            return self._send(200, WATCH.run(seconds, car=car, leaving=leaving, street_after=street_after))
         if self.path == "/stop":
             WATCH.stop()
             return self._send(200, {"ok": True})

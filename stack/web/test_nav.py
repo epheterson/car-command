@@ -75,3 +75,14 @@ def test_phone_sub_page_pills_show_there_are_more_and_bring_the_current_one_into
     assert "nav.scrollLeft = on.offsetLeft" in block and "scrollIntoView" not in block, "scrolls the strip only, never the page"
     assert 'toggle("more-l"' in block and 'toggle("more-r"' in block
     assert ".subpages.more-r {" in css and ".subpages.more-l {" in css and ".subpages.more-l.more-r {" in css
+
+
+def test_phone_tabs_follow_the_owner_and_fall_back_to_the_default():
+    from nav import MAX_PHONE_TABS, phone_tabs
+
+    assert phone_tabs(None) == PHONE_TABS and phone_tabs([]) == PHONE_TABS and phone_tabs("stats") == PHONE_TABS
+    assert phone_tabs(["places", "now"]) == ("places", "now"), "the owner's order, and as few as one or two"
+    assert phone_tabs(["now", "bogus", "now", "stats"]) == ("now", "stats"), "unknown and repeated sections drop out"
+    assert phone_tabs(["bogus"]) == PHONE_TABS, "nothing usable left is the default, never an empty bar"
+    six = [key for key, *_ in SECTIONS]
+    assert len(phone_tabs(six)) == MAX_PHONE_TABS and phone_tabs(six) == tuple(six[:MAX_PHONE_TABS])
