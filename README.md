@@ -26,49 +26,18 @@
 
 ## What it is
 
-Car Command is a logbook and dashboard for the electric cars in your household, running on a machine you own: a home server or NAS with Docker. It records every drive and every charge from the cars themselves: where each car went, the energy it took, what that cost at your own electricity rates, and how the battery is holding up. Everything is kept in your own database.
+A logbook and dashboard for your household's electric cars, on a machine you own.
 
-- **Every car on one site**, of several makes: Tesla directly (streaming live, about once a second), Lucid, and the other [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) brands (Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity). Tesla live data needs the [stream](docs/tesla-stream.md) (a Tailscale account and a Tesla developer app billed per use), or a TeslaFi or TeslaMate you already run.
-- **Your history comes with you**: years of drives and charges import from TeslaFi, TeslaMate or Tessie. Miles driven out of coverage still count: the odometer on the far side adds them as a drive marked no signal.
-- **Real costs**: each charge priced from your time-of-use plan by the hour the car drew power, a price you set for a place, or what Tesla billed for a Supercharger, idle and congestion fees included. A home charge no plan covers falls back to the regional average, marked `≈`.
-- **Solar and Powerwall**: with a Tesla Powerwall at home, each home charge is split into sun, Powerwall and grid, and the sun counts as free. Now shows the Powerwall live beside the cars, read on your own network.
-- **The rest of owning an EV**: battery health and parked drain, efficiency by temperature and speed, a service log with reminders and tire sets, a mileage logbook by tag, alerts (Discord, Telegram, email, Pushover), CSV and JSON export.
-- **Commands, if you want them**: charging, the charge limit, climate, locks, the trunks and more from the Now card, off until you turn them on; the ones that open or disarm a car ask for Face ID, a PIN or the password first; Teslas through Tesla's own signing proxy. A charging hold can keep a home charge out of the expensive hours. See [docs/commands.md](docs/commands.md).
-- **The garage door, hands free** (optional): with Home Assistant for the door and a driveway camera, the door opens as your car turns in and closes behind it as it leaves; one switch on Now turns it all off.
-- **Home Assistant**: each car's state published over MQTT with discovery, so the cars appear as devices with no setup there; position only if you turn it on. See [docs/install.md](docs/install.md#home-assistant-over-mqtt).
-- **Phone widgets and other apps**: any app can [connect](docs/api.md) with a sign-in and read each car's state, but not where it is.
+- **Every car on one site:** Tesla (live, about once a second), Lucid, and the other [CarConnectivity](https://github.com/tillsteinbach/CarConnectivity) brands.
+- **Your history comes with you:** import years of drives and charges from TeslaFi, TeslaMate or Tessie.
+- **Real costs:** every charge priced at your own rates, by the hour, Supercharger bills included.
+- **Solar and Powerwall:** home charges split into sun, Powerwall and grid.
+- **Battery, service, logbook:** battery health, efficiency, service reminders, a mileage logbook, alerts, export.
+- **Commands, if you want them:** charging, climate, locks and more, with Face ID for anything that opens the car. [More](docs/commands.md)
+- **Garage door, hands free:** opens as you turn in, closes as you leave (Home Assistant and a driveway camera).
+- **Home Assistant:** each car published over MQTT, discovered automatically.
 
-## Quick start
-
-Docker on an amd64 or arm64 machine:
-
-```sh
-docker run -d --name carcommand --restart unless-stopped --stop-timeout 30 -p 3044:3044 -v carcommand:/data ghcr.io/epheterson/car-command
-```
-
-1. Get the setup code: `docker exec carcommand carcommand web python3 setup_code.py`. Within the first hour, a device on your home network needs no code; after that, or on Docker Desktop, use the code.
-2. Open `http://<host>:3044`, choose a password, and add your cars under **Settings › Cars and sources**.
-
-Postgres, the site and the connector run in this one container. Everything it keeps is in the `carcommand` volume.
-
-To look around first, run the demo in its own container on another port: `docker run -d --name carcommand-demo -p 3045:3044 -v carcommand-demo:/data ghcr.io/epheterson/car-command`, then `docker exec carcommand-demo carcommand demo`. The demo car and its rate plan stay in whatever install you load them into, so keep it out of your real one ([details](docs/install.md#try-it-with-demo-data)).
-
-What you need, settings, backups and upgrades: [docs/install.md](docs/install.md). Something wrong: [troubleshooting](docs/troubleshooting.md).
-
-## Docker Compose
-
-Compose runs the same parts as separate containers, from a checkout. The [local maps add-on](docs/maps.md) runs only there; the [Tesla live stream](docs/tesla-stream.md) runs in either.
-
-```sh
-git clone https://github.com/epheterson/car-command car-command && cd car-command
-git checkout "$(git describe --tags --abbrev=0)"         # the newest release, not unreleased main
-make setup                                                # writes stack/.env with generated passwords
-docker compose -f stack/docker-compose.yml up -d          # Postgres, the schema, the site and the connector
-```
-
-The connector (`cc`) is how Lucid and other CarConnectivity brands sign in; an install of imported history alone can skip it with `up -d db web`. `make demo` loads the demo car, and `make one-container-move` [moves a compose install](docs/install.md#moving-a-compose-install-into-the-one-container) into the one container.
-
-## Features
+<br>
 
 <table>
 <tr>
@@ -83,36 +52,46 @@ The connector (`cc`) is how Lucid and other CarConnectivity brands sign in; an i
 </tr>
 </table>
 
-Also: the same miles priced in gas, trip tags, an [API](docs/api.md), dark mode and a phone layout. Raw readings are kept, so drives and charges can be recomputed after a fix.
+## Quick start
+
+```sh
+docker run -d --name carcommand --restart unless-stopped --stop-timeout 30 -p 3044:3044 -v carcommand:/data ghcr.io/epheterson/car-command
+```
+
+1. Get the setup code: `docker exec carcommand carcommand web python3 setup_code.py` (not needed from your home network in the first hour).
+2. Open `http://<host>:3044`, choose a password, and add your cars under **Settings › Cars and sources**.
+
+Everything lives in the `carcommand` volume. [Docker Compose, the demo, backups and upgrades](docs/install.md) · [Troubleshooting](docs/troubleshooting.md)
 
 ## Sources
 
-| Source | Live data | Drive route and power | Charge curve | History before you connect |
-|---|---|---|---|---|
-| Tesla, direct | about once a second with the [stream](docs/tesla-stream.md); none without it | both | yes | import from TeslaFi or TeslaMate |
-| TeslaFi (feed and export) | each minute | both | yes | the export |
-| TeslaMate (database) | as TeslaMate records | both | yes | its database |
-| Tessie (API) | none, history only | both | yes | its API |
-| Lucid ([connector](https://github.com/epheterson/CarConnectivity-connector-lucid)) | each minute, 15 s driving | route only | yes | none |
-| Audi, Cupra, SEAT, Škoda, Volkswagen, Tronity ([CarConnectivity](https://github.com/tillsteinbach/CarConnectivity#connectors)) | per connector | route | per connector | none |
+| Source | Live data | History before you connect |
+|---|---|---|
+| Tesla, direct | about once a second, with the [stream](docs/tesla-stream.md) | import from TeslaFi or TeslaMate |
+| TeslaFi | each minute | its export |
+| TeslaMate | as it records | its database |
+| Tessie | none | its API |
+| Lucid ([connector](https://github.com/epheterson/CarConnectivity-connector-lucid)) | each minute, 15 s driving | none |
+| Audi, Cupra, SEAT, Škoda, VW, Tronity ([CarConnectivity](https://github.com/tillsteinbach/CarConnectivity#connectors)) | per connector (untested here) | none |
 
-Add sources under **Settings › Cars and sources**. The CarConnectivity brands other than Lucid are untested here; if you run one, [open an issue](https://github.com/epheterson/car-command/issues/new/choose). Details: [docs/sources.md](docs/sources.md).
+[Details](docs/sources.md)
 
 ## Privacy
 
 Your cars' data stays in your own database. What leaves your machine:
 
-- **Your sources** (Tesla, TeslaFi, Tessie, a CarConnectivity connector) receive your sign-in, to send your car's data.
-- **Map backgrounds** (off by default): OpenFreeMap receives the map tiles you view.
-- **Place names** (off by default): OpenStreetMap's Nominatim receives each new stop's position, rounded to about 100 m. The [local maps add-on](docs/maps.md) names places on your machine instead; it downloads its regions from Geofabrik.
-- **Weather** (off by default): Open-Meteo receives each drive's start, rounded to about 1 km, and its date.
-- **Find my plan**: OpenEI receives the utility you pick (or a ZIP code, only if you type one). Your home's ZIP code is matched to its utilities on your machine. A bill you upload is read on your machine and never stored; only its rate schedule, provider, start date and prices are kept.
-- **Home Assistant over MQTT** (off by default): your broker receives each car's state, and its position only if you turn that on.
-- **Alerts**: the service you choose (Discord, Pushover, Telegram, email) receives the alert.
+| Sent to | What | When |
+|---|---|---|
+| Your car sources | your sign-in | always |
+| OpenFreeMap | the map tiles you view | map backgrounds on |
+| OpenStreetMap Nominatim | a new stop's position, to about 100 m | place names on (or name places locally with [local maps](docs/maps.md)) |
+| Open-Meteo | a drive's start, to about 1 km, and its date | weather on |
+| OpenEI | the utility you pick | finding your rate plan |
+| Your MQTT broker, alert service | car state, alerts | when you set them up |
 
 ## Documentation
 
-[Install](docs/install.md) · [Sources](docs/sources.md) · [Tesla app](docs/tesla-app.md) · [Tesla live stream](docs/tesla-stream.md) · [Commands](docs/commands.md) · [Troubleshooting](docs/troubleshooting.md) · [Costs](docs/costs.md) · [Local maps](docs/maps.md) · [API](docs/api.md) · [Roadmap](docs/roadmap.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[Install](docs/install.md) · [Sources](docs/sources.md) · [Tesla app](docs/tesla-app.md) · [Tesla live stream](docs/tesla-stream.md) · [Commands](docs/commands.md) · [Costs](docs/costs.md) · [Local maps](docs/maps.md) · [API](docs/api.md) · [Troubleshooting](docs/troubleshooting.md) · [Roadmap](docs/roadmap.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 <!-- Star history: hidden until there are stars to chart.
      To show it, delete this comment's first and last lines.
@@ -137,7 +116,7 @@ Your cars' data stays in your own database. What leaves your machine:
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE): free to use, change and share for any noncommercial purpose. Selling it, a modified version, or a hosted service built on it requires permission.
+[PolyForm Noncommercial 1.0.0](LICENSE): free for any noncommercial use. Selling it or hosting it as a service needs permission.
 
 ---
 
