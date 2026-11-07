@@ -236,21 +236,26 @@ def backfill(
         model = veh.get("model")
         counts = write_history(conn, vin, veh.get("name") or vin, "Tesla", model, USABLE_KWH.get(model or ""), out, import_id(vin), "teslafi history", tz, rolling=True)
         fill_after_import(conn, vin, tz)
-        # the figures the facts cannot work out without readings: the API's own max speed and temperature
-        for t in out["trips"]:
-            row = conn.execute("SELECT id FROM trips WHERE vin = %s AND start_date = %s", (vin, t["start_date"])).fetchone()
-            if row is None:
-                continue
-            trip_id = row["id"] if isinstance(row, dict) else row[0]
-            conn.execute(
-                "INSERT INTO cc_trip_facts (trip_id, max_mph, temp_f) VALUES (%s, %s, %s) ON CONFLICT (trip_id) DO UPDATE SET max_mph = COALESCE(EXCLUDED.max_mph, cc_trip_facts.max_mph), temp_f = COALESCE(EXCLUDED.temp_f, cc_trip_facts.temp_f)",
-                (trip_id, t["max_mph"], t["temp_f"]),
-            )
-            if t.get("tag"):
-                conn.execute("INSERT INTO cc_drive_tags (trip_id, tag) VALUES (%s, %s) ON CONFLICT (trip_id) DO NOTHING", (trip_id, t["tag"]))
+        save_trip_facts(conn, vin, out["trips"])
         conn.commit()
     counts["drives_seen"], counts["charges_seen"] = len(drives), len(charges)
     return counts
+
+
+def save_trip_facts(conn, vin: str, trips: list[dict]) -> None:
+    """The figures the facts cannot work out without readings (the source's own max speed and
+    temperature) and a drive's tag, filed under the trip row the writer made for each start."""
+    for t in trips:
+        row = conn.execute("SELECT id FROM trips WHERE vin = %s AND start_date = %s", (vin, t["start_date"])).fetchone()
+        if row is None:
+            continue
+        trip_id = row["id"] if isinstance(row, dict) else row[0]
+        conn.execute(
+            "INSERT INTO cc_trip_facts (trip_id, max_mph, temp_f) VALUES (%s, %s, %s) ON CONFLICT (trip_id) DO UPDATE SET max_mph = COALESCE(EXCLUDED.max_mph, cc_trip_facts.max_mph), temp_f = COALESCE(EXCLUDED.temp_f, cc_trip_facts.temp_f)",
+            (trip_id, t["max_mph"], t["temp_f"]),
+        )
+        if t.get("tag"):
+            conn.execute("INSERT INTO cc_drive_tags (trip_id, tag) VALUES (%s, %s) ON CONFLICT (trip_id) DO NOTHING", (trip_id, t["tag"]))
 
 
 def edges(conn, vin: str) -> tuple[datetime | None, datetime | None]:

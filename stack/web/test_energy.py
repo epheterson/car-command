@@ -26,7 +26,7 @@ class State(dict):
 
 def test_config_has_defaults_and_ignores_damage():
     state = State()
-    assert energy.load_config(state.get) == {"cloud": {"enabled": False, "site_id": "", "name": "", "installed": ""}}
+    assert energy.load_config(state.get) == {"cloud": {"enabled": False, "site_id": "", "name": "", "installed": ""}, "relay": {"url": ""}}
     state[energy.CONFIG_KEY] = "{not json"
     assert energy.load_config(state.get)["cloud"]["enabled"] is False
     cfg = energy.load_config(state.get)
@@ -107,6 +107,15 @@ def test_a_row_stands_for_five_minutes_and_where_two_overlap_the_later_one_is_re
     got = energy.minute_samples([late, early])
     assert [got[T0 + timedelta(minutes=i)]["solar_w"] for i in range(8)] == [100, 100, 100, 900, 900, 900, 900, 900]
     assert T0 + timedelta(minutes=8) not in got
+
+
+def test_a_row_stands_until_the_next_when_the_poll_slows_and_a_long_silence_stays_a_gap():
+    # the live poll at ten minutes (Tesla's allowance past half): every minute between is covered
+    got = energy.minute_samples([row(0, solar=100), row(10, solar=200), row(20 + 60, solar=300)])
+    assert all(got[T0 + timedelta(minutes=i)]["solar_w"] == 100 for i in range(10))
+    # an hour's silence: the row before it stands for twenty minutes at most, then nothing
+    assert got[T0 + timedelta(minutes=29)]["solar_w"] == 200 and T0 + timedelta(minutes=30) not in got
+    assert [got[T0 + timedelta(minutes=80 + i)]["solar_w"] for i in range(5)] == [300] * 5 and T0 + timedelta(minutes=85) not in got
 
 
 # ---- the car's share of a minute: what plugging it in drew
@@ -284,9 +293,9 @@ def test_hours_are_utc_clock_hours_with_how_much_of_each_the_readings_cover():
     lo, hi = datetime(2026, 11, 1, 7, tzinfo=timezone.utc), datetime(2026, 11, 2, 8, tzinfo=timezone.utc)
     base = {"solar_kwh": 0.0, "home_kwh": 1.23456, "grid_in_kwh": 1.2, "grid_out_kwh": -0.0, "battery_in_kwh": 0.0, "battery_out_kwh": 0.0}
     # 08:00 and 09:00 UTC are both 01:00 in Pacific on the night the clocks fall back: two hours, not one
-    conn = HourConn([{"hour_utc": datetime(2026, 11, 1, 8), **base, "rows": 12}, {"hour_utc": datetime(2026, 11, 1, 9), **base, "rows": 6}])
+    conn = HourConn([{"hour_utc": datetime(2026, 11, 1, 8), **base, "rows": 12, "hours": 1.0}, {"hour_utc": datetime(2026, 11, 1, 9), **base, "rows": 6, "hours": 0.5}])
     got = energy.hours(conn, lo, hi)
     assert [h["hour"] for h in got] == [datetime(2026, 11, 1, 8, tzinfo=timezone.utc), datetime(2026, 11, 1, 9, tzinfo=timezone.utc)]
     assert got[0]["home_kwh"] == 1.235 and str(got[0]["grid_out_kwh"]) == "0.0" and got[0]["coverage"] == 1.0 and got[1]["coverage"] == 0.5
-    assert conn.asked[0][1] == ("home", lo, hi) and "GROUP BY 1" in energy.HOURS_SQL and "AT TIME ZONE 'UTC'" in energy.HOURS_SQL
+    assert conn.asked[0][1] == ("home", lo, hi, hi) and "GROUP BY 1" in energy.HOURS_SQL and "AT TIME ZONE 'UTC'" in energy.HOURS_SQL
     assert energy.hours(HourConn([]), lo, hi) == []

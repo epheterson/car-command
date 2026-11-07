@@ -21,6 +21,7 @@ MODULES = {
     "httpx": "httpx",
     "cryptography": "cryptography",
     "pyzmq": "zmq",
+    "paho-mqtt": "paho.mqtt",
 }
 
 

@@ -102,7 +102,8 @@ class _Imperial:
 def today_line(cars: list[dict], today: dict[str, dict], units=None, active: dict[str, str] | None = None) -> list[dict]:
     """`units` is the active units object (units_mod.ACTIVE): stored miles, shown in its distance.
     `active` is vin -> "driving" or "charging" for the cars out now (Now's banners): a drive or a
-    charge under way is part of the day, not "stayed put" under its banner."""
+    charge under way is part of the day, not "stayed put" under its banner. The busiest car comes
+    first: the most miles, then the most charged, then one out now; the quiet ones keep their order."""
     active = active or {}
     units = units or _Imperial()
     out = []
@@ -123,8 +124,8 @@ def today_line(cars: list[dict], today: dict[str, dict], units=None, active: dic
             text = " and ".join(parts)
         else:
             text = "stayed home" if car_at_home(c) else "stayed put"
-        out.append({"vin": c["vin"], "name": c["name"], "text": text, "moved": bool(drives) or kwh >= 1 or bool(doing)})
-    return out
+        out.append(((-miles, -kwh if kwh >= 1 else 0.0, not doing), {"vin": c["vin"], "name": c["name"], "text": text, "moved": bool(drives) or kwh >= 1 or bool(doing)}))
+    return [row for _, row in sorted(out, key=lambda r: r[0])]
 
 
 def gauge(soc, limit) -> dict:

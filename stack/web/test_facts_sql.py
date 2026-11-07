@@ -190,3 +190,36 @@ def test_finished_charge_reads_only_facts_worked_out_after_the_end(conn):
     assert conn.execute(facts.FINISHED_CHARGE_SQL, ("V9", since)).fetchone() is None, "taken partway: the first kWh of it"
     conn.execute("UPDATE cc_charge_facts SET kwh = 61.8, cost = 19.43, computed_at = %s WHERE session_id = 40", (now,))
     assert conn.execute(facts.FINISHED_CHARGE_SQL, ("V9", since)).fetchone() == (61.8, 19.43)
+
+
+def test_recent_facts_use_the_newest_fifty_miles_and_leave_out_what_the_list_leaves_out(conn):
+    conn.execute(facts.DDL[facts.DDL.index("CREATE TABLE IF NOT EXISTS cc_vehicle_facts") : facts.DDL.index("CREATE TABLE IF NOT EXISTS cc_charge_facts")])
+    conn.execute("CREATE TABLE IF NOT EXISTS cc_trip_extras (vin VARCHAR, start_date TIMESTAMPTZ, kwh DOUBLE PRECISION)")
+    conn.execute("CREATE TABLE IF NOT EXISTS cc_hidden (kind VARCHAR, ref_id INTEGER)")
+    conn.execute("ALTER TABLE drives ADD COLUMN IF NOT EXISTS capacity DOUBLE PRECISION")
+    conn.execute("INSERT INTO drives (id, vin, capacity) VALUES (70, 'V7', 100.0), (71, 'V8', 100.0)")
+    # four 15-mile drives that each took 4 % of a 100 kWh pack, and a newer 25-mile one that took 20 %
+    for i in range(4):
+        start = T0 + timedelta(days=i)
+        conn.execute("INSERT INTO trips VALUES (%s, 'V7', %s, %s, %s, %s)", (700 + i, start, start + timedelta(minutes=30), 1000.0 + 15 * i, 1015.0 + 15 * i))
+        conn.execute("INSERT INTO cc_trip_facts (trip_id, level_start, level_end) VALUES (%s, 80.0, 76.0)", (700 + i,))
+    late = T0 + timedelta(days=9)
+    conn.execute("INSERT INTO trips VALUES (709, 'V7', %s, %s, 1060.0, 1085.0)", (late, late + timedelta(minutes=40)))
+    conn.execute("INSERT INTO cc_trip_facts (trip_id, level_start, level_end) VALUES (709, 80.0, 60.0)")
+    conn.execute("INSERT INTO cc_hidden VALUES ('drive', 709)")
+    hidden = " AND t.id NOT IN (SELECT ref_id FROM cc_hidden WHERE kind = 'drive')" + driveedits.ABSORBED
+    got = facts.fill_recent_facts(conn, "V7", None, hidden)
+    assert got["drives"] == 4 and got["miles"] == 60.0 and round(got["wh_per_mi"], 2) == 266.67, "the hidden drive is not in it"
+    assert conn.execute("SELECT round(recent_wh_per_mi::numeric, 2)::float8, recent_miles, recent_drives, recent_updated_at IS NOT NULL FROM cc_vehicle_facts WHERE vin = 'V7'").fetchone() == (
+        266.67,
+        60.0,
+        4,
+        True,
+    )
+    everything = facts.fill_recent_facts(conn, "V7")
+    assert everything["drives"] == 3 and everything["miles"] == 55.0 and round(everything["wh_per_mi"], 2) == 509.09, "without the filter the hidden 25 miles lead: 20 + 4 + 4 kWh over 55 mi"
+    # too few miles: nothing stored but the time it looked
+    conn.execute("INSERT INTO trips VALUES (801, 'V8', %s, %s, 500.0, 510.0)", (T0, T0 + timedelta(minutes=20)))
+    conn.execute("INSERT INTO cc_trip_facts (trip_id, level_start, level_end) VALUES (801, 80.0, 77.0)")
+    assert facts.fill_recent_facts(conn, "V8") is None
+    assert conn.execute("SELECT recent_wh_per_mi, recent_updated_at IS NOT NULL FROM cc_vehicle_facts WHERE vin = 'V8'").fetchone() == (None, True)

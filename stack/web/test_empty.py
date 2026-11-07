@@ -153,7 +153,7 @@ def test_every_page_renders_on_an_empty_install(client, zoned, path):
     assert r.status_code == 200, f"{path} answered {r.status_code}: {r.text[:300]}"
 
 
-@pytest.mark.parametrize("path", ["/api/now", "/api/drives", "/api/charges", "/drives.csv", "/charges.csv"])
+@pytest.mark.parametrize("path", ["/api/now", "/api/drives", "/api/charges", "/drives.csv", "/logbook.csv", "/charges.csv"])
 def test_the_data_endpoints_answer_empty_rather_than_failing(client, path):
     r = client.get(path)
     assert r.status_code == 200, f"{path} answered {r.status_code}: {r.text[:300]}"

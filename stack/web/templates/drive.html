@@ -12,16 +12,17 @@
 {# A drive: what it was in one line (its battery bold at the end), the maps with the speed key and
    replay under them, two headline figures, the chart, then every other figure in a quiet grid. #}
 <div class="pbar">
-  <h1>{{ place_refs(trip.from, [trip.get('from_ref')]) }} → {{ place_refs(trip.to, [trip.get('to_ref')]) }}</h1><span class="pbar-ctx keep">{{ trip.start_date|local('%a %b %-d, %-I:%M %p') }}{% if trip.destination_date %} → {{ trip.destination_date|local('%-I:%M %p') if trip.destination_date|local('%Y-%m-%d') == trip.start_date|local('%Y-%m-%d') else trip.destination_date|local('%a %-I:%M %p') }}{% else %}, still going{% endif %}</span>
+  <h1>{{ place_refs(trip.from, [trip.get('from_ref')]) }} → {{ place_refs(trip.to, [trip.get('to_ref')]) }}</h1><span class="pbar-ctx keep">{% if trip.get('gap_window') and trip.destination_date %}sometime between {{ trip.start_date|local('%a %b %-d, %-I:%M %p') }} and {{ trip.destination_date|local('%-I:%M %p') if trip.destination_date|local('%Y-%m-%d') == trip.start_date|local('%Y-%m-%d') else trip.destination_date|local('%a %-I:%M %p') }}{% else %}{{ trip.start_date|local('%a %b %-d, %-I:%M %p') }}{% endif %}{% if trip.get('gap_window') %}{% elif trip.destination_date %} → {{ trip.destination_date|local('%-I:%M %p') if trip.destination_date|local('%Y-%m-%d') == trip.start_date|local('%Y-%m-%d') else trip.destination_date|local('%a %-I:%M %p') }}{% else %}, still going{% endif %}</span>
   <span class="sp"></span>{{ pn.inline(near, root, '?vin=' ~ car.vin) }}<a class="btn sm" href="{{ root }}/day?date={{ trip.start_date|local('%Y-%m-%d') }}{{ dq }}">Day ›</a>
 </div>
 {% if said %}<p class="said">{{ said }}</p>{% endif %}
-{% set line = [] %}{% if trip.miles is not none %}{% set _ = line.append((trip.miles|dist(1)) ~ ' ' ~ u.dist) %}{% endif %}{% if trip.duration %}{% set _ = line.append(trip.duration|duration) %}{% elif not trip.destination_date %}{% set _ = line.append('in progress') %}{% endif %}{% if stats.wh_per_mi %}{% set _ = line.append((stats.wh_per_mi|econ) ~ ' ' ~ u.econ) %}{% endif %}
+{% set line = [] %}{% if trip.miles is not none %}{% set _ = line.append((trip.miles|dist(1)) ~ ' ' ~ u.dist) %}{% endif %}{% if trip.duration %}{% set _ = line.append(trip.duration|duration) %}{% elif not trip.destination_date %}{% set _ = line.append('in progress') %}{% endif %}{% if stats.wh_per_mi %}{% set _ = line.append((stats.wh_per_mi|econ) ~ ' ' ~ u.econ) %}{% endif %}{% if modes %}{% set _ = line.append(modes|join(' → ')) %}{% endif %}
 <div class="drv-sum"><b>{{ line|join(' · ') }}{% if trip.cost %}{{ ' · ' if line }}{{ est(trip.cost_estimate, 'the home rate is partly the regional average') }}{{ cur }}{{ trip.cost|num(2) }}{% endif %}</b>{% if stats.wh_per_mi %}{% call i.info('How efficiency is worked out') %}{{ stats.kwh_basis }}{% endcall %}{% endif %}<span class="sp"></span>{% if lvl_start is not none and lvl_end is not none %}<b class="drv-bat">{{ lvl_start|num }}→{{ lvl_end|num }}%</b>{% endif %}</div>
 {% set has_map = pos and pos.start_position_latitude and pos.destination_position_latitude %}
 {% if has_map %}
 <div id="drv-maps" class="drv-maps" role="img" aria-label="Map of this drive: where it started, the route coloured by speed, where it ended"></div>
 {% endif %}
+{% if trip.get('no_signal') %}<div class="drv-key"><span class="drv-spd" title="The car had no signal. The distance is the odometer's, the times are the last and first readings either side, and the dashed line is straight, not the road taken.{% if trip.get('gap_note') %} {{ trip.gap_note }}{% endif %}">no signal · estimated · {% if trip.get('gap_window') %}times are a window · {% endif %}dashed line is straight</span></div>{% endif %}
 {# under the maps: the replay, the drive's time at each speed as one bar (the bands it used), then the speed figures #}
 {% set used = (shares or [])|selectattr('share', 'ge', 0.005)|list %}
 <div class="drv-key">

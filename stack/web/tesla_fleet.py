@@ -162,6 +162,12 @@ class Fleet:
         endpoints = quote("vehicle_config;vehicle_state", safe="")
         return self._send("GET", f"{base}/api/1/vehicles/{quote(vin, safe='')}/vehicle_data?endpoints={endpoints}", token=access)
 
+    def schedules(self, access: str, base: str, vin: str) -> dict:
+        """The car's charge and preconditioning schedules and its firmware (vehicle_data, which does not
+        wake a car: asleep answers 408). charge_state is for the car's Home and Work places. The answer carries where each schedule applies; schedules.parse names the place and drops the position."""
+        endpoints = quote("charge_schedule_data;preconditioning_schedule_data;charge_state;vehicle_state", safe="")
+        return self._send("GET", f"{base}/api/1/vehicles/{quote(vin, safe='')}/vehicle_data?endpoints={endpoints}", token=access)
+
     # ---- Supercharger bills
     def charging_history(self, access: str, base: str, vin: str, start: str | None = None, page: int = 1, size: int = 50, order: str = "ASC") -> dict:
         """One page of the account's charging history for one car: Tesla's own

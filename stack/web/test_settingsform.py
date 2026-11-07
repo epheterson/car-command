@@ -53,6 +53,14 @@ def test_a_field_not_on_the_page_keeps_its_value():
     assert got["tire_low_psi"] is None and got["alert_routes"] == {"parked": []}, "shown and blanked is off; shown and unticked is off"
 
 
+def test_phone_tab_slots_become_an_ordered_list_or_the_default():
+    slots = lambda *keys: {f"phone_tab_{i}": k for i, k in enumerate(keys, 1)}
+    assert parse("look", slots("places", "now", "", "stats"), WAS)["phone_tabs"] == ["places", "now", "stats"], "blank slots close up, order kept"
+    assert parse("look", slots("now", "timeline", "stats", "map"), WAS)["phone_tabs"] is None, "the default four store as nothing"
+    assert parse("look", slots("", "", "", ""), WAS)["phone_tabs"] is None and parse("look", slots("bogus", "now", "now", ""), WAS)["phone_tabs"] == ["now"]
+    assert "phone_tabs" not in parse("look", {"units": "metric"}, WAS), "a page without the slots leaves the bar as it was"
+
+
 def test_look_and_data_values():
     got = parse("look", {"units": "metric", "theme": "nonsense", "week_start": "sunday", "clock": "24", "date_order": "dmy", "timezone": "Not/AZone"}, WAS)
     assert got == {"units": "metric", "theme": "system", "week_start": "sunday", "clock": "24", "date_order": "dmy", "timezone": None}

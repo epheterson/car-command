@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import jinja2
 import pytest
+from test_empty import bare  # noqa: F401 - fixture
 
 import chartdata
 import clockfmt
@@ -169,3 +170,12 @@ def test_a_time_box_placeholder_follows_the_clock_set_after_the_template_compile
     out = page.render()
     assert 'placeholder="21:00"' in out and 'value="07:00"' in out and out.endswith("13:0514:00")
     filters.register(env, clock="12")
+
+
+def test_saving_settings_drops_the_cards_a_stream_drew_with_the_old_clock(bare, monkeypatch):  # noqa: F811
+    app = bare
+    monkeypatch.setattr(app, "apply_settings", lambda st: None)
+    monkeypatch.setattr(app, "current_settings", lambda: {})
+    app._cache["live-cards:None:"] = (datetime.now(timezone.utc), {"x": {"html": "6 PM"}})
+    app.settings_changed()
+    assert not [k for k in app._cache if k.startswith("live-cards:")], "the strip's hour labels would stay 12-hour for the cache's ten seconds"

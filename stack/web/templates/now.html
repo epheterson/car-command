@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% import "_parts.html" as parts %}
-{% block title %}{{ car.name }} · {{ ('Offline' if car.get('offline') else state_word(car.status)[0]) }} · Car Command{% endblock %}
+{% block title %}{{ car.name }} · {{ (('No signal' if car.status == 'Driving' else 'Offline') if car.get('offline') else state_word(car.status)[0]) }} · Car Command{% endblock %}
 {% block head %}{% if car.lat and car.lon %}
 {% include "_maphead.html" %}
 {% endif %}{% endblock %}
@@ -8,8 +8,10 @@
 {% from "_mapsoffer.html" import offer %}{{ offer(settings, root, csrf, here) }}
 {% include "_activity.html" %}
 {% include "_now_hero.html" %}
-{% import "_commands.html" as cmds %}{{ cmds.dock(cmd, car, root) }}
-{% if cmd %}<script src="{{ root }}/static/commands.js?v={{ js_v }}" defer></script>{% endif %}
+{% import "_commands.html" as cmds %}{{ cmds.dock(cmd, car, root, u, step) }}
+{% if cmd %}{% if step and step.passkey %}<script src="{{ root }}/static/passkeys.js?v={{ js_v }}" defer></script>{% endif %}<script src="{{ root }}/static/commands.js?v={{ js_v }}" defer></script>{% endif %}
+{{ parts.home_row(pw, gar) }}
+{% if not cmd and gar and gar.raises and step and step.passkey %}<script src="{{ root }}/static/passkeys.js?v={{ js_v }}" defer></script>{% endif %}
 
 {% if car.lat and car.lon %}
 <section aria-label="Where">

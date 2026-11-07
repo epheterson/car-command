@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS cc_billed_charges (
     fetched_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS cc_billed_charges_vin_start ON cc_billed_charges (vin, started_at);
+-- The idle (feeType PARKING) and congestion fees inside total, and the idle minutes billed;
+-- NULL for a bill read before they were kept, 0 for one that had none.
+ALTER TABLE cc_billed_charges ADD COLUMN IF NOT EXISTS idle_fee DOUBLE PRECISION;
+ALTER TABLE cc_billed_charges ADD COLUMN IF NOT EXISTS congestion_fee DOUBLE PRECISION;
+ALTER TABLE cc_billed_charges ADD COLUMN IF NOT EXISTS idle_min DOUBLE PRECISION;
 """
 
 WINDOW = timedelta(minutes=10)  # a bill's start and our session's start agree to within this
@@ -76,7 +81,8 @@ def _num(v) -> float | None:
 
 def parse_item(item: dict) -> dict | None:
     """One history item as a row, or None when it has no id, car, start or amount. The
-    total is every fee (charging and idle), what the card was charged; kWh is the charging
+    total is every fee (charging, idle and congestion), what the card was charged, with the
+    idle (PARKING) and congestion fees and the idle minutes kept apart; kWh is the charging
     fee's usage where it is metered by the kWh."""
     if not isinstance(item, dict):
         return None
@@ -87,6 +93,10 @@ def parse_item(item: dict) -> dict | None:
         return None
     charging = next((f for f in fees if f.get("feeType") == "CHARGING"), fees[0])
     kwh = _num(charging.get("usageBase")) if (charging.get("uom") or "").lower() == "kwh" else None
+    # feeType names: CHARGING and PARKING (Tesla's word for idle) are seen in real responses; CONGESTION is
+    # a guess not found in Tesla's published docs, and any other type stays inside the charging amount.
+    idle = [f for f in fees if f.get("feeType") == "PARKING"]
+    idle_min = sum(_num(f.get("usageBase")) or 0.0 for f in idle if (f.get("uom") or "").lower().startswith("min")) if idle else 0.0
     invoice = next((i.get("contentId") for i in item.get("invoices") or [] if isinstance(i, dict) and i.get("contentId")), None)
     return {
         "id": str(sid),
@@ -98,6 +108,9 @@ def parse_item(item: dict) -> dict | None:
         "total": round(sum(d for d in dues if d is not None), 2),
         "kwh": kwh,
         "invoice_id": invoice,
+        "idle_fee": round(sum(_num(f.get("totalDue")) or 0.0 for f in idle), 2),
+        "congestion_fee": round(sum(_num(f.get("totalDue")) or 0.0 for f in fees if f.get("feeType") == "CONGESTION"), 2),
+        "idle_min": idle_min,
     }
 
 
@@ -134,10 +147,10 @@ def match(session: dict, bills: list[dict]) -> dict | None:
 def bills_between(conn, vin: str, lo: datetime, hi: datetime) -> list[dict]:
     """The bills that could match a session starting between lo and hi."""
     rows = conn.execute(
-        "SELECT id, vin, started_at, site, currency, total, invoice_id FROM cc_billed_charges WHERE vin = %s AND started_at BETWEEN %s AND %s ORDER BY started_at",
+        "SELECT id, vin, started_at, site, currency, total, invoice_id, idle_fee, congestion_fee, idle_min FROM cc_billed_charges WHERE vin = %s AND started_at BETWEEN %s AND %s ORDER BY started_at",
         (vin, lo - WINDOW, hi + WINDOW),
     ).fetchall()
-    keys = ("id", "vin", "started_at", "site", "currency", "total", "invoice_id")
+    keys = ("id", "vin", "started_at", "site", "currency", "total", "invoice_id", "idle_fee", "congestion_fee", "idle_min")
     return [dict(r) if isinstance(r, dict) else dict(zip(keys, r)) for r in rows]
 
 
@@ -151,11 +164,12 @@ def store(conn, rows: list[dict]) -> list[str]:
     changed = []
     for r in rows:
         got = conn.execute(
-            """INSERT INTO cc_billed_charges (id, vin, started_at, stopped_at, site, currency, total, kwh, invoice_id, fetched_at)
-               VALUES (%(id)s, %(vin)s, %(started_at)s, %(stopped_at)s, %(site)s, %(currency)s, %(total)s, %(kwh)s, %(invoice_id)s, now())
-               ON CONFLICT (id) DO UPDATE SET total = EXCLUDED.total, kwh = EXCLUDED.kwh, invoice_id = COALESCE(EXCLUDED.invoice_id, cc_billed_charges.invoice_id),
+            """INSERT INTO cc_billed_charges (id, vin, started_at, stopped_at, site, currency, total, kwh, invoice_id, idle_fee, congestion_fee, idle_min, fetched_at)
+               VALUES (%(id)s, %(vin)s, %(started_at)s, %(stopped_at)s, %(site)s, %(currency)s, %(total)s, %(kwh)s, %(invoice_id)s, %(idle_fee)s, %(congestion_fee)s, %(idle_min)s, now())
+               ON CONFLICT (id) DO UPDATE SET total = EXCLUDED.total, kwh = EXCLUDED.kwh, idle_fee = EXCLUDED.idle_fee, congestion_fee = EXCLUDED.congestion_fee, idle_min = EXCLUDED.idle_min, invoice_id = COALESCE(EXCLUDED.invoice_id, cc_billed_charges.invoice_id),
                    currency = EXCLUDED.currency, site = EXCLUDED.site, stopped_at = EXCLUDED.stopped_at, fetched_at = now()
-               WHERE cc_billed_charges.total IS DISTINCT FROM EXCLUDED.total OR cc_billed_charges.invoice_id IS NULL AND EXCLUDED.invoice_id IS NOT NULL
+               WHERE cc_billed_charges.total IS DISTINCT FROM EXCLUDED.total OR cc_billed_charges.idle_fee IS NULL OR cc_billed_charges.congestion_fee IS DISTINCT FROM EXCLUDED.congestion_fee
+                     OR cc_billed_charges.invoice_id IS NULL AND EXCLUDED.invoice_id IS NOT NULL
                RETURNING id""",
             r,
         ).fetchone()
@@ -165,14 +179,15 @@ def store(conn, rows: list[dict]) -> list[str]:
 
 
 def sessions_for(conn, bill_ids: list[str]) -> list[int]:
-    """Our sessions within WINDOW of these bills' starts that a bill has not priced yet."""
+    """Our sessions within WINDOW of these bills' starts that a bill has not priced yet, or
+    priced before the fees were kept apart (their idle_fee is still NULL)."""
     if not bill_ids:
         return []
     rows = conn.execute(
         """SELECT DISTINCT c.id FROM cc_billed_charges b
            JOIN charging_sessions c ON c.vin = b.vin AND c.session_start_date BETWEEN b.started_at - interval '10 minutes' AND b.started_at + interval '10 minutes'
            LEFT JOIN cc_charge_facts f ON f.session_id = c.id
-           WHERE b.id = ANY(%s) AND f.cost_source IS DISTINCT FROM 'billed'""",
+           WHERE b.id = ANY(%s) AND (f.cost_source IS DISTINCT FROM 'billed' OR f.idle_fee IS NULL)""",
         (bill_ids,),
     ).fetchall()
     return [r["id"] if isinstance(r, dict) else r[0] for r in rows]

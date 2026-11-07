@@ -847,3 +847,16 @@ def test_the_token_page_has_the_labelled_snippets_and_the_log():
     assert ".mcp.json, Cursor" in html and '"type": "http"' in html and "service token" in html
     assert "street addresses, latitude and longitude, speed and heading" in html
     assert "Recent MCP questions" in html and "list_drives" in html
+
+
+def test_an_mcp_token_past_its_date_stops_like_a_revoked_one(site):
+    from datetime import datetime, timedelta, timezone
+
+    import auth
+
+    import app
+
+    app.TOKENS[auth.token_hash(TOKEN)]["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert post(site, {"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 401
+    app.TOKENS[auth.token_hash(TOKEN)]["expires_at"] = datetime.now(timezone.utc) + timedelta(days=1)
+    assert post(site, {"jsonrpc": "2.0", "id": 1, "method": "ping"}).status_code == 200

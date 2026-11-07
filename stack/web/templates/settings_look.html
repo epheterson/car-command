@@ -30,6 +30,14 @@
     <div class="set-row"><span class="set-l">Theme</span><div class="set-c">{{ s.segmented('theme', (('system', 'Auto'), ('light', 'Light'), ('dark', 'Dark')), st.theme if st.theme in ('light', 'dark') else 'system', 'Theme', full=false) }}</div></div>
   </div>
 </section>
+<section class="group">
+  <h2 class="sec">Phone tab bar {% call info("Tab bar") %}Four sections sit in the bar; every other one, and Settings, is under More.{% endcall %}</h2>
+  <div class="group-b">
+    {% for slot in ('First', 'Second', 'Third', 'Fourth') %}{% set cur = nav_phone_tabs[loop.index0] if loop.index0 < nav_phone_tabs|length else '' %}
+    <div class="set-row"><label class="set-l" for="phone_tab_{{ loop.index }}">{{ slot }}</label><div class="set-c"><select class="field" id="phone_tab_{{ loop.index }}" name="phone_tab_{{ loop.index }}"><option value="">None</option>{% for key, label, path, pages in nav_sections %}<option value="{{ key }}"{{ ' selected' if key == cur }}>{{ label }}</option>{% endfor %}</select></div></div>
+    {% endfor %}
+  </div>
+</section>
 {{ s.savebar() }}
 </form>
 {{ tzscript() }}

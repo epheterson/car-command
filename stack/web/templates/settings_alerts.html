@@ -104,7 +104,7 @@
       {% if ha.door %}<span class="pill">{{ ha.door.state }}</span>{% elif not ha.problem %}<span class="muted">no reading yet</span>{% endif %}
       <a class="btn sm" href="{{ root }}/settings/data#ha">Manage</a></div></div>
     {% if ha.doors %}
-    <form class="set-row garage" method="post" action="{{ root }}/settings/alerts/ha/door"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <form class="set-row garage" method="post" action="{{ root }}/settings/alerts/ha/door" data-power="door" data-garage-open="{{ '1' if (ha.arrival or {}).mode == 'open' else '0' }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
       <label class="set-l" for="ha-door">Door</label><div class="set-c"><select class="field" id="ha-door" name="entity">{% for d in ha.doors %}<option value="{{ d.id }}"{{ ' selected' if d.id == ha.entity }}>{{ d.name }}</option>{% endfor %}</select><button class="btn sm">Save</button></div></form>
     {% elif not ha.problem %}<div class="set-row"><span class="set-l">Door</span><div class="set-c muted">No covers in Home Assistant</div></div>{% endif %}
   {% elif ha.env %}
@@ -112,7 +112,7 @@
   {% endif %}
   {% if ha.linked or ha.env %}
     {% set arr = ha.arrival or {} %}
-    <form class="set-row garage" method="post" action="{{ root }}/settings/alerts/ha/arrival"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <form class="set-row garage" method="post" action="{{ root }}/settings/alerts/ha/arrival" data-power="garage"><input type="hidden" name="csrf_token" value="{{ csrf }}">
       <span class="set-l">Open on arrival{% if ha.camera %}<span class="set-s">with the driveway camera</span>{% endif %}</span><div class="set-c">
       <select class="field" name="mode" aria-label="Open on arrival">{% for m, l in [('off', 'Off'), ('watch', 'Watch only'), ('open', 'Open')] %}<option value="{{ m }}"{{ ' selected' if arr.mode == m }}>{{ l }}</option>{% endfor %}</select>
       <select class="field" name="vin" aria-label="Car">{% for c in ha.cars or [] %}<option value="{{ c.vin }}"{{ ' selected' if arr.vin == c.vin }}>{{ c.name }}</option>{% endfor %}</select>

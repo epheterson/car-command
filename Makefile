@@ -6,7 +6,7 @@ TM_DB     ?= teslamate-db
 TM_DB_USER ?= teslamate
 TM_MAKE   ?= Tesla
 
-.PHONY: setup backup restore staging wheel deploy web logs test refacts secret-key tesla-net-key tesla-up tesla-restart tesla-logs connector-lock one-container one-container-run one-container-demo one-container-multiarch one-container-move media signin-reset setup-code elevation-fit
+.PHONY: fill-gaps setup backup restore staging wheel deploy web logs test refacts secret-key tesla-net-key tesla-up tesla-restart tesla-logs connector-lock one-container one-container-run one-container-demo one-container-multiarch one-container-move media signin-reset passkeys-reset setup-code elevation-fit import-tessie
 
 # First run: stack/.env with generated passwords, and stack/secrets/. Refuses to
 # overwrite an existing .env, which holds the password to the database volume.
@@ -95,6 +95,9 @@ web:
 signin-reset:  ## locked out? forget the sign-in switch chosen in Settings and the Cloudflare Access pin (the password is kept), then restart the site
 	ssh $(MINI) 'cd $(DEST) && export PATH=$$PATH:/usr/local/bin && docker compose exec -T web python3 signin_reset.py && docker compose restart web'
 
+passkeys-reset:  ## lost the phone? forget every passkey and the command PIN (the password is kept), then restart the site
+	ssh $(MINI) 'cd $(DEST) && export PATH=$$PATH:/usr/local/bin && docker compose exec -T web python3 passkeys_reset.py && docker compose restart web'
+
 elevation-fit:  ## fit the Lucid's raw GPS height to metres, against the Teslas on shared roads and the terrain model (a check, changes nothing)
 	ssh $(MINI) 'cd $(DEST) && export PATH=$$PATH:/usr/local/bin && docker compose exec -T web python3 elevfit.py'
 
@@ -152,6 +155,10 @@ refacts:
 rebuild-drives:
 	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 driverebuild.py $(FROM) $(if $(VIN),--vin $(VIN)) $(ARGS)'
 
+# Fill the miles a car drove out of coverage as drives marked no signal (Lucid or Tesla); a dry run that lists them unless ARGS=--write: make fill-gaps FROM=2026-11-01 [VIN=...] [ARGS=--write]
+fill-gaps:
+	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 nosignal.py $(FROM) $(if $(VIN),--vin $(VIN)) $(ARGS)'
+
 # Fill a connector car's charges that have an end and no start, from its CHARGING states: make charge-starts FROM=2026-09-28 [VIN=...] [ARGS=--dry-run]
 charge-starts:
 	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 chargestart.py $(FROM) $(if $(VIN),--vin $(VIN)) $(ARGS)'
@@ -176,6 +183,11 @@ discover:
 # year, its public name next to local maps' own answer, never a coordinate. Prints and exits, for a person to mark up.
 maps-check:
 	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 maps_check.py'
+
+# A Tessie history into Car Command, read-only, month by month (put TESSIE_TOKEN in stack/.env on the host first and `up -d --no-deps web`):
+# make import-tessie [ARGS="--vin 5YJ... --since 2024-01-01 --dry-run"]; run it again after an interruption and it carries on.
+import-tessie:
+	ssh $(MINI) 'cd $(DEST) && PATH=$$PATH:/usr/local/bin docker compose exec -T web python3 tessie_import.py $(ARGS)'
 
 # A TeslaMate history into Car Command, cut where the live connector took over.
 # Dumps six tables read-only from TeslaMate's database container (TM_DB, user and database TM_DB_USER),

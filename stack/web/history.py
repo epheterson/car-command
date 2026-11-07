@@ -10,12 +10,14 @@ logger took over (TeslaMate until Car Command's first row, say).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import averages
 import cost
 import driveedits
+import fees
+import nosignal
 import settings as settings_mod
 from facts import ensure_tables, fill_facts
 from manual import DDL as MANUAL_DDL
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS cc_charge_extras (
     PRIMARY KEY (vin, start_date)
 );
 ALTER TABLE cc_software ADD COLUMN IF NOT EXISTS import_id VARCHAR;
-"""
+""" + nosignal.DDL
 INTERVAL_TABLES = {  # table -> (value column, keyed by vin or drive)
     "states": ("state", "vin"),
     "connection_states": ("connection_state", "vin"),
@@ -459,6 +461,7 @@ def write_history(conn, vin: str, name: str, manufacturer: str, model: str | Non
     )
     counts["cc_software"] = copy_rows(conn, "cc_software", ("vin", "version", "seen_at", "import_id"), ((vin, v, x, import_id) for x, _y, v in real_software_changes(conn, vin, out["software"])))
     counts["drive_edits"] = driveedits.reapply(conn, vin)
+    counts["no_signal"] = len(fill_gaps(conn, vin, datetime.now(timezone.utc) - nosignal.RECENT, auto=True))  # the recent past only: older gaps are filled by hand (make fill-gaps)
     conn.execute("INSERT INTO cc_imports (id, vin, filename, rows, first_at, last_at) VALUES (%s, %s, %s, %s, %s, %s)", (import_id, vin, filename, out["rows"], first_at, b))
     conn.commit()
     return counts
@@ -549,4 +552,112 @@ def fill_after_import(conn, vin: str, tz: ZoneInfo) -> tuple[int, int]:
     # The site's fast-charging prices too, or a live poller's fast charges would be
     # looked at with none and the site's tick would have to find them again.
     fast = {k: (float(st[k]) if st.get(k) else None) for k in ("dc_price", "dc_per_min", "sc_price", "sc_per_min")}
-    return fill_facts(conn, vin, tz, is_home, averages=rates, place_of=place_of, **fast)
+    return fill_facts(conn, vin, tz, is_home, averages=rates, place_of=place_of, fee_rules=fees.rules(st), **fast)
+
+
+def gap_floor(conn, dry_run: bool = False) -> datetime | None:
+    """When the automatic fill first ran (cc_state, written once): it fills only silences that began after, so it
+    never reaches back over history nobody asked to have filled. None when there is no cc_state yet."""
+    if not (_t(conn.execute("SELECT to_regclass(%s)", ("cc_state",)).fetchone()) or (None,))[0]:
+        return None
+    row = conn.execute("SELECT value FROM cc_state WHERE key = %s", (nosignal.LIVE_KEY,)).fetchone()
+    if row:
+        return datetime.fromisoformat(_t(row)[0])
+    now = datetime.now(timezone.utc)
+    if not dry_run:
+        conn.execute("INSERT INTO cc_state (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING", (nosignal.LIVE_KEY, now.isoformat()))
+    return now
+
+
+LATE_KEYED = ("cc_trip_extras", "cc_trip_routes", "cc_weather")  # what a drive keeps under its start time, moved with it
+
+
+def _late_start(conn, vin: str, g: dict) -> bool:
+    """Start the drive the feed caught already moving where the car was parked (nosignal: a missed start): its start
+    time, odometer and place move back, what is kept under its start time moves with it, its facts are worked out
+    again, and cc_late_starts holds what it was. False when the drive is gone or was moved already."""
+    row = conn.execute("SELECT start_date, start_odometer, start_position_latitude, start_position_longitude FROM trips WHERE id = %s AND vin = %s", (g["late_start"], vin)).fetchone()
+    if not row or conn.execute("SELECT 1 FROM cc_late_starts WHERE trip_id = %s", (g["late_start"],)).fetchone():
+        return False
+    old = _t(row)
+    if conn.execute(
+        "SELECT 1 FROM trips WHERE vin = %s AND id <> %s AND start_date < %s AND COALESCE(destination_date, 'infinity') > %s LIMIT 1", (vin, g["late_start"], old[0], g["start"])
+    ).fetchone():
+        return False
+    conn.execute("INSERT INTO cc_late_starts (trip_id, vin, old_start, old_odometer, old_lat, old_lon) VALUES (%s, %s, %s, %s, %s, %s)", (g["late_start"], vin, *old))
+    conn.execute(
+        "UPDATE trips SET start_date = %s, start_odometer = %s, start_position_latitude = %s, start_position_longitude = %s WHERE id = %s",
+        (g["start"], g["start_odometer"], g["start_lat"], g["start_lon"], g["late_start"]),
+    )
+    for table in LATE_KEYED:
+        if (_t(conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()) or (None,))[0]:
+            conn.execute(f"UPDATE {table} SET start_date = %s WHERE vin = %s AND start_date = %s", (g["start"], vin, old[0]))
+    if (_t(conn.execute("SELECT to_regclass(%s)", ("cc_trip_facts",)).fetchone()) or (None,))[0]:
+        conn.execute("DELETE FROM cc_trip_facts WHERE trip_id = %s", (g["late_start"],))
+    return True
+
+
+def fill_gaps(conn, vin: str, since: datetime, dry_run: bool = False, auto: bool = False) -> list[dict]:
+    """Add the drives a car made out of coverage (nosignal.plan) to its trips, each marked in cc_gap_drives, for
+    stretches that end at or after `since`. Returns the drives added (or, dry, that would be). Never over a trip:
+    a stretch any trip overlaps is skipped, and a rerun finds nothing, the filled pair having no step left. A
+    dry run reads only."""
+    if not dry_run and not (_t(conn.execute("SELECT to_regclass(%s)", ("cc_gap_drives",)).fetchone()) or (None,))[0]:
+        return []  # the site's startup makes it; a run before that waits
+    lo = since - timedelta(days=1)  # the drive before the first stretch is the stretch's start
+    trips = [
+        dict(zip(("id", "start", "end", "odo0", "odo1", "lat0", "lon0", "lat1", "lon1"), _t(r)))
+        for r in conn.execute(
+            "SELECT id, start_date, destination_date, start_odometer, destination_odometer, start_position_latitude, start_position_longitude,"
+            " destination_position_latitude, destination_position_longitude FROM trips WHERE vin = %s AND COALESCE(destination_date, now()) >= %s ORDER BY start_date",
+            (vin, lo),
+        ).fetchall()
+    ]
+    # the drive just before `lo` is the start of a stretch that reaches into the window
+    before = conn.execute(
+        "SELECT id, start_date, destination_date, start_odometer, destination_odometer, start_position_latitude, start_position_longitude,"
+        " destination_position_latitude, destination_position_longitude FROM trips WHERE vin = %s AND COALESCE(destination_date, now()) < %s ORDER BY start_date DESC LIMIT 1",
+        (vin, lo),
+    ).fetchone()
+    if before:
+        trips.insert(0, dict(zip(("id", "start", "end", "odo0", "odo1", "lat0", "lon0", "lat1", "lon1"), _t(before))))
+    fixes = [
+        dict(zip(("at", "lat", "lon", "odo", "level", "speed"), _t(r)))
+        for r in conn.execute("SELECT at, latitude, longitude, odometer, level, speed FROM cc_positions WHERE vin = %s AND at >= %s ORDER BY at", (vin, lo - nosignal.LEVEL_NEAR)).fetchall()
+    ]
+    cap = conn.execute("SELECT capacity FROM drives WHERE vin = %s ORDER BY id LIMIT 1", (vin,)).fetchone()
+    charges = [
+        dict(zip(("start", "end", "lat", "lon"), _t(r)))
+        for r in conn.execute(
+            "SELECT session_start_date, COALESCE(session_end_date, now()), session_position_latitude, session_position_longitude FROM charging_sessions WHERE vin = %s AND session_start_date IS NOT NULL AND COALESCE(session_end_date, now()) >= %s",
+            (vin, lo),
+        ).fetchall()
+    ]
+    floor = None
+    if auto:  # the background paths: only silences that began after the feature went live
+        floor = gap_floor(conn, dry_run)
+        if floor is None:
+            return []
+    found = nosignal.plan(trips, fixes, _t(cap)[0] if cap else None, since, charges, floor)
+    if dry_run or not found:
+        return found
+    driveedits.lock(conn, vin)
+    conn.execute("DELETE FROM cc_gap_drives WHERE vin = %s AND trip_id NOT IN (SELECT id FROM trips WHERE vin = %s)", (vin, vin))  # a trip a re-import replaced
+    added = []
+    for g in found:
+        if g.get("late_start"):
+            if _late_start(conn, vin, g):
+                added.append(g)
+            continue
+        if conn.execute("SELECT 1 FROM trips WHERE vin = %s AND start_date < %s AND COALESCE(destination_date, 'infinity') > %s LIMIT 1", (vin, g["end"], g["start"])).fetchone():
+            continue
+        row = conn.execute(
+            "INSERT INTO trips (vin, start_date, destination_date, start_odometer, destination_odometer, start_position_latitude, start_position_longitude,"
+            " destination_position_latitude, destination_position_longitude) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (vin, g["start"], g["end"], g["start_odometer"], g["destination_odometer"], g["start_lat"], g["start_lon"], g["end_lat"], g["end_lon"]),
+        ).fetchone()
+        conn.execute("INSERT INTO cc_gap_drives (trip_id, vin, note, window_only) VALUES (%s, %s, %s, %s)", (_t(row)[0], vin, g.get("note"), bool(g.get("window"))))
+        if g["kwh"]:
+            conn.execute("INSERT INTO cc_trip_extras (vin, start_date, kwh) VALUES (%s, %s, %s) ON CONFLICT (vin, start_date) DO UPDATE SET kwh = EXCLUDED.kwh", (vin, g["start"], g["kwh"]))
+        added.append(g)
+    return added

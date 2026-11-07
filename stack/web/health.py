@@ -50,7 +50,7 @@ def _age(now: datetime, then: datetime | None) -> str:
 def check(car: dict, now: datetime) -> list[dict]:
     """Findings for one car, from the plain facts `gather` collects.
 
-    car: vin, name, source (live | feed | teslamate | history), raw_newest (the newest
+    car: vin, name, source (live | feed | teslamate | tesla | history), raw_newest (the newest
     reading from the source), derived_newest (the newest drive, charge or state written
     from it), active_since_derived (a reading after derived_newest showed the car driving
     or charging), odo_7d and trips_7d (miles the odometer moved this week, and miles the
@@ -129,6 +129,11 @@ def gather(conn, vin: str, name: str, source: str, now: datetime) -> dict:
             (vin, since, until),
         )
         car["rebuild"] = _one(conn, "SELECT value FROM cc_state WHERE key = %s", (f"feed_rebuild:{vin}",))
+    elif source == "tesla":
+        # the stream's own records, or a stretch its rebuild still carries on (a sleeping car sends nothing, and its
+        # asleep stretch runs on to the latest rebuild): both stop when the receiver or the worker does
+        car["raw_newest"] = _one(conn, "SELECT GREATEST((SELECT MAX(at) FROM cc_tesla_raw WHERE vin = %s), (SELECT MAX(last_date) FROM states WHERE vin = %s))", (vin, vin))
+        car["odo_7d"] = _one(conn, "SELECT MAX(odometer) - MIN(odometer) FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s", (vin, since, until))
     elif source in ("live", "teslamate"):
         car["raw_newest"] = _one(conn, "SELECT MAX(last_date) FROM states WHERE vin = %s", (vin,))
         car["odo_7d"] = _one(conn, "SELECT MAX(odometer) - MIN(odometer) FROM cc_positions WHERE vin = %s AND at BETWEEN %s AND %s", (vin, since, until))

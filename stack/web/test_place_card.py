@@ -548,3 +548,14 @@ def test_an_unnamed_place_reads_as_unnamed_with_its_coordinate_beneath():
     js = (HERE / "static" / "placesmap.js").read_text()
     assert 'unnamed(p) ? "Unnamed place"' in js and "bits.push(p.n)" in js and 'plr-unnamed' in js
     assert ".plr-unnamed b {" in (HERE / "static" / "style.css").read_text()
+
+
+def test_a_window_drive_keeps_its_miles_and_has_no_duration(bare):  # noqa: F811
+    from places import PlaceIndex
+
+    r = {"start_position_latitude": 39.80, "start_position_longitude": -89.65, "destination_position_latitude": 39.9, "destination_position_longitude": -89.7}
+    r.update(destination_odometer=14.09, start_odometer=5.0, destination_date=T0, start_date=T0 - timedelta(hours=6), start_road="", start_city="", dest_road="", dest_city="", gap_window=True)
+    out = bare._finish_drive(dict(r), PlaceIndex([]), cells={}, energy={}, by_year={})
+    assert out["duration"] is None and round(out["miles"], 2) == 9.09
+    out = bare._finish_drive(dict(r, gap_window=False), PlaceIndex([]), cells={}, energy={}, by_year={})
+    assert out["duration"] == timedelta(hours=6)

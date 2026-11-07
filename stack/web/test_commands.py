@@ -46,15 +46,31 @@ def test_refusals_in_order():
     assert "doesn't offer" in _refuse("charge_stop", "Lucid", "connector", offered={"lock"})
     assert _refuse("charge_stop", "Lucid", "connector", offered={"charge_stop"}) is None
     assert _refuse("charge_stop", "Lucid", "connector", offered=None) is None, "not known: the connector answers"
-    assert "password" in _refuse("unlock", allowed_tier=3)
+    assert _refuse("unlock", allowed_tier=3) == cm.STEP_UP_ASK
     assert _refuse("unlock", allowed_tier=3, stepped_up=True) is None
     assert _refuse("charge_amps") is None
 
 
+def test_tier_three_needs_an_owner_before_any_confirmation():
+    assert _refuse("unlock", allowed_tier=3, stepped_up=True, owner=False) == cm.OWNERS_ONLY
+    assert _refuse("unlock", allowed_tier=3, owner=False) == cm.OWNERS_ONLY, "no Face ID sheet for someone who could never send it"
+    assert _refuse("sentry_on", allowed_tier=2, owner=False) is None, "tier 1 and 2 keep working for anyone Access lets in"
+
+
+def test_a_control_token_sends_up_to_its_cap_and_says_how_to_get_more():
+    assert _refuse("charge_stop", allowed_tier=3, cap=1) is None
+    said = _refuse("sentry_on", allowed_tier=3, cap=1)
+    assert said.startswith("This token sends everyday commands only") and "Settings › Access" in said
+    assert _refuse("sentry_on", allowed_tier=3, cap=2) is None
+    assert "everyday and car settings" in _refuse("unlock", allowed_tier=3, cap=2, stepped_up=True)
+
+
 def test_every_tier_is_one_two_or_three_and_tier_three_holds_what_opens_the_car():
     assert {c.tier for c in cm.CATALOGUE.values()} == {1, 2, 3}
-    for key in ("unlock", "trunk", "frunk", "windows_vent", "windows_close", "remote_start"):
+    for key in ("unlock", "trunk", "frunk", "windows_vent", "remote_start"):
         assert cm.CATALOGUE[key].tier == 3
+    for key in ("windows_close", "trunk_close", "frunk_close"):
+        assert cm.CATALOGUE[key].tier == 2, "closing up makes the car safer: no confirmation"
     assert cm.CATALOGUE["lock"].tier == 1 and cm.CATALOGUE["sentry_on"].tier == 2
 
 
@@ -92,19 +108,33 @@ def test_offered_reads_the_command_nodes_the_connector_put_in_the_tree():
     assert cm.CC_PATHS["trunk_close"] == ("POST", "doors/commands/trunk", "close")
 
 
-def test_limiter_ten_a_car_a_minute_and_three_tier_three_an_hour():
+def test_limiter_ten_a_car_a_minute_and_tier_three_counted_per_command():
     t = [0.0]
     lim = cm.Limiter(clock=lambda: t[0])
     assert all(lim.admit("V1") is None for _ in range(10))
     assert "10 commands" in lim.admit("V1") and lim.admit("V2") is None
     t[0] = 60.0
     assert lim.admit("V1") is None
-    assert all(lim.admit("V3", 3) is None for _ in range(3))
-    t[0] = 200.0
-    assert "in an hour" in lim.admit("V3", 3)
-    assert lim.admit("V3", 1) is None, "the hourly cap is tier 3's alone"
+    assert all(lim.admit("V3", 3, "unlock") is None for _ in range(3))
+    t[0] = 120.0
+    assert "3 of these to this car in an hour" in lim.admit("V3", 3, "unlock")
+    assert lim.admit("V3", 3, "frunk") is None and lim.admit("V3", 3, "trunk") is None, "unlock, frunk, trunk all go"
+    assert lim.admit("V3", 1, "lock") is None, "the hourly caps are tier 3's alone"
+    assert all(lim.admit("V4", 3, "remote_start") is None for _ in range(2))
+    assert "2 of these" in lim.admit("V4", 3, "remote_start")
     t[0] = 3700.0
-    assert lim.admit("V3", 3) is None
+    assert lim.admit("V3", 3, "unlock") is None
+
+
+def test_tier_three_has_a_ceiling_across_every_car():
+    t = [0.0]
+    lim = cm.Limiter(clock=lambda: t[0])
+    sent = [lim.admit(f"V{i}", 3, "frunk") for i in range(10)]
+    assert sent == [None] * 10
+    assert "10 of these commands in an hour" in lim.admit("V99", 3, "frunk")
+    assert lim.admit("V99", 1, "lock") is None
+    t[0] = 3600.0
+    assert lim.admit("V99", 3, "frunk") is None
 
 
 def test_the_result_line_says_what_and_when():
@@ -183,7 +213,7 @@ def test_home_assistant_and_teslafi_controls_are_here_for_each_make():
         "charge_amps",
         "remote_start",
     } <= lucid
-    assert cm.CATALOGUE["homelink"].tier == 3 and cm.CATALOGUE["overheat_off"].tier == 2 and cm.CATALOGUE["alarm_off"].tier == 2
+    assert cm.CATALOGUE["homelink"].tier == 3 and cm.CATALOGUE["overheat_off"].tier == 2 and cm.CATALOGUE["alarm_off"].tier == 3
 
 
 def test_every_lucid_command_has_a_connector_path_and_every_tesla_one_an_endpoint():
@@ -194,6 +224,17 @@ def test_every_lucid_command_has_a_connector_path_and_every_tesla_one_an_endpoin
             assert k in cm.CC_PATHS or k in ("climate_temp",), k
         if (c.makes is None or "Tesla" in c.makes) and k != "wake":
             assert k in tesla_cmd.ENDPOINTS, k
+
+
+def test_a_lucid_schedule_is_one_connector_command_with_the_start_the_end_or_off():
+    start, end, off = (cm.cc_request(cm.CATALOGUE[k], "V1", a) for k, a in (("sched_charge", 23 * 60), ("sched_charge_end", 395), ("sched_charge_off", None)))
+    path = "garage/V1/charging/commands/charging-schedule"
+    assert start == ("POST", path, {"value": "23:00-"}) and end == ("POST", path, {"value": "-06:35"}) and off == ("POST", path, {"value": "off"})
+    assert cm.cc_request(cm.CATALOGUE["sched_charge"], "V1", 0)[2] == {"value": "00:00-"}
+    tree = {"charging": {"commands": {"charging-schedule": {"val": None}}}}
+    assert cm.cc_offered(tree) == {"sched_charge", "sched_charge_end", "sched_charge_off"}
+    assert cm.CATALOGUE["sched_charge_end"].makes == ("Lucid",) and "Lucid" in cm.CATALOGUE["sched_charge"].makes
+    assert cm.said(cm.CATALOGUE["sched_charge_end"], 395, True, None, "9 PM") == "Charge finish time set to 6:35 AM 9 PM"
 
 
 def test_connector_bodies_name_the_seat_and_the_level():
@@ -220,3 +261,13 @@ def test_a_tesla_is_not_offered_what_it_is_not_fitted_with():
     assert {"wheel_heat_on", "wheel_heat_off"} <= cm.not_fitted("Tesla", {**m3, "year": 2018})
     assert "wheel_heat_on" not in cm.not_fitted("Tesla", {**m3, "year": 2021})
     assert cm.not_fitted("Lucid", m3) == set() and cm.not_fitted("Tesla", None) == set()
+
+
+def test_every_alarm_disarm_asks_for_you_as_unlocking_does():
+    # no token, no tier 1 or 2 car, no bare session can quiet or disarm the alarm during a break-in
+    for key in ("alarm_silence", "alarm_off", "alarm_silent"):
+        assert cm.CATALOGUE[key].tier == 3, key
+        assert "off for this car" in _refuse(key, "Lucid", "connector", allowed_tier=2)
+        assert _refuse(key, "Lucid", "connector", allowed_tier=3) == cm.STEP_UP_ASK
+        assert _refuse(key, "Lucid", "connector", allowed_tier=3, stepped_up=True) is None
+    assert cm.CATALOGUE["alarm_on"].tier == 2, "arming never asks"

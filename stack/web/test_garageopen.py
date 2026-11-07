@@ -176,3 +176,32 @@ def test_without_the_camera_a_fix_inside_home_ends_the_trip():
     for f in track:
         a.step("V", f, f["t"])
     assert a.trips["V"].go is None
+
+
+def test_with_the_camera_a_watch_that_saw_nothing_looks_again_while_the_car_still_drives_inside_home():
+    # 10-27 15:33: scheduled 1 km out, the camera watched 140 s and saw nothing; the car came inside home's radius
+    # one second later, still driving, and parked two minutes after. It was called missed and nobody looked again.
+    a = camera(model())
+    track = [{"t": T0 + timedelta(seconds=45 * i), "lat": south(d), "lon": HOME["lon"], "mph": 25} for i, d in enumerate([2000, 1000, 600])]
+    assert "schedule" in [k for f in track for k, _ in a.step("V", f, f["t"])]
+    trip = a.trips["V"]
+    trip.go = None  # the watch timed out (app.garage_watch_camera)
+    t = track[-1]["t"] + timedelta(seconds=140)
+    inside = [(120, 8, True), (80, 0, True), (40, 5, True)]  # 0 mph, still in Driving: a stop, not parked
+    got = []
+    for i, (d, mph, driving) in enumerate(inside):
+        got += a.step("V", {"lat": south(d), "lon": HOME["lon"], "mph": mph, "driving": driving}, t + timedelta(seconds=30 * i))
+        trip.go = None  # each watch sees nothing
+    assert [k for k, _ in got] == ["schedule"] * garageopen.REWATCH and [i["again"] for _, i in got] == [1, 2, 3] and got[0][1]["go"] == t
+    assert a.step("V", {"lat": south(10), "lon": HOME["lon"], "mph": 2, "driving": True}, t + timedelta(seconds=200)) == [("missed", {})]  # three looks, then it rests
+
+
+def test_with_the_camera_a_car_parked_inside_home_is_not_watched_again():
+    a = camera(model())
+    for i, d in enumerate([2000, 1000, 600]):
+        a.step("V", {"lat": south(d), "lon": HOME["lon"], "mph": 25}, T0 + timedelta(seconds=45 * i))
+    a.trips["V"].go = None
+    assert a.step("V", {"lat": south(0), "lon": HOME["lon"], "mph": 0, "driving": False}, T0 + timedelta(seconds=300)) == [("missed", {})]
+    leave = {"lat": south(2000), "lon": HOME["lon"], "mph": 30}
+    a.step("V", leave, T0 + timedelta(hours=2))
+    assert a.trips["V"].rewatched == 0  # the next trip starts clean

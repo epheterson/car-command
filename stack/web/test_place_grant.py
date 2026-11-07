@@ -301,3 +301,12 @@ def test_the_switch_leaves_other_apps_alone(world, monkeypatch):  # noqa: F811
     app.fake.apps[other], app.fake.app_share[other] = "h-other", False
     flip(app, client, auth.token_hash(mine))
     assert app.fake.app_share[other] is False
+
+
+def test_a_status_token_gets_the_odometer_to_the_hundred_miles_below_and_never_finer():
+    assert auth.status_payload({"vin": "V1", "odometer_mi": 96000.87})["odometer_100mi"] == 96000
+    assert auth.status_payload({"vin": "V1", "odometer_mi": 64099.99})["odometer_100mi"] == 64000
+    assert auth.status_payload({"vin": "V1", "odometer_mi": None})["odometer_100mi"] is None
+    assert auth.status_payload({"vin": "V1"})["odometer_100mi"] is None
+    out = auth.status_payload([{"vin": "V1", "odometer_mi": 2327.5}])
+    assert out == [{"vin": "V1", "odometer_100mi": 2300}], "the fine reading itself never goes"

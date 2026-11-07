@@ -83,9 +83,9 @@ def test_totals_round_the_sums_and_say_nothing_without_rows():
     lo, hi = datetime(2026, 7, 14, 7, tzinfo=timezone.utc), datetime(2026, 7, 15, 7, tzinfo=timezone.utc)
     conn = Conn({"solar_kwh": 21.43219, "home_kwh": 12.0, "grid_in_kwh": None, "grid_out_kwh": 3.2, "battery_in_kwh": 5.0, "battery_out_kwh": 2.0, "rows": 1440})
     got = energy.totals(conn, lo, hi)
-    assert got["solar_kwh"] == 21.432 and got["grid_in_kwh"] == 0.0 and conn.asked[0][1] == ("home", lo, hi)
+    assert got["solar_kwh"] == 21.432 and got["grid_in_kwh"] == 0.0 and conn.asked[0][1] == ("home", lo, hi, hi)
     assert energy.totals(Conn({"rows": 0}), lo, hi) is None and energy.totals(Conn(None), lo, hi) is None
-    assert "5.0 / 60" in energy.TOTALS_SQL, "a row is five minutes"
+    assert "LEAD(e.at)" in energy.TOTALS_SQL, "a row stands until the next"
 
 
 def test_charges_carry_the_split_figures_but_not_the_pages_bar(world, monkeypatch):  # noqa: F811
@@ -100,7 +100,7 @@ def test_charges_carry_the_split_figures_but_not_the_pages_bar(world, monkeypatc
 def test_the_row_comes_back_as_markup_for_the_page_to_redraw_and_empty_when_stale(house):
     app, client = house
     r = client.get("/energy/row")
-    assert r.status_code == 200 and r.text.startswith('<section class="pwrow"') and "4.2 kW" in r.text and r.headers["cache-control"] == "no-store"
+    assert r.status_code == 200 and r.text.startswith('<div class="homerow"><section class="pwrow pwt"') and "4.2 kW" in r.text and r.headers["cache-control"] == "no-store"
     app.ENERGY_LIVE.reading = None
     assert client.get("/energy/row").text == ""
 
@@ -109,8 +109,8 @@ def test_the_page_redraws_its_row_every_twenty_seconds_and_only_when_it_has_one(
     from pathlib import Path
 
     js = (Path(__file__).parent / "static" / "shell.js").read_text()
-    part = js[js.index("The Powerwall row on Now") :]
-    assert 'document.querySelector(".pwrow")' in part and "20000" in part and "/energy/row" in part and "document.hidden" in part
+    part = js[js.index("Now's home row") :]
+    assert 'document.querySelector(".homerow")' in part and "20000" in part and "/energy/row" in part and "document.hidden" in part
 
 
 HOUR = {

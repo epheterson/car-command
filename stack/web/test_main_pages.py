@@ -152,7 +152,7 @@ def test_the_shell_shows_the_car_everywhere_and_places_under_map():
     base = (HERE / "templates" / "base.html").read_text()
     head = base[base.index('<header class="phonebar">') : base.index("</header>")]
     assert "sec != 'settings'" not in head, "the switcher is on Settings pages too"
-    assert "(key == 'map' and sec == 'places')" in base and "sec != 'places'" in base, "Places lights the Map tab, not More"
+    assert "(key == 'map' and sec == 'places' and 'places' not in nav_phone_tabs)" in base and "not (sec == 'places' and 'map' in nav_phone_tabs)" in base, "Places lights the Map tab, not More"
     css = (HERE / "static" / "style.css").read_text()
     assert "\ndetails.more > summary" not in css, "the tab bar's More has one style"
 

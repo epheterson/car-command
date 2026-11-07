@@ -523,3 +523,19 @@ def test_health_answers_200_before_any_password_exists(app_module, client, monke
     monkeypatch.setitem(app_module.AUTH, "password", None)
     assert client.get("/health").status_code == 200
     assert client.get("/places").status_code == 303, "everything else still funnels to /setup"
+
+
+def test_a_sign_in_is_counted_before_the_password_is_checked(client, monkeypatch):
+    # parallel guesses must not all pass the same wait while the slow hash runs
+    import app as app_mod
+    import auth
+
+    seen = []
+    real = auth.verify_password
+    monkeypatch.setattr(auth, "verify_password", lambda stored, given: seen.append(app_mod.FAILURES.total) or real(stored, given))
+    before = app_mod.FAILURES.total
+    token = _token_from(client.get("/login").text)
+    r = client.post("/login", data={"password": "not it", "csrf_token": token})
+    assert r.status_code == 401 and seen == [before + 1] and app_mod.FAILURES.total == before + 1
+    r = client.post("/login", data={"password": "a good long password", "csrf_token": token})
+    assert r.status_code in (303, 429)

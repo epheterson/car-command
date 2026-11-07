@@ -27,6 +27,8 @@ jobs:
         run: cd stack/web && python -c "import filters; from jinja2 import Environment, FileSystemLoader; e = Environment(loader=FileSystemLoader('templates')); filters.register(e); [e.get_template(t) for t in e.list_templates()]"
       - name: Local maps tests
         run: cd stack/maps && python -m pytest -q
+      - name: Driveway camera tests
+        run: cd stack/driveway && python -m pytest -q
       # The connector's own logic: the supervisor's restart rules and the privacy hook
       # (positions rounded; no geocoder decision means no lookups at all).
       - name: Connector tests

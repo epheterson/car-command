@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="csrf-token" content="{{ csrf }}">
 <meta name="cc-root" content="{{ root }}">
+{% if step is defined and step.passkey %}<meta name="cc-passkey" content="{{ root }}/passkeys">{% endif %}
 <title>{% block title %}Car Command{% endblock %}</title>
 <link rel="stylesheet" href="{{ root }}/static/style.css?v={{ css_v }}">
 <script>/* a fresh load (a new visit or a reload, not a click inside the site) plays the brand's
@@ -45,13 +46,16 @@
 {# A car's dot: its chart colour, and its paint inside a ring of that colour once the paint is known #}
 {% macro cardot(vin) %}<span class="dot c{{ colors.get(vin, 0) }}"></span>{% endmacro %}
 <div class="shell">
-<nav class="side" aria-label="Navigation">
-  <a class="brand" href="{{ root }}/{{ q }}">{{ ic.brand_mark("tow") }}<span class="nm">Car Command</span></a>
+{# On one car's Now, Now (and the logo) goes to every car: the second tap is the way back to the whole garage.
+   Elsewhere Now goes back to the view last left, the tiles or a car, for the session (static/shell.js, data-now). #}
+{% set allq = '?vin=all' if sec == 'now' and multi and not car.garage else q %}
+<nav class="side" aria-label="Navigation"{% if multi and active == 'now' %} data-now-view="{{ 'all' if car.garage else 'car' }}"{% endif %}>
+  <a class="brand" href="{{ root }}/{{ allq }}"{% if multi %} data-now{% endif %}>{{ ic.brand_mark("tow") }}<span class="nm">Car Command</span></a>
   {% if multi %}<div class="side-hd">Cars</div>
   {% for v in [{'vin': 'all', 'name': 'All cars'}] + vehicles %}<a class="side-car{% if v.vin == car.vin %} on{% endif %}" href="{{ root }}{{ car_href(here_, v.vin) }}"{% if v.vin == car.vin %} aria-current="true"{% endif %}>{% if v.vin != 'all' %}{{ cardot(v.vin) }}{% else %}<span class="dot all"></span>{% endif %}<span class="side-nm">{{ v.name }}</span>{% if v.vin in lv %}<span class="side-lv">{{ lv[v.vin]|num }}%</span>{% endif %}</a>{% endfor %}{% endif %}
   <div class="side-hd">View</div>
   {% for key, label, path, pages in nav_sections %}
-  <a class="side-sec{% if key == sec %} on{% endif %}" href="{{ root }}{{ path }}{{ q }}"{% if key == sec %} aria-current="page"{% endif %}>{{ ic.icon(key) }}{{ label }}</a>
+  <a class="side-sec{% if key == sec %} on{% endif %}" href="{{ root }}{{ path }}{{ allq if key == 'now' else q }}"{% if key == 'now' and multi %} data-now{% endif %}{% if key == sec %} aria-current="page"{% endif %}>{{ ic.icon(key) }}{{ label }}</a>
   {% if key == sec and pages|length > 1 %}{% for pk, pl, pp in pages %}<a class="side-page{% if pk == active %} on{% endif %}" href="{{ root }}{{ pp }}{{ q }}"{% if pk == active %} aria-current="page"{% endif %}>{{ pl }}</a>{% endfor %}{% endif %}
   {% endfor %}
   <div class="side-foot">
@@ -66,21 +70,21 @@
     <div class="sheet">{% for v in [{'vin': 'all', 'name': 'All cars'}] + vehicles %}<a class="{% if v.vin == car.vin %}on{% endif %}" href="{{ root }}{{ car_href(here_, v.vin) }}"{% if v.vin == car.vin %} aria-current="true"{% endif %}>{% if v.vin != 'all' %}{{ cardot(v.vin) }}{% else %}<span class="dot all"></span>{% endif %}<span class="side-nm">{{ v.name }}</span>{% if v.vin in lv %}<span class="side-lv">{{ lv[v.vin]|num }}%</span>{% endif %}</a>{% endfor %}</div>
   </details>{% else %}<span class="brand">{{ ic.brand_mark("tow") }}<span class="nm">{{ car.name }}</span></span>{% endif %}
   {# The page's title, on the phone, in the bar's free right side: the section's name only; a page whose h1 says the same gives that h1 up (script below the page) #}
-  <span class="ptitle" id="ptitle">{% if sec == 'settings' %}{{ nav_settings[1] }}{% else %}{% for key, label, path, pages in nav_sections %}{% if key == sec %}{{ label }}{% endif %}{% endfor %}{% endif %}</span>
+  <span class="ptitle" id="ptitle" data-page="{% for key, label, path, pages in nav_sections %}{% if key == sec %}{% for pk, pl, pp in pages %}{% if pk == active %}{{ pl }}{% endif %}{% endfor %}{% endif %}{% endfor %}">{% if sec == 'settings' %}{{ nav_settings[1] }}{% else %}{% for key, label, path, pages in nav_sections %}{% if key == sec %}{{ label }}{% endif %}{% endfor %}{% endif %}</span>
 </header>
 <div class="stage">
 {% for key, label, path, pages in nav_sections %}{% if key == sec and pages|length > 1 %}<nav class="subpages" aria-label="{{ label }}">{% for pk, pl, pp in pages %}<a href="{{ root }}{{ pp }}{{ q }}"{% if pk == active %} aria-current="page"{% endif %}>{{ pl }}</a>{% endfor %}</nav>{% endif %}{% endfor %}
 <main{% if live_vin %} data-live-src="{{ root }}/stream?vin={{ live_vin }}"{% endif %}>{% block body %}{% endblock %}</main>
-{# the page's h1 becomes the bar's title on a phone (style.css hides the h1 there once this has run) #}
-<script>(function(){var t=document.getElementById("ptitle"),h=document.querySelector("main h1");if(!t||!h)return;var c=h.cloneNode(true);c.querySelectorAll(".more,.pd-ic").forEach(function(e){e.remove()});var x=c.textContent.replace(/\s+/g," ").trim();if(x&&x===t.textContent.replace(/\s+/g," ").trim())document.documentElement.classList.add("pt")})()</script>
+{# the bar names the section on a phone; a page whose h1 only repeats the section or the chosen sub-page tab gives that h1 up (style.css hides it once this has run), and any other h1 is the page's own title, alone on its row above its controls #}
+<script>(function(){var t=document.getElementById("ptitle"),h=document.querySelector("main h1");if(!t||!h)return;var c=h.cloneNode(true);c.querySelectorAll(".more,.pd-ic").forEach(function(e){e.remove()});var x=c.textContent.replace(/\s+/g," ").trim();var n=function(v){return v.replace(/\s+/g," ").trim()};if(x&&(x===n(t.textContent)||x===n(t.dataset.page||"")))document.documentElement.classList.add("pt")})()</script>
 {# Only what needs the owner: CarConnectivity not answering, a check that found something. The
    map credit sits in each map's own corner (maps.js). #}
 {% set down = connector and 'not answering' in connector and active != 'settings-cars' %}{% if down or findings %}<footer class="muted">{% if down %}<span class="warn">{{ connector }}</span> {% endif %}{% for f in findings %}<span class="warn">{{ f.text }}</span> {% endfor %}</footer>{% endif %}
 </div>
 <nav class="tabbar" aria-label="Sections">
-  {% for key, label, path, pages in nav_sections %}{% if key in nav_phone_tabs %}<a href="{{ root }}{{ path }}{{ q }}"{% if key == sec or (key == 'map' and sec == 'places') %} aria-current="page"{% endif %}>{{ ic.icon(key) }}<span>{{ label }}</span></a>{% endif %}{% endfor %}
-  <details class="more"><summary{% if sec not in nav_phone_tabs and sec != 'places' %} aria-current="page"{% endif %}>{{ ic.icon('more') }}<span>More</span></summary>
-    <div class="sheet up">{% for key, label, path, pages in nav_sections %}{% if key not in nav_phone_tabs %}<a href="{{ root }}{{ path }}{{ q }}"{% if key == sec %} aria-current="page"{% endif %}>{{ ic.icon(key) }}{{ label }}</a>{% endif %}{% endfor %}<a href="{{ root }}{{ nav_settings[2] }}{{ q }}"{% if sec == 'settings' %} aria-current="page"{% endif %}>{{ ic.icon('settings') }}{{ nav_settings[1] }}</a>{% if auth_on %}<form method="post" action="{{ root }}/logout"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="sheet-btn">{{ ic.icon('signout') }}Sign out</button></form>{% endif %}</div>
+  {% for key in nav_phone_tabs %}{% for k, label, path, pages in nav_sections %}{% if k == key %}<a href="{{ root }}{{ path }}{{ allq if key == 'now' else q }}"{% if key == 'now' and multi %} data-now{% endif %}{% if key == sec or (key == 'map' and sec == 'places' and 'places' not in nav_phone_tabs) %} aria-current="page"{% endif %}>{{ ic.icon(key) }}<span>{{ label }}</span></a>{% endif %}{% endfor %}{% endfor %}
+  <details class="more"><summary{% if sec not in nav_phone_tabs and not (sec == 'places' and 'map' in nav_phone_tabs) %} aria-current="page"{% endif %}>{{ ic.icon('more') }}<span>More</span></summary>
+    <div class="sheet up">{% for key, label, path, pages in nav_sections %}{% if key not in nav_phone_tabs %}<a href="{{ root }}{{ path }}{{ allq if key == 'now' else q }}"{% if key == 'now' and multi %} data-now{% endif %}{% if key == sec %} aria-current="page"{% endif %}>{{ ic.icon(key) }}{{ label }}</a>{% endif %}{% endfor %}<a href="{{ root }}{{ nav_settings[2] }}{{ q }}"{% if sec == 'settings' %} aria-current="page"{% endif %}>{{ ic.icon('settings') }}{{ nav_settings[1] }}</a>{% if auth_on %}<form method="post" action="{{ root }}/logout"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="sheet-btn">{{ ic.icon('signout') }}Sign out</button></form>{% endif %}</div>
   </details>
 </nav>
 </div>

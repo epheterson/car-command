@@ -49,8 +49,13 @@ from psycopg.types.json import Jsonb
 
 import activity
 import auth
+import passkeys
 import averages as averages_mod
 import billed
+import fees
+import mqtt_pub
+import lucidfields
+import lucidrecords
 import cost
 import planview
 import alertchans
@@ -98,7 +103,7 @@ from facts import (
 )
 from history import IMPORT_DDL
 from filters import places as place_markup, register as register_filters, short_address
-from nav import settings_without
+from nav import phone_tabs, settings_without
 import placeicons
 from placeicons import ICON_KEYS
 from places import DDL as PLACES_DDL, PlaceIndex, clamp_radius, is_home as is_home_place, migrate_home, other_homes, parents as place_parents, place_for, posted_address, resolve_merged
@@ -135,6 +140,7 @@ from samples import charge_samples, drive_samples, run_points, thinned, with_mea
 import routematch
 from thumbs import anchored, route_svg, routes_for, thin
 import autotag
+import logbook
 import manual
 import health as health_mod
 import calview
@@ -159,6 +165,7 @@ import otahistory
 import softwarepage
 import toproutes
 import placespage
+import recentrange
 import settingsform
 import zonelist
 import sources
@@ -180,6 +187,7 @@ import tesla_jws
 import tesla_keys
 import fleet_usage
 import tesla_cmd
+import schedules
 import tesla_proxy
 import commands as commands_mod
 import commandcheck
@@ -200,6 +208,7 @@ import nowpage
 import reach
 import energy
 import energy_cloud
+import energy_relay
 import energypage
 import units as units_mod
 import raw
@@ -414,6 +423,9 @@ def connector_status() -> tuple[datetime | None, str | None]:
     return (None, connector_down() or "CarConnectivity reports no car. Lucid may have stopped taking the token: sign in again.")
 
 
+SCHEDULES: dict[str, dict] = {}  # vin -> schedules.parse of the car's last vehicle_data; memory only, no coordinates
+
+
 def live_vehicle(vin: str | None = None) -> dict:
     """A car as it reports itself, with what a command it just accepted set laid over it
     until the report catches up (expected.py)."""
@@ -421,6 +433,11 @@ def live_vehicle(vin: str | None = None) -> dict:
     car = EXPECTED.apply(reported_vehicle(vin), now)
     if car.get("vin"):
         car = dict(car, name=shown_name(car["vin"], car.get("name")))
+        if car.get("soc") is not None:
+            try:
+                car.update(recent_range(car["vin"], car["soc"], vehicle_energy().get(car["vin"], (None, None))[0]))
+            except Exception:  # an extra line on the card: a database that will not answer must not take the card with it
+                LOG.debug("recent range unavailable", exc_info=True)
     # Out of reach: the newest real reading is too old for the state it claims (reach.py). The
     # position is only read for a driving connector car, so a parked garage asks for nothing.
     fix = latest_fixes().get(car.get("vin")) if reach.needs_fix(car) else None
@@ -454,6 +471,8 @@ def reported_vehicle(vin: str | None = None) -> dict:
     vin, v = (vin, g[vin]) if vin else next(iter(g.items()))
     updated_dt = reported_at(v)
     status = classify_status(leaf(v, "state"), leaf(v, "connection_state"), leaf(v, "charging", "state"))
+    if status == "Driving" and leaf(v, "gear") == "park":
+        status = "Ready"  # the car is on and in Park: someone sitting in it, not a drive (connector 0.5.0's gear)
     loc = v.get("position", {}).get("position_location", {})
     address = ", ".join(x for x in (leaf(loc, "road"), leaf(loc, "city")) if x) or None
     here = place_for(leaf(v, "position", "latitude"), leaf(v, "position", "longitude"), places()) or {}
@@ -492,6 +511,7 @@ def reported_vehicle(vin: str | None = None) -> dict:
         "climate": leaf(v, "climatization", "state"),
         "charging_power_kw": leaf(v, "charging", "power"),
         "charge_target": leaf(v, "charging", "settings", "target_level"),
+        "charge_amps_set": leaf(v, "charging", "settings", "maximum_current"),
         "charge_minutes_left": minutes_left,
         "charge_full_at": clock + timedelta(minutes=minutes_left) if minutes_left else None,
         # From connector 0.4.0 (None before it, and for any car that does not publish it): the
@@ -531,7 +551,18 @@ def reported_vehicle(vin: str | None = None) -> dict:
         "occupant_warning": typed(leaf(v, "unattended_occupant_detection"), str),
         "keyfob_low": typed(leaf(v, "keyfob_battery_low"), bool),
         "window_heating": tristate(leaf(v, "window_heating", "heating_state"), "on", "off"),
+        # 0.5.0: the charging schedule the car holds, one window with no place; None from an older connector
+        "sched_lines": schedules.lucid_lines(
+            typed(leaf(v, "charging_schedule_on"), bool),
+            typed(leaf(v, "charging_schedule_start"), str),
+            typed(leaf(v, "charging_schedule_end"), str),
+            typed(leaf(v, "scheduled_charge"), str),
+        ),
         "battery_health": typed(leaf(v, "battery_health_level"), float),
+        # 0.5.0: why a charge is slow, the alarm sounding, Sentry's events, tire sensor and read time, gear and
+        # mode, the update's progress, trim and paint, the Electrify America plan, privacy mode, a module fault.
+        # All None (events empty) before it; lucidfields.py reads them.
+        **lucidfields.read(v, leaf),
         # The GPS height as the car sends it, unit unknown (one read 8932 where the Teslas record 123 m):
         # kept beside each position for elevfit.py to fit, never shown and never taken as metres.
         "elevation_raw": typed(leaf(v, "gps_elevation_raw"), float),
@@ -576,7 +607,27 @@ def live_reading(vin: str) -> dict | None:
     no call of its own. Only what a page needs that the car list does not carry."""
     held = _cache.get("garage_tree")
     v = held[1].get(vin) if held else None
-    return {"vin": vin, **update_waiting(v)} if isinstance(v, dict) else None
+    if not isinstance(v, dict):
+        return None
+    got = lucidfields.read(v, leaf)
+    return {"vin": vin, **update_waiting(v), "update_state": got["update_state"], "update_percent": got["update_percent"]}
+
+
+def ea_plans(vin: str | None) -> list[dict]:
+    """The Electrify America plans the held connector tree shows, for one car or every one: from memory,
+    nothing asked of the connector (a connector before 0.5.0 shows none). Soonest to end first."""
+    held = (_cache.get("garage_tree") or (None, {}))[1] or {}
+    names = {v["vin"]: v["name"] for v in all_vehicles()} if vin is None and held else {}
+    out = []
+    for k, tree in held.items():
+        if (vin is not None and k != vin) or not isinstance(tree, dict):
+            continue
+        got = lucidfields.read(tree, leaf)
+        if got["ea_plan"]:
+            out.append(
+                {"car": names.get(k) or leaf(tree, "name") or k, "plan": got["ea_plan"], "ends": got["ea_plan_ends"], "days": got["ea_days_left"], "free": lucidfields.plan_is_free(got["ea_plan"])}
+            )
+    return sorted(out, key=lambda p: (p["days"] is None, p["days"] if p["days"] is not None else 0))
 
 
 def stored_vehicle(vin: str) -> dict:
@@ -625,7 +676,7 @@ def stored_vehicle(vin: str) -> dict:
     # Sentry only from a reading of now: the feed's newest row, then the stream's memory
     sentry = activity.sentry_on(feed["sentry"]) if feed and feed["at"] and clock - feed["at"] <= nowpage.FEED_FRESH else None
     # The car's own stream, when it has said something newer than both (memory: no query)
-    st = activity.stream_now(tesla_stream_worker.carried.get(vin), clock)
+    st = activity.stream_now(tesla_stream_worker.carried.get(vin), clock, tz=TZ)
     if st.get("fresh") and (updated is None or st["at"] > updated):
         status = "Driving" if st["driving"] else ("Idle" if status == "Driving" else status)
         if not st["driving"] and "charging" in st:
@@ -681,6 +732,7 @@ def stored_vehicle(vin: str) -> dict:
         "climate_keeper": st.get("climate_keeper"),
         "climate_set_f": st.get("climate_set_f"),
         "preconditioning": st.get("preconditioning"),
+        "sched_lines": schedules.lines(SCHEDULES.get(vin), st),
         "window_heating": st.get("window_heating"),
         "driver_present": st.get("driver_present"),
         "port_open": st.get("port_open"),
@@ -928,7 +980,17 @@ def record_runs(car: dict) -> None:
         extend_or_start(conn, "cc_inside_temperatures", car["vin"], now, ("inside_f",), (car.get("inside_f"),), same=within(0.5))
         psi = car.get("tires_psi") or {}
         four = tuple(psi.get(w) for w in ("front_left", "front_right", "rear_left", "rear_right"))
-        extend_or_start(conn, "cc_tires", car["vin"], now, ("fl", "fr", "rl", "rr"), four, same=tires_same)
+        # A Lucid says when the car took the pressures (connector 0.5.0): a parked car's are hours old, so the run is
+        # stretched to that time and no further, and a reading the table already holds is not stretched at all.
+        stamp = lucidfields.tire_stamp(car.get("tires_read_at"), now)
+        if stamp is not None:
+            last = conn.execute("SELECT max(last_date) AS at FROM cc_tires WHERE vin = %s", (car["vin"],)).fetchone()
+            stamp = stamp if not last or not last["at"] or stamp > last["at"] else None
+        if stamp is not None or car.get("tires_read_at") is None:
+            extend_or_start(conn, "cc_tires", car["vin"], stamp or now, ("fl", "fr", "rl", "rr"), four, same=tires_same)
+        # Connector 0.5.0's, which skip while the car has not said: the drive mode it is in, and whether it is in privacy mode
+        extend_or_start(conn, "cc_drive_modes", car["vin"], now, ("mode",), (car.get("drive_mode"),))
+        extend_or_start(conn, "cc_privacy", car["vin"], now, ("private",), (car.get("privacy_mode"),))
         conn.commit()
 
 
@@ -1127,6 +1189,21 @@ def vehicle_energy() -> dict[str, tuple[float | None, float | None]]:
         return {r["vin"]: (r["capacity"], r["kwh_per_rated_mi"]) for r in rows}
 
     return cached("vehicle_energy", 300, load)
+
+
+def recent_range(vin: str, soc: float | None, capacity_kwh: float | None) -> dict:
+    """The range the charge now gives at the car's recent efficiency (recentrange), beside the car's
+    own estimate: {"range_recent_mi", "recent_window_mi"}, both None when the car has too few
+    logged miles or no usable capacity. The efficiency is a stored fact, read once in five minutes."""
+
+    def load():
+        with db() as conn:
+            rows = conn.execute("SELECT vin, recent_wh_per_mi, recent_miles FROM cc_vehicle_facts WHERE recent_wh_per_mi IS NOT NULL").fetchall()
+        return {r["vin"]: (r["recent_wh_per_mi"], r["recent_miles"]) for r in rows}
+
+    wh, miles = cached("recent_efficiency", 300, load).get(vin, (None, None))
+    rng = recentrange.range_at(soc, capacity_kwh, wh)
+    return {"range_recent_mi": rng, "recent_window_mi": miles if rng is not None else None}
 
 
 def rated_mile_years() -> dict[tuple[str, int], float]:
@@ -1613,11 +1690,12 @@ TRIP_SELECT = """
            t.start_position_latitude, t.start_position_longitude, t.destination_position_latitude, t.destination_position_longitude,
            sl.road AS start_road, sl.city AS start_city, dl.road AS dest_road, dl.city AS dest_city,
            f.level_start, f.level_end, NULLIF(f.temp_f, -999) AS temp_f, NULLIF(f.range_start, -999) AS range_start, NULLIF(f.range_end, -999) AS range_end,
-           NULLIF(f.max_mph, -1) AS max_mph, t.vin, v.name AS car_name, g.tag, g.note, x.fsd_miles, x.kwh AS summary_kwh, w.code AS weather_code, w.wind_kmh AS weather_wind_kmh, (mt.ref_id IS NOT NULL) AS by_hand,
+           NULLIF(f.max_mph, -1) AS max_mph, t.vin, v.name AS car_name, g.tag, g.note, x.fsd_miles, x.kwh AS summary_kwh, w.code AS weather_code, w.wind_kmh AS weather_wind_kmh, (mt.ref_id IS NOT NULL) AS by_hand, (gd.trip_id IS NOT NULL) AS no_signal, gd.note AS gap_note, COALESCE(gd.window_only, FALSE) AS gap_window,
            COALESCE(f.ground_hi_m, NULLIF(f.elev_max_m, -99999)) AS elev_max_m, COALESCE(f.ground_lo_m, NULLIF(f.elev_min_m, -99999)) AS elev_min_m,
            NULLIF(f.ground_climb_m, -1) AS ground_climb_m, f.ground_descent_m
     FROM trips t
     LEFT JOIN cc_manual mt ON mt.kind = 'drive' AND mt.ref_id = t.id
+    LEFT JOIN cc_gap_drives gd ON gd.trip_id = t.id
     LEFT JOIN vehicles v ON v.vin = t.vin
     LEFT JOIN cc_drive_tags g ON g.trip_id = t.id
     LEFT JOIN cc_trip_extras x ON x.vin = t.vin AND x.start_date = t.start_date
@@ -1645,7 +1723,7 @@ def _finish_drive(r: dict, known: list[dict], cells: dict | None = None, energy:
     energy = energy if energy is not None else vehicle_energy()
     by_year = by_year if by_year is not None else rated_mile_years()
     r["miles"] = (r["destination_odometer"] - r["start_odometer"]) if r["destination_odometer"] is not None and r["start_odometer"] is not None else None
-    r["duration"] = (r["destination_date"] - r["start_date"]) if r["destination_date"] else None
+    r["duration"] = (r["destination_date"] - r["start_date"]) if r["destination_date"] and not r.get("gap_window") else None  # a window's times only bound it
     start_fallback = ", ".join(x for x in (r["start_road"], r["start_city"]) if x) or rough_label(r["start_position_latitude"], r["start_position_longitude"], cells)
     a, b = r["start_position_latitude"], r["start_position_longitude"]
     at = place_for(a, b, known)
@@ -1704,7 +1782,7 @@ def drives_light(vin: str | None, since: datetime | None, until: datetime | None
         rows = conn.execute(TRIP_SELECT + " WHERE t.destination_date IS NOT NULL" + vw + where + moved_sql() + " ORDER BY t.start_date DESC", [*vargs, *args]).fetchall()
     for r in rows:
         r["miles"] = (r["destination_odometer"] - r["start_odometer"]) if r["destination_odometer"] is not None and r["start_odometer"] is not None else None
-        r["duration"] = (r["destination_date"] - r["start_date"]) if r["destination_date"] else None
+        r["duration"] = (r["destination_date"] - r["start_date"]) if r["destination_date"] and not r.get("gap_window") else None
         cap, k = energy.get(r.get("vin"), (None, None))
         r["kwh_used"] = summary_kwh(r) or drive_kwh(
             r.get("level_start"), r.get("level_end"), cap, r.get("range_start"), r.get("range_end"), rated_mile_kwh(by_year, r.get("vin"), r.get("start_date"), k, TZ)
@@ -1732,7 +1810,7 @@ CHARGE_SELECT = """
            c.start_level, c.end_level, c.charging_type::text AS charging_type, l.road, l.city,
            c.session_position_latitude, c.session_position_longitude, c.session_odometer, c.session_charge_type::text AS session_charge_type,
            COALESCE(f.kwh, c.real_charged) AS kwh, COALESCE(f.cost, c.real_cost) AS cost, f.plan AS rate_plan, f.at_home, NULLIF(f.range_added, -999) AS range_added,
-           f.off_peak_kwh, f.part_peak_kwh, f.peak_kwh, f.period_kwh, f.cost_source, f.region, f.rate_month, c.vin, v.name AS car_name, (m.ref_id IS NOT NULL) AS by_hand,
+           f.off_peak_kwh, f.part_peak_kwh, f.peak_kwh, f.period_kwh, f.cost_source, f.region, f.rate_month, f.session_fee, f.idle_fee, f.idle_min, f.congestion_fee, c.vin, v.name AS car_name, (m.ref_id IS NOT NULL) AS by_hand,
            x.status AS src_status, x.solar_kwh AS src_solar_kwh, x.battery_kwh AS src_battery_kwh, x.grid_kwh AS src_grid_kwh, x.battery_sun_frac AS src_sun_frac,
            x.grid_cost AS src_grid_cost, x.battery_cost AS src_battery_cost, x.approx AS src_approx
     FROM charging_sessions c
@@ -1856,7 +1934,8 @@ def rebuild_connector_drives() -> None:
 
 def fill_missing_facts() -> None:
     """Facts for every finished drive and charge that has none. Runs in the recorder's thread; cheap when nothing is missing."""
-    fast = settingsform.fast_rates(current_settings())
+    st = current_settings()
+    fast = {**settingsform.fast_rates(st), "fee_rules": fees.rules(st)}
     known = places()  # once a pass, not once a charge
     home = lambda lat, lon: is_home(lat, lon, known)  # noqa: E731
     place_of = lambda lat, lon: place_for(lat, lon, known)  # noqa: E731
@@ -1865,7 +1944,7 @@ def fill_missing_facts() -> None:
         # passes below price them again a batch at a time.
         drain_reprices(conn, known)
         for v in conn.execute("SELECT vin FROM vehicles").fetchall():
-            fill_facts(conn, v["vin"], TZ, home, averages=averages_mod.active(), place_of=place_of, **fast)
+            fill_facts(conn, v["vin"], TZ, home, averages=averages_mod.active(), place_of=place_of, drive_filter=moved_sql(), **fast)
         try:
             # finished days of tire pressure, a few hundred a tick (the Battery page's every-day chart)
             for v in conn.execute("SELECT vin FROM vehicles").fetchall():
@@ -2022,6 +2101,7 @@ def page(request: Request, name: str, **ctx) -> HTMLResponse:
             "week_start": WEEK_START,
             "alert_kinds": notify_mod.kinds_for(i["make"] for i in idents.values()),
             "nav_settings": settings_without(side_hidden),
+            "nav_phone_tabs": phone_tabs(current_settings().get("phone_tabs")),
             "guard": {v: identity.guard_name(i["make"]) for v, i in idents.items()},
             "guard_all": identity.guard_label(i["make"] for i in idents.values()),
             "now": datetime.now(TZ),
@@ -2036,6 +2116,7 @@ def page(request: Request, name: str, **ctx) -> HTMLResponse:
             "js_v": JS_VERSION,
             "csrf": csrf_for(request),
             "auth_on": AUTH["enabled"],
+            "step": step_ways(request),
             "connector": connector_down(),
             "findings": health_findings(ctx["car"]) if "car" in ctx else [],
             "cur": current_settings().get("currency", "$"),
@@ -2178,7 +2259,14 @@ def car_identities(vehicles: list[dict]) -> dict[str, dict]:
     for v in vehicles:
         live = tree.get(v["vin"]) or {}
         make, model = made.get(v["vin"]) or (None, None)
-        out[v["vin"]] = identity.describe(v["vin"], leaf(live, "manufacturer") or make, leaf(live, "model") or model, rows.get(v["vin"]))
+        out[v["vin"]] = identity.describe(
+            v["vin"],
+            leaf(live, "manufacturer") or make,
+            leaf(live, "model") or model,
+            rows.get(v["vin"]),
+            reported_trim=typed(leaf(live, "trim"), str),
+            reported_paint=typed(leaf(live, "paint_color"), str),
+        )
     return out
 
 
@@ -2192,7 +2280,16 @@ FAILURES = auth.Failures(on_brake=lambda: brake_alert())  # failed sign-ins, per
 # is larger than FORM_LIMIT and so is never read here to find one.
 QUERY_TOKEN_PATHS = re.compile(r"/service/\d+/files|/settings/money/plan/bill")
 FORM_LIMIT = 1 << 20  # a form larger than this is not one of ours; it goes to the route unread and is refused for want of a token
-AUTH = {"enabled": os.environ.get("CC_AUTH", "on").lower() not in ("off", "0", "false", "no"), "secret": "", "password": None, "admin_anywhere": False, "first_start": None, "epoch": 0, "revoked": {}}
+AUTH = {
+    "enabled": os.environ.get("CC_AUTH", "on").lower() not in ("off", "0", "false", "no"),
+    "secret": "",
+    "password": None,
+    "admin_anywhere": False,
+    "first_start": None,
+    "epoch": 0,
+    "revoked": {},
+    "pin": None,
+}
 # Sign-in through Cloudflare Access: the team and audience its JWTs must carry. Filled by load_auth from the
 # environment or the database; empty means not in use.
 CF: dict = {"team": None, "aud": None, "env_team": False, "env_aud": False}
@@ -2269,6 +2366,8 @@ def load_auth() -> None:
         env_team, env_aud = os.environ.get("CF_ACCESS_TEAM"), os.environ.get("CF_ACCESS_AUD")
         team = proxyauth.normalize_team(env_team) if env_team else proxyauth.normalize_team(auth.store_get(conn, "cf_team"))
         aud = (env_aud or auth.store_get(conn, "cf_aud") or "").strip() or None
+        pin = auth.store_get(conn, PIN_KEY)
+        PASSKEYS[:] = passkeys.listed(conn)
     # Turned on or off in Settings, that outranks CC_AUTH, so it survives a restart. A scripted install that
     # names its Cloudflare Access team and application means sign-in is on.
     enabled = AUTH["enabled"] if switch is None else switch == "1"
@@ -2277,7 +2376,7 @@ def load_auth() -> None:
     CF.update(team=team, aud=aud if team else None, env_team=bool(team and env_team), env_aud=bool(team and env_aud))
     PROXY.clear()
     # One assignment, so no request ever sees sign-in on without the password that goes with it.
-    AUTH.update(enabled=enabled, secret=secret, password=password, admin_anywhere=anywhere, first_start=first_start, epoch=epoch, revoked=revoked)
+    AUTH.update(enabled=enabled, secret=secret, password=password, admin_anywhere=anywhere, first_start=first_start, epoch=epoch, revoked=revoked, pin=pin)
     reload_tokens()
     admins = sum(1 for t in TOKENS.values() if t["kind"] == "admin")
     LOG.info(
@@ -2340,7 +2439,7 @@ def reload_tokens() -> None:
     # The read and the swap under one lock: a reload that read before a mint must not apply after the
     # reload that read once it was made, or it would take the new token out again.
     with TOKENS_LOCK, db() as conn:
-        rows = conn.execute("SELECT hash, label, vin, kind, last4, share_place, coords FROM cc_api_tokens").fetchall()
+        rows = conn.execute("SELECT hash, label, vin, kind, last4, share_place, coords, tier_cap, expires_at FROM cc_api_tokens").fetchall()
         fresh = {
             r["hash"]: {
                 "label": r["label"],
@@ -2349,6 +2448,8 @@ def reload_tokens() -> None:
                 "last4": r["last4"],
                 "share_place": bool(r.get("share_place")),
                 "coords": bool(r.get("coords")),
+                "tier_cap": r.get("tier_cap"),
+                "expires_at": r.get("expires_at"),
             }
             for r in rows
         }
@@ -2553,6 +2654,8 @@ async def guard(request: Request, call_next):
         # (a cookie is sent along with a cross-site request, a bearer header is not), and no other kind of token.
         raw = auth.bearer_of(request.headers.get("authorization"))
         token = TOKENS.get(auth.token_hash(raw)) if raw else None
+        if auth.token_expired(token, datetime.now(timezone.utc)):
+            token = None  # past its date it is no token at all
         if token is None:
             return JSONResponse({"error": "send an MCP token as Authorization: Bearer; make one in Settings"}, status_code=401, headers={"WWW-Authenticate": "Bearer"})
         if token.get("kind") != "mcp":
@@ -2563,6 +2666,8 @@ async def guard(request: Request, call_next):
     if path.startswith("/api/"):
         raw = auth.bearer_of(request.headers.get("authorization"))
         token = TOKENS.get(auth.token_hash(raw)) if raw else None
+        if auth.token_expired(token, datetime.now(timezone.utc)):
+            token = None  # past its date it is no token at all: the app is told to reconnect, below
         if token is not None and token.get("kind") == "mcp":
             return JSONResponse({"error": "an MCP token opens only /mcp"}, status_code=403)
         if path.startswith(auth.ADMIN_PREFIX):
@@ -2884,14 +2989,32 @@ def seen_from(request: Request) -> str:
     return auth.seen_from(request.headers, socket_peer(request))
 
 
+def plain_http(request: Request) -> bool:
+    """Whether the browser reached the site without https: its cookie and any password travel in clear."""
+    return (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip().lower() != "https"
+
+
+PLAIN_HTTP_AWAY = "Over plain http, this goes only from the home network. Use the site's https address."
+
+
+def tier3_refused_here(request: Request, key: str) -> str | None:
+    """A tier 3 command over plain http from off the home network: refused, since its sign-in could be read on the way."""
+    cmd = commands_mod.CATALOGUE.get(key)
+    if cmd is None or cmd.tier < 3 or not plain_http(request):
+        return None
+    return None if auth.home_address(auth.throttle_key(request.headers, socket_peer(request))) else PLAIN_HTTP_AWAY
+
+
 @site.post("/login")
-def login_submit(request: Request, password: str = Form(...), next: str = Form("")):
+async def login_submit(request: Request, password: str = Form(...), next: str = Form("")):
     target, key, now = safe_next(next), sign_in_key(request), time.time()
     held = FAILURES.wait(key, now, known_device(request))
     if held > 0:
         return auth_page(request, "login.html", 429, error=f"Too many tries. Wait {int(held) + 1} seconds.", next=target)
-    if not auth.verify_password(AUTH["password"], password):
-        FAILURES.record(key, now)
+    # Counted before the check and forgiven after it, with nothing awaited in between the wait and the count,
+    # so guesses sent in parallel cannot all get past the same wait.
+    FAILURES.record(key, now)
+    if not await asyncio.to_thread(auth.verify_password, AUTH["password"], password):
         # No hint about which half was wrong, and none about whether a password is set at all.
         return auth_page(request, "login.html", 401, error="That password is not right.", next=target)
     FAILURES.clear(key)
@@ -3214,6 +3337,7 @@ def now(request: Request):
             line=nowpage.today_line(cars, today, units_mod.ACTIVE, {b["vin"]: b["kind"] for b in acts}),
             ticks=nowpage.strip_ticks(end - timedelta(hours=24), end, TZ),
             pw=energy_now(),
+            gar=garage_view(owner=owner(request)),
             active="now",
             live_vin=GARAGE,
         )
@@ -3247,6 +3371,8 @@ def now(request: Request):
         software=software_history(car["vin"]),
         drives=ds,
         charges=chs[:5],
+        pw=energy_now() if len(all_vehicles()) == 1 else None,  # a one-car household has no tiles page: the house's row is here
+        gar=garage_view(owner=owner(request)) if len(all_vehicles()) == 1 else None,
         active="now",
         live_vin=car["vin"],
     )
@@ -3407,6 +3533,7 @@ def activity_banners(cars: list[dict]) -> list[dict]:
 
 
 ACT_KEY = "activity"  # the banners' place in a stream's cards (data-live="activity"): no vin is called that
+TODAY_KEY = "today"  # the Today line's (data-live="today")
 
 
 def _activity_html(acts: list[dict], root: str, colors: dict, link: bool) -> str:
@@ -3439,7 +3566,10 @@ def draw_live_cards(vin: str | None, root: str) -> dict[str, dict]:
             html = _garage_card().render(c=c, root=root, colors=colors, today=today.get(c["vin"]), ticks=ticks)
             out[c["vin"]] = {"html": html, "lat": c.get("lat"), "lon": c.get("lon"), "heading": c.get("heading")}
             cars.append(c)
-        out[ACT_KEY] = {"html": _activity_html(activity_banners(cars), root, colors, link=True)}
+        acts = activity_banners(cars)
+        out[ACT_KEY] = {"html": _activity_html(acts, root, colors, link=True)}
+        line = nowpage.today_line(cars, today, units_mod.ACTIVE, {b["vin"]: b["kind"] for b in acts})
+        out[TODAY_KEY] = {"html": templates.env.get_template("_today.html").render(line=line, colors=colors)}
         return out
     car = live_vehicle(vin)
     if not car.get("vin"):
@@ -4137,6 +4267,7 @@ def day_for_car(v: dict, start: datetime, end: datetime, now_utc: datetime) -> d
             "SELECT at, latitude, longitude, state, elevation FROM cc_positions p WHERE vin = %s AND at >= %s AND at < %s " + driveedits.left_out() + " ORDER BY at", (vin, start, end)
         ).fetchall()
         matched = routematch.matched_lines(conn, vin, lookback, end, "simple")
+        private_h = lucidrecords.private_hours(conn, vin, start, until)  # the Lucid's privacy mode, where recorded
         # every drive around the day, hidden and tiny ones too, for the miles none of them holds
         around = conn.execute(
             "SELECT start_date, destination_date, start_odometer, destination_odometer FROM trips WHERE vin = %s AND start_date >= %s AND start_date < %s ORDER BY start_date",
@@ -4163,6 +4294,7 @@ def day_for_car(v: dict, start: datetime, end: datetime, now_utc: datetime) -> d
         "live": v["live"],
         "ribbon": ribbon_segments(states, charging, start, until, car_on) if until > start else [],
         "since_charge": since_last_charge(vin, until, k),
+        "private_h": private_h,
         "places": time_at_places(rows, start, until),
         "rows": rows,
         "totals": dict(day_totals(rows, cap, k), unlogged_mi=unlogged_mi),
@@ -4515,7 +4647,16 @@ def tire_block(v: dict) -> dict:
     tires = {w: [[t.timestamp(), x] for t, x in pts] for w, pts in tire_series(vin).items()}
     low = current_settings().get("tire_low_psi")
     month = calview.tire_chart(now - timedelta(days=30), now, tires, [], u, TZ, low, temp_on=False) if any(tires.values()) else None
-    return {"vin": vin, "name": v.get("name") or vin, "tires": month, "tire_now": calview.tire_now(tires), "tire_history": tire_history(vin)}
+    live = live_vehicle(vin)  # as the page already read it for the odometers
+    return {
+        "vin": vin,
+        "name": v.get("name") or vin,
+        "tires": month,
+        "tire_now": calview.tire_now(tires),
+        "tire_history": tire_history(vin),
+        "read_at": live.get("tires_read_at"),  # when the car took the pressures (connector 0.5.0), not when we asked
+        "defective": live.get("tire_defective"),
+    }
 
 
 def battery_block(v: dict, view: dict | None = None) -> dict:
@@ -4800,9 +4941,11 @@ def drive_detail(request: Request, trip_id: int):
             (car["vin"], trip["start_date"], trip["start_date"] - timedelta(hours=1)),  # a reading from the hour before it left, or none
         ).fetchone()
         offers = drive_edit_offers(conn, trip)
+        modes = [lucidrecords.mode_word(m) for m in lucidrecords.modes_between(conn, car["vin"], trip["start_date"], end)]  # the Lucid's, where recorded
     return page(
         request,
         "drive.html",
+        modes=modes,
         timed=driveview.timed_route(route, track, units_mod.ACTIVE.speed) or [[la, lo, None, None] for la, lo in route],
         steps=steps,
         shares=driveview.speed_shares(track, steps, units_mod.ACTIVE.speed),
@@ -5142,6 +5285,7 @@ def places_index(request: Request):
 
 
 ROUTE_SPANS = (("all", "All time", None), ("year", "12 months", 365), ("90d", "90 days", 90))
+ROUTES_LISTED = 25  # the list shows the busiest; every route keeps its page
 
 
 def route_table(vin: str | None, days: int | None) -> dict:
@@ -5156,7 +5300,7 @@ def route_table(vin: str | None, days: int | None) -> dict:
         for d in ds:
             d["start_place"] = place_for(d["start_position_latitude"], d["start_position_longitude"], known)
             d["end_place"] = place_for(d["destination_position_latitude"], d["destination_position_longitude"], known)
-        return {"routes": toproutes.routes(ds, auto_tag_rules(), TZ), "destinations": toproutes.destinations(ds), "drives": len(ds)}
+        return {"routes": toproutes.routes(ds, auto_tag_rules(), TZ, keep=None), "destinations": toproutes.destinations(ds), "drives": len(ds)}
 
     return cached(f"top_routes:{vin}:{days}", 600, load)
 
@@ -5169,24 +5313,23 @@ def places_routes(request: Request, span: str = "all"):
     key = span if span in {k for k, _, _ in ROUTE_SPANS} else "all"
     days = next(d for k, _, d in ROUTE_SPANS if k == key)
     t = route_table(None if car.get("garage") else car["vin"], days)
-    return page(request, "routes.html", car=car, spans=ROUTE_SPANS, span=key, **t, active="places")
+    return page(request, "routes.html", car=car, spans=ROUTE_SPANS, span=key, **{**t, "routes": t["routes"][:ROUTES_LISTED]}, active="places")
 
 
 ROUTE_DRIVES = 100  # the newest drives a route's page lists; the Drives list holds the rest
 ROUTE_LINES = 25  # the newest drives its map draws together
 
 
-def route_of(request: Request, key: str, span: str) -> tuple[dict, str, dict]:
-    """The route the list names `key` (toproutes.route_key), the span it was read over and the
-    car scope's query: the same table the Routes list reads, so the page and the list agree."""
+def route_of(request: Request, key: str, span: str) -> tuple[dict | None, str, dict]:
+    """The route `key` names (toproutes.route_key), the span it was read over and the car
+    scope: the same table the Routes list reads, so the page and the list agree. Any route
+    with enough drives, not only the ones the list shows; None when this car or span has
+    none between those places (another car's route, a merged place)."""
     car = pick(request)
     span = span if span in {k for k, _, _ in ROUTE_SPANS} else "all"
     days = next(d for k, _, d in ROUTE_SPANS if k == span)
     t = route_table(None if car.get("garage") else car["vin"], days)
-    r = next((x for x in t["routes"] if x["key"] == key), None)
-    if r is None:
-        raise HTTPException(404, "No such route.")
-    return r, span, car
+    return next((x for x in t["routes"] if x["key"] == key), None), span, car
 
 
 def route_end(p: dict, cells: dict) -> dict:
@@ -5221,6 +5364,8 @@ def route_lines(request: Request, key: str, span: str = "all"):
     """The newest drives of a route as lines for its map, asked by the page after it has drawn.
     A drive matched to the roads draws that line, else its own readings; kept ten minutes."""
     r, span, car = route_of(request, key, span)
+    if r is None:
+        raise HTTPException(404, "No such route.")
 
     def load():
         with db() as conn:
@@ -5251,6 +5396,8 @@ def place_route(request: Request, key: str, span: str = "all"):
     street, and opens the naming card), a map of its drives drawn together, the figures the
     list row has and its drives, newest first. The same row the list reads (route_table)."""
     r, span, car = route_of(request, key, span)
+    if r is None:
+        return to_site(request, f"/places/routes?span={span}")
     cells = geocells()
     return page(
         request,
@@ -5771,6 +5918,7 @@ def software_block(v: dict, live: dict | None = None) -> dict:
         "timeline": softwarepage.timeline(rows, now, TZ),
         "min_level": lifetime.MIN_LEVEL,
         "waiting": softwarepage.waiting(live),
+        "install": lucidfields.update_line(live or {}),
     }
 
 
@@ -6387,13 +6535,18 @@ def settings_render(request: Request, section: str, **extra) -> HTMLResponse:
         ctx.update(energy_context())
     elif section == "data":
         ctx.update(
-            data_checks=data_checks(), raw_readings=has_raw_readings(ctx["car"]), ha=ha_view(request.query_params.get("ha_error"), brief=True), ha_typed=request.query_params.get("ha_url", "")[:200]
+            data_checks=data_checks(),
+            raw_readings=has_raw_readings(ctx["car"]),
+            ha=ha_view(request.query_params.get("ha_error"), brief=True),
+            mqtt=mqtt_worker.status(),
+            ha_typed=request.query_params.get("ha_url", "")[:200],
         )
     elif section == "commands":
         ctx.update(commands_context())
     elif section == "access":
         ctx.update(
             tokens=token_list(),
+            now_utc=datetime.now(timezone.utc),
             token_vehicles=all_vehicles(),
             api_log=api_log(),
             mcp_log=mcp_log(),
@@ -6413,7 +6566,12 @@ def settings_render(request: Request, section: str, **extra) -> HTMLResponse:
             cf_emails=bool(EMAILS),
             cf_need_code=True,
             cf_proxy_unset=not PROXIES,
+            plain_http=plain_http(request),
             remembered_apps=remembered_apps(),
+            passkey_rows=passkeys_for(passkey_rp(request)),
+            passkeys_elsewhere=len(PASSKEYS) - len(passkeys_for(passkey_rp(request))),
+            may_change_confirming=may_change_confirming(request),
+            is_owner=owner(request),
         )
     ctx.update(extra)
     return page(request, "settings_money_plan.html" if section == "money" and extra.get("step") else f"settings_{section}.html", **ctx)
@@ -6551,12 +6709,18 @@ def settings_page(request: Request, section: str, saved: str | None = None):
     return settings_render(request, section, saved=saved)
 
 
-def store_token(label: str, kind: str, vin: str | None, share_place: bool = False, coords: bool = False) -> str:
+def store_token(label: str, kind: str, vin: str | None, share_place: bool = False, coords: bool = False, cap: int | None = None, days: int = 0) -> str:
     """A new token, kept as its hash and last four, and live at once. The raw token is the
-    caller's to show once; it goes in no log and no URL."""
+    caller's to show once; it goes in no log and no URL. Any token, unless `days` is 0, keeps the time it stops
+    working; a control token keeps its tier cap too."""
     raw = auth.mint_token()
+    expires = datetime.now(timezone.utc) + timedelta(days=days) if days else None
     with db() as conn:
         conn.execute("INSERT INTO cc_api_tokens (hash, label, vin, kind, last4) VALUES (%s, %s, %s, %s, %s)", (auth.token_hash(raw), label, vin, kind, raw[-4:]))
+        if expires is not None:
+            conn.execute("UPDATE cc_api_tokens SET expires_at = %s WHERE hash = %s", (expires, auth.token_hash(raw)))
+        if kind == "control":
+            conn.execute("UPDATE cc_api_tokens SET tier_cap = %s WHERE hash = %s", (cap if cap in auth.CAPS else 1, auth.token_hash(raw)))
         if share_place and kind == "status":
             conn.execute("UPDATE cc_api_tokens SET share_place = true WHERE hash = %s", (auth.token_hash(raw),))
         if coords and kind == "mcp":
@@ -6566,9 +6730,29 @@ def store_token(label: str, kind: str, vin: str | None, share_place: bool = Fals
     return raw
 
 
+def confirm_first(request: Request, section: str, why: str):
+    """Settings drawn again with the confirm row, for a change that raises power asked for without a step-up (a page
+    without its script, or one left open past the two minutes). Nothing was saved."""
+    r = settings_render(request, section, confirm_ask=why if owner(request) else commands_mod.OWNERS_ONLY)
+    r.status_code = 409
+    return r
+
+
+@site.post("/settings/confirmed")
+async def settings_confirmed(request: Request):
+    """For a Settings form about to raise power: whether this browser may now, or what would confirm it."""
+    ways = step_ways(request)
+    return JSONResponse(
+        {"ok": may_change_confirming(request), "owner": owner(request), "ways": ways, "said": step_prompt(ways) if owner(request) else commands_mod.OWNERS_ONLY}, headers={"Cache-Control": "no-store"}
+    )
+
+
 @site.post("/settings/tokens")
 async def token_mint(request: Request):
-    """Mint a token and show it once, on the page, never in a URL or a log."""
+    """Mint a token and show it once, on the page, never in a URL or a log. Any token reads the cars' history, and a
+    control token drives them: an owner, confirmed (security review F2)."""
+    if not may_change_confirming(request):
+        return confirm_first(request, "access", "Confirm it's you, then mint the token again.")
     form = await request.form()
     label = (form.get("label") or "").strip()[:40] or "token"
     kind = auth.kind_of(form.get("kind"))
@@ -6576,7 +6760,7 @@ async def token_mint(request: Request):
     if kind == "admin" or (vin and vin not in {v["vin"] for v in await asyncio.to_thread(all_vehicles)}):
         vin = None  # an admin token drives the whole install, so it is never one car's
     coords = kind == "mcp" and form.get("coords") == "on"
-    raw = await asyncio.to_thread(store_token, label, kind, vin, False, coords)
+    raw = await asyncio.to_thread(store_token, label, kind, vin, False, coords, auth.cap_of(form.get("cap")), auth.expiry_of(form.get("days")))
     return settings_render(request, "access", minted=raw, minted_label=label, minted_kind=kind, minted_coords=coords)
 
 
@@ -6584,6 +6768,8 @@ async def token_mint(request: Request):
 async def token_anywhere(request: Request):
     """The owner's override: admin tokens from any network, Cloudflare included. Off by default."""
     on = (await request.form()).get("anywhere") == "on"
+    if on and not AUTH["admin_anywhere"] and not may_change_confirming(request):
+        return confirm_first(request, "access", "Confirm it's you, then turn it on again.")
 
     def save() -> None:
         with db() as conn:
@@ -6642,7 +6828,7 @@ def token_list() -> list[dict]:
             if t.get("used"):
                 conn.execute("UPDATE cc_api_tokens SET last_used_at = GREATEST(COALESCE(last_used_at, %s), %s) WHERE hash = %s", (t["used"], t["used"], h))
         conn.commit()
-        rows = conn.execute("SELECT hash, label, vin, kind, last4, share_place, coords, created_at, last_used_at FROM cc_api_tokens ORDER BY created_at DESC").fetchall()
+        rows = conn.execute("SELECT hash, label, vin, kind, last4, share_place, coords, created_at, last_used_at, tier_cap, expires_at FROM cc_api_tokens ORDER BY created_at DESC").fetchall()
     return [{**r, "kind": auth.kind_of(r["kind"]), "car": names.get(r["vin"], r["vin"]) if r["vin"] else "every car"} for r in rows]
 
 
@@ -7054,7 +7240,9 @@ def _saved_teslamate_url() -> str | None:
     return next((r["plain"] for r in rows if r["kind"] == "teslamate" and r["plain"]), None)
 
 
-IMPORTS = importjob.Store(None, loader=importjob.load_teslafi_file(db_plain), mate=importjob.load_teslamate_car(db_plain, _teslamate_connect), after=_name_places)
+IMPORTS = importjob.Store(
+    None, loader=importjob.load_teslafi_file(db_plain), mate=importjob.load_teslamate_car(db_plain, _teslamate_connect), tessie=importjob.load_tessie_car(db_plain, TZ), after=_name_places
+)
 site.include_router(importroutes.build(IMPORTS, to_site, _teslamate_connect, _saved_teslamate_url))
 
 
@@ -7438,7 +7626,11 @@ TESLA_PROXY_URL = os.environ.get("TESLA_PROXY_URL", "").strip()
 TESLA_PROXY_DIR = os.environ.get("TESLA_PROXY_DIR", "").strip()
 TESLA_PROXY_CERT = os.environ.get("TESLA_PROXY_CERT", "").strip() or (str(Path(TESLA_PROXY_DIR) / tesla_proxy.CERT) if TESLA_PROXY_DIR else "")
 COMMAND_LIMIT = commands_mod.Limiter()
-STEP_UPS: dict[str, float] = {}  # who (the session or Access identity) -> when the password was entered again
+STEP_UPS: dict[str, float] = {}  # who (the session or Access identity) -> when the PIN, password or a passkey was given again
+STEP_HOW: dict[str, str] = {}  # who -> which of them it was, for the command log
+SETTING_STEPS: dict[str, float] = {}  # who -> when a passkey confirmed a change in Settings (not a command: a passkey confirms one)
+PIN_KEY = "command_pin"  # in cc_auth: the command PIN, hashed like the password
+PASSKEYS: list[dict] = []  # every passkey (cc_passkeys), read at start and after each change, so no page asks the database
 COMMAND_PATH = re.compile(r"^/api/cars/([A-Za-z0-9]{1,32})/command$")
 CHARGE_KEYS = (
     "charge_start",
@@ -7447,6 +7639,9 @@ CHARGE_KEYS = (
     "charge_amps",
     "sched_charge",
     "sched_charge_off",
+    "depart",
+    "depart_offpeak",
+    "depart_off",
 )
 COMMAND_LOG_PRUNED = {"at": 0.0}
 
@@ -7601,17 +7796,99 @@ def command_view(car: dict) -> dict | None:
         outside_f=_pick_temp(car, "outside_f"),
         partial=way == "tesla" and not (scope or {}).get("all"),
     )
+    if car.get("make") == "Tesla" and {"sched_charge", "depart"} & view["allowed"]:
+        # the places a schedule may apply to, by name; the picker's ids carry no position
+        here = (car["lat"], car["lon"]) if car.get("lat") is not None and car.get("lon") is not None else None
+        options = schedules.choices(SCHEDULES.get(car["vin"]), sched_rows(), here)
+        view["where"] = {"options": options, "default": schedules.default(options)}
     return view
 
 
+def step_who(request: Request) -> str | None:
+    return csrf_subject(session_of(request), getattr(request.state, "cf", None))
+
+
 def stepped_up(request: Request) -> bool:
-    """The password entered again, or a Cloudflare Access sign-in, in the last five minutes."""
-    cf = getattr(request.state, "cf", None)
-    if cf and isinstance(cf.get("iat"), (int, float)) and time.time() - cf["iat"] <= commands_mod.STEP_UP_S:
-        return True
-    who = csrf_subject(session_of(request), cf)
-    at = STEP_UPS.get(who or "")
+    """The PIN, the password or a passkey given again in the last two minutes. A Cloudflare Access sign-in is
+    not one: the identity provider waves a signed-in phone straight through, so it proves nothing new."""
+    at = STEP_UPS.get(step_who(request) or "")
     return at is not None and time.monotonic() - at <= commands_mod.STEP_UP_S
+
+
+def step_up_mark(request: Request, how: str) -> None:
+    for gone in [w for w, at in STEP_UPS.items() if time.monotonic() - at > commands_mod.STEP_UP_S]:
+        STEP_UPS.pop(gone, None)
+        STEP_HOW.pop(gone, None)
+    who = step_who(request)
+    STEP_UPS[who], STEP_HOW[who] = time.monotonic(), how
+
+
+def passkey_rp(request: Request) -> passkeys.RelyingParty | None:
+    """Where this browser stands for passkeys: None on plain http or an IP address, where the browser has none."""
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    return passkeys.relying_party(None, proto, request.headers.get("host") or request.url.netloc)
+
+
+def passkeys_for(rp: passkeys.RelyingParty | None) -> list[dict]:
+    return [k for k in PASSKEYS if rp and k["rp_id"] == rp.id]
+
+
+def step_ways(request: Request) -> dict:
+    """How this browser can confirm a tier 3 command: memory only, so every page may ask."""
+    rp = passkey_rp(request)
+    return {"passkey": bool(passkeys_for(rp)), "here": rp is not None, "pin": bool(AUTH["pin"]), "password": bool(AUTH["password"])}
+
+
+STEP_NAMES = {"pin": "your PIN", "password": "the password"}
+
+
+def step_prompt(ways: dict) -> str:
+    """What a tier 3 refusal asks for, by what this site and this browser have."""
+    if ways["passkey"]:
+        return "Confirm it with your passkey."
+    asks = [STEP_NAMES[w] for w in ("pin", "password") if ways[w]]
+    if asks:
+        return f"Enter {' or '.join(asks)} first."
+    return "Add a passkey or a PIN in Settings › Access to do this from here."
+
+
+def owner(request: Request) -> bool:
+    """Whether whoever is asking is an owner: signed in with the password, or a Cloudflare Access identity named
+    in CC_ACCESS_EMAILS. Without that list Cloudflare's policy decides who gets in, which may be a whole domain,
+    so an Access identity is not an owner then; a service token, which names no person, never is. With sign-in
+    off there is nobody to tell apart, so whoever is there is (and no command is sent at all). Owners alone send
+    tier 3 and change what raises power (security review F1)."""
+    cf = getattr(request.state, "cf", None)
+    if cf is not None:
+        return bool(EMAILS) and proxyauth.normalize_email(cf.get("email")) in EMAILS
+    return not AUTH["enabled"] or session_ok(session_of(request))
+
+
+def may_change_confirming(request: Request) -> bool:
+    """Anything that raises power (commands on, a tier raised, a token, the garage opening, a passkey or the PIN):
+    an owner, and a step-up first (the PIN or password, or a passkey asked for this), unless nothing confirms yet
+    (the first is the owner's to set, as the first password is)."""
+    if not owner(request):
+        return False
+    at = SETTING_STEPS.get(step_who(request) or "")
+    passkey_step = at is not None and time.monotonic() - at <= commands_mod.STEP_UP_S
+    return stepped_up(request) or passkey_step or not (PASSKEYS or AUTH["pin"] or AUTH["password"])
+
+
+def reload_passkeys(conn) -> None:
+    PASSKEYS[:] = passkeys.listed(conn)
+
+
+def security_alert(request: Request, text: str) -> None:
+    """A passkey or PIN event on every channel set up for sign-ins: what, from where, when. Sent off the request."""
+    agent = devices.browser(request.headers.get("user-agent"))
+    where = devices.where(seen_from(request)) or "an unknown address"
+    line = f"{text} From {where} at {clockfmt.text(datetime.now(TZ), '%b %-d, %-I:%M %p')}" + (f" · {agent}" if agent else "") + "."
+    background(recorder.notify, line, "login")
+
+
+def background(fn, *args) -> None:
+    threading.Thread(target=fn, args=args, daemon=True).start()
 
 
 def connector_command(cmd: commands_mod.Command, vin: str, arg) -> tuple[bool, str | None]:
@@ -7668,7 +7945,42 @@ def commands_turn_on() -> str:
     return commands_mod.NO_ROW if "commands" in hidden else commands_mod.TURN_ON
 
 
-def run_command(vin: str, key: str, raw_arg, source: str, ip: str | None, *, stepped: bool = False) -> tuple[int, dict]:
+def sched_rows() -> list[dict]:
+    """Our places, kept a minute: where a schedule may apply, and the names of where each one does."""
+
+    def load():
+        try:
+            return [dict(p) for p in place_rows()]
+        except Exception as err:  # noqa: BLE001 - without our places a schedule still has Tesla's Home and here
+            LOG.warning("schedule places: %s", type(err).__name__)
+            return []
+
+    return cached("sched_places", 60, load)
+
+
+def sched_locate(lat: float, lon: float) -> str | None:
+    p = place_for(lat, lon, resolve_merged(sched_rows()))
+    return p["name"] if p else None
+
+
+def keep_schedules(vin: str, body) -> None:
+    SCHEDULES[vin] = schedules.parse(body, sched_locate)
+
+
+def read_schedules(vin: str) -> None:
+    """Ask the car what schedules it holds (it was just awake for a command) and keep them in memory."""
+    got, fleet = tesla_access(), tesla_app()
+    if not got or fleet is None:
+        return
+    try:
+        keep_schedules(vin, fleet.schedules(got[0], got[1], vin))
+    except tesla_fleet.TeslaError:
+        pass
+
+
+def run_command(
+    vin: str, key: str, raw_arg, source: str, ip: str | None, *, stepped: bool = False, how: str | None = None, owner: bool = True, cap: int | None = None, where: str | None = None
+) -> tuple[int, dict]:
     """Check, count, send, log and say one command: (HTTP status, {"ok", "said", "step_up"?})."""
     try:
         cmd, arg = commands_mod.parse(key, raw_arg)
@@ -7678,6 +7990,8 @@ def run_command(vin: str, key: str, raw_arg, source: str, ip: str | None, *, ste
     if vin not in {v["vin"] for v in all_vehicles()}:
         return 404, {"ok": False, "said": "No such car."}
     car = live_vehicle(vin)
+    if how and cmd.tier >= 3:
+        source = f"{source} · {how}"
     st, way = current_settings(), command_way(car)
     refused = commands_mod.refusal(
         cmd,
@@ -7689,6 +8003,8 @@ def run_command(vin: str, key: str, raw_arg, source: str, ip: str | None, *, ste
         stepped_up=stepped,
         offered=command_offered(car, way),
         turn_on=commands_turn_on() if not st.get("commands_on") else commands_mod.TURN_ON,
+        owner=owner,
+        cap=cap,
     )
     sent_arg = arg
     if refused is None and cmd.key == "homelink":
@@ -7696,11 +8012,25 @@ def run_command(vin: str, key: str, raw_arg, source: str, ip: str | None, *, ste
         if car.get("lat") is None or car.get("lon") is None:
             refused = "Car Command doesn't know where the car is."
         sent_arg = (car.get("lat"), car.get("lon"))
+    if refused is None and way == "tesla" and cmd.key in tesla_cmd.SCHEDULE_KEYS:
+        # The current API keys a schedule to a place, which the proxy insists on: the one the owner picked, looked up
+        # here from its id, used for this command and kept nowhere. Firmware before 2024.26 takes the legacy pair, which has none.
+        version = car.get("software") or (SCHEDULES.get(vin) or {}).get("firmware")
+        modern = schedules.modern(version)
+        spot = None
+        if modern and cmd.key not in ("sched_charge_off", "depart_off"):
+            # the place the owner picked (Tesla's Home, a place of ours, here), looked up from its id; with none, the default
+            here = (car["lat"], car["lon"]) if car.get("lat") is not None and car.get("lon") is not None else None
+            rows, read = sched_rows(), SCHEDULES.get(vin)
+            spot = schedules.resolve(where or schedules.default(schedules.choices(read, rows, here)), read, rows, here)
+            if spot is None:
+                refused = "Choose where it applies." if where else "Car Command doesn't know where the car is."
+        sent_arg = tesla_cmd.Schedule(arg, *(spot or (None, None)), modern)
     if refused is None:
-        refused = COMMAND_LIMIT.admit(vin, cmd.tier)
+        refused = COMMAND_LIMIT.admit(vin, cmd.tier, cmd.key)
         status = 429 if refused else 200
     else:
-        status = 409 if cmd.tier >= 3 and refused.startswith("Enter the password") else 403
+        status = 409 if refused == commands_mod.STEP_UP_ASK else 403
     t0 = time.monotonic()
     if refused:
         ok, detail = False, refused
@@ -7731,14 +8061,17 @@ def run_command(vin: str, key: str, raw_arg, source: str, ip: str | None, *, ste
             conn.commit()
     except Exception as err:  # noqa: BLE001 - the command went (or not) either way; the log line says so
         LOG.warning("command log: %s", type(err).__name__)
+    if ok and way == "tesla" and cmd.key in tesla_cmd.SCHEDULE_KEYS:
+        background(read_schedules, vin)  # the card says what the car now holds
     if ok and EXPECTED.note(vin, cmd.key, arg, car, datetime.now(timezone.utc)):
         for k in [k for k in _cache if k.startswith("live-cards:")]:
             _cache.pop(k, None)  # the next look draws the card with it
-    if cmd.tier >= 2 and not refused:
-        recorder.notify(
-            f"{car.get('name') or vin}: {cmd.label}{'' if arg is None else f' {arg:g}'} {'sent' if ok else 'failed'} from {source}" + ("" if ok else f". {detail}"),
-            "command",
-        )
+    what = f"{car.get('name') or vin}: {cmd.label}{'' if arg is None else f' {arg:g}'}"
+    if cmd.tier >= 3:
+        # every try at what opens the car, refused ones too, on a kind no switch mutes (security review F9)
+        recorder.notify(f"{what} {'refused' if refused else 'sent' if ok else 'failed'} from {source}" + ("" if ok else f". {detail}"), notify_mod.ACCESS_KIND)
+    elif cmd.tier >= 2 and not refused:
+        recorder.notify(f"{what} {'sent' if ok else 'failed'} from {source}" + ("" if ok else f". {detail}"), "command")
     at = clockfmt.text(datetime.now(TZ), "%-I:%M %p")
     out = {"ok": ok, "said": commands_mod.said(cmd, arg, ok, detail, at)}
     if status == 409:
@@ -7754,8 +8087,8 @@ def command_source(request: Request) -> str:
     return f"site ({proxyauth.identity(cf)})" if cf else "site"
 
 
-async def command_args(request: Request) -> tuple[str, object]:
-    """The command and its argument from a JSON body or a form."""
+async def command_args(request: Request) -> tuple[str, object, str | None]:
+    """The command, its argument and (for a schedule) the place it applies to, as the id the picker offered, from a JSON body or a form."""
     if request.headers.get("content-type", "").startswith("application/json"):
         try:
             body = await request.json()
@@ -7764,27 +8097,78 @@ async def command_args(request: Request) -> tuple[str, object]:
         body = body if isinstance(body, dict) else {}
     else:
         body = dict(await request.form())
-    return str(body.get("command") or ""), body.get("value")
+    where = body.get("where")
+    return str(body.get("command") or ""), body.get("value"), where if isinstance(where, str) and len(where) <= 40 else None
 
 
 @site.post("/cars/{vin}/command")
 async def car_command(request: Request, vin: str):
-    """A command from the site: a tap on the Now card, confirmed, with the page's CSRF token."""
-    key, value = await command_args(request)
+    """A command from the site: a tap on the Now card, with the page's CSRF token; for tier 3 the passkey's answer
+    for this one command, or the PIN or the password given in the last two minutes."""
+    key, value, where = await command_args(request)
+    if away := tier3_refused_here(request, key):
+        return JSONResponse({"ok": False, "said": away}, status_code=403, headers={"Cache-Control": "no-store"})
     ip = seen_from(request)
-    status, out = await asyncio.to_thread(
-        run_command,
-        vin,
-        key,
-        value,
-        command_source(request),
-        ip,
-        stepped=stepped_up(request),
-    )
+    stepped, how = stepped_up(request), STEP_HOW.get(step_who(request) or "")
+    answer = await passkey_answer(request)
+    if answer is not None:
+        if not await passkey_checks(request, answer, "cmd"):
+            what = commands_mod.CATALOGUE[key].label.lower() if key in commands_mod.CATALOGUE else "a command"
+            security_alert(request, f"A passkey was refused for {what}.")
+            return JSONResponse({"ok": False, "said": "Passkey not recognised.", "passkey_failed": True}, status_code=401, headers={"Cache-Control": "no-store"})
+        stepped, how = True, "passkey"
+    status, out = await asyncio.to_thread(run_command, vin, key, value, command_source(request), ip, stepped=stepped, how=how, owner=owner(request), where=where)
+    if out.get("step_up"):
+        out["said"] = step_prompt(step_ways(request))
     if out.get("ok"):
         # the card as it is now, so the tap's page shows it before the stream comes round
         out["card"] = (await asyncio.to_thread(draw_live_cards, vin, request.scope.get("root_path", ""))).get(vin, {}).get("html")
     return JSONResponse(out, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+async def json_fields(request: Request) -> dict:
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        return {}
+    try:
+        body = await request.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+async def passkey_answer(request: Request) -> dict | None:
+    """The passkey's answer sent with a request, if any."""
+    answer = (await json_fields(request)).get("passkey")
+    return answer if isinstance(answer, dict) else None
+
+
+async def passkey_checks(request: Request, answer: dict, purpose: str) -> bool:
+    """Whether a passkey's answer is one of this site's passkeys, signed just now for `purpose` in this browser.
+    A good one moves the passkey's count on; a bad one counts against this address as a failed sign-in does."""
+    rp, who = passkey_rp(request), step_who(request)
+    raw = passkeys.challenge_of(answer)
+    if rp is None or not who or not passkeys.CHALLENGES.take(who, purpose, raw):
+        return False
+    try:
+        key_id, count = await asyncio.to_thread(passkeys.authenticated, rp, answer, raw, passkeys_for(rp))
+    except Exception as err:  # noqa: BLE001 - any fault in the answer is a refusal
+        LOG.info("passkey refused: %s", type(err).__name__)
+        FAILURES.record(sign_in_key(request), time.time())
+        return False
+    for k in PASSKEYS:
+        if k["id"] == key_id:
+            k["sign_count"] = count
+
+    def save():
+        with db() as conn:
+            passkeys.used(conn, key_id, count)
+            conn.commit()
+
+    try:
+        await asyncio.to_thread(save)
+    except Exception as err:  # noqa: BLE001 - the answer was good; its count is caught up next time
+        LOG.warning("passkey count: %s", type(err).__name__)
+    return True
 
 
 @site.post("/api/cars/{vin}/command")
@@ -7795,43 +8179,174 @@ async def api_car_command(request: Request, vin: str):
     token = getattr(request.state, "token", None)
     if token is not None and not auth.token_allows(token.get("vin"), vin):
         return JSONResponse({"ok": False, "said": "This token is for another car."}, status_code=403)
-    key, value = await command_args(request)
+    key, value, where = await command_args(request)
+    if away := tier3_refused_here(request, key):
+        return JSONResponse({"ok": False, "said": away}, status_code=403, headers={"Cache-Control": "no-store"})
     ip = seen_from(request)
     stepped = token is None and stepped_up(request)
-    status, out = await asyncio.to_thread(run_command, vin, key, value, command_source(request), ip, stepped=stepped)
+    cap = auth.token_cap(token) if token is not None else None
+    status, out = await asyncio.to_thread(run_command, vin, key, value, command_source(request), ip, stepped=stepped, owner=token is None and owner(request), cap=cap, where=where)
     return JSONResponse(out, status_code=status, headers={"Cache-Control": "no-store"})
 
 
 @site.post("/commands/step-up")
 async def command_step_up(request: Request, password: str = Form("")):
-    """The password again, for the next five minutes of tier 3 commands from this browser."""
+    """The PIN or the password again, for the next two minutes of tier 3 commands from this browser."""
     key, now = sign_in_key(request), time.time()
     held = FAILURES.wait(key, now)
     if held > 0:
-        return JSONResponse(
-            {"ok": False, "said": f"Too many tries. Wait {int(held) + 1} seconds."},
-            status_code=429,
-        )
-    who = csrf_subject(session_of(request), getattr(request.state, "cf", None))
-    if not AUTH["password"] or not who:
-        return JSONResponse(
-            {
-                "ok": False,
-                "said": "This site has no password to enter. Sign in through Cloudflare Access again.",
-            },
-            status_code=409,
-        )
-    if not auth.verify_password(AUTH["password"], password):
-        FAILURES.record(key, now)
-        return JSONResponse({"ok": False, "said": "That password is not right."}, status_code=401)
+        return JSONResponse({"ok": False, "said": f"Too many tries. Wait {int(held) + 1} seconds."}, status_code=429)
+    if not step_who(request) or not (AUTH["pin"] or AUTH["password"]):
+        return JSONResponse({"ok": False, "said": step_prompt({**step_ways(request), "pin": False, "password": False})}, status_code=409)
+    FAILURES.record(key, now)  # counted before the check and forgiven after it: parallel guesses cannot all pass the same wait
+    how = None
+    if AUTH["pin"] and await asyncio.to_thread(auth.verify_password, AUTH["pin"], password):
+        how = "PIN"
+    elif AUTH["password"] and await asyncio.to_thread(auth.verify_password, AUTH["password"], password):
+        how = "password"
+    if how is None:
+        security_alert(request, "A wrong PIN or password was given to confirm a command.")
+        return JSONResponse({"ok": False, "said": "That's not right."}, status_code=401)
     FAILURES.clear(key)
-    for gone in [w for w, at in STEP_UPS.items() if time.monotonic() - at > commands_mod.STEP_UP_S]:
-        STEP_UPS.pop(gone, None)
-    STEP_UPS[who] = time.monotonic()
-    return JSONResponse(
-        {"ok": True, "said": "Good for five minutes."},
-        headers={"Cache-Control": "no-store"},
-    )
+    step_up_mark(request, how)
+    if passkeys_for(passkey_rp(request)):
+        security_alert(request, f"Commands were confirmed with the {how} instead of a passkey.")
+    return JSONResponse({"ok": True, "said": f"{how[0].upper()}{how[1:]} taken for two minutes."}, headers={"Cache-Control": "no-store"})
+
+
+NO_PASSKEYS_HERE = "Passkeys need this site on https at its name."
+
+
+@site.post("/passkeys/challenge")
+async def passkey_challenge(request: Request):
+    """Options for the browser's passkey sheet: `cmd` confirms one command, `step` a change in Settings, `add`
+    makes a new passkey (a step-up first, unless nothing confirms commands yet)."""
+    purpose = (await json_fields(request)).get("purpose")
+    rp, who = passkey_rp(request), step_who(request)
+    if rp is None or not who or purpose not in ("cmd", "step", "add"):
+        return JSONResponse({"ok": False, "said": NO_PASSKEYS_HERE}, status_code=409)
+    if purpose == "add":
+        if not may_change_confirming(request):
+            return JSONResponse({"ok": False, "said": "Confirm it's you first.", "step_up": True}, status_code=409)
+
+        def make():
+            with db() as conn:
+                handle = passkeys.user_handle(conn, auth.store_get, auth.store_set)
+            return passkeys.registration_options(rp, handle, "Car Command", passkeys_for(rp), passkeys.CHALLENGES.new(who, "add"))
+
+        options = await asyncio.to_thread(make)
+    else:
+        keys = passkeys_for(rp)
+        if not keys:
+            return JSONResponse({"ok": False, "said": "No passkey here yet."}, status_code=409)
+        options = passkeys.authentication_options(rp, keys, passkeys.CHALLENGES.new(who, purpose))
+    return JSONResponse({"ok": True, "options": json.loads(options)}, headers={"Cache-Control": "no-store"})
+
+
+@site.post("/passkeys/step")
+async def passkey_step(request: Request):
+    """A passkey confirming a change in Settings: a step-up for the next two minutes, as the PIN gives."""
+    answer = await passkey_answer(request)
+    if answer is None or not await passkey_checks(request, answer, "step"):
+        security_alert(request, "A passkey was refused in Settings.")
+        return JSONResponse({"ok": False, "said": "Passkey not recognised."}, status_code=401)
+    for gone in [w for w, at in SETTING_STEPS.items() if time.monotonic() - at > commands_mod.STEP_UP_S]:
+        SETTING_STEPS.pop(gone, None)
+    SETTING_STEPS[step_who(request)] = time.monotonic()
+    return JSONResponse({"ok": True, "said": "Confirmed."}, headers={"Cache-Control": "no-store"})
+
+
+@site.post("/settings/passkeys/add")
+async def passkey_add(request: Request):
+    """The new passkey the phone made, checked against the challenge this browser was given."""
+    body = await json_fields(request)
+    answer = body.get("passkey")
+    rp, who = passkey_rp(request), step_who(request)
+    if not isinstance(answer, dict) or rp is None or not who:
+        return JSONResponse({"ok": False, "said": NO_PASSKEYS_HERE}, status_code=409)
+    if not may_change_confirming(request):
+        return JSONResponse({"ok": False, "said": "Confirm it's you first.", "step_up": True}, status_code=409)
+    raw = passkeys.challenge_of(answer)
+    if not passkeys.CHALLENGES.take(who, "add", raw):
+        return JSONResponse({"ok": False, "said": "That took too long. Try again."}, status_code=409)
+    try:
+        key = await asyncio.to_thread(passkeys.registered, rp, answer, raw)
+    except Exception as err:  # noqa: BLE001 - a faulty answer adds nothing
+        LOG.info("passkey not added: %s", type(err).__name__)
+        return JSONResponse({"ok": False, "said": "That passkey couldn't be added."}, status_code=400)
+    name = passkeys.clean_name(body.get("name") or devices.browser(request.headers.get("user-agent")))
+
+    def save():
+        with db() as conn:
+            passkeys.add(conn, rp, key, name)
+            conn.commit()
+            reload_passkeys(conn)
+
+    await asyncio.to_thread(save)
+    security_alert(request, f"A passkey was added to Car Command: {name}.")
+    return JSONResponse({"ok": True, "said": f"Added {name}."}, headers={"Cache-Control": "no-store"})
+
+
+def access_answer(request: Request, saved: str | None = None, **error) -> Response:
+    """Back to Settings › Access: with the error on the page, or to the page saying what was saved."""
+    if error:
+        r = settings_render(request, "access", **error)
+        r.status_code = 400
+        return r
+    return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/access" + (f"?saved={saved}" if saved else ""), status_code=303)
+
+
+@site.post("/settings/passkeys/remove")
+async def passkey_remove(request: Request, id: str = Form("")):
+    if not may_change_confirming(request):
+        return access_answer(request, passkey_error="Confirm it's you first, then remove it.")
+    name = next((k["name"] for k in PASSKEYS if k["id"] == id), None)
+
+    def drop():
+        with db() as conn:
+            gone = passkeys.remove(conn, id)
+            conn.commit()
+            reload_passkeys(conn)
+            return gone
+
+    if name and await asyncio.to_thread(drop):
+        security_alert(request, f"A passkey was removed from Car Command: {name}.")
+    return access_answer(request, "passkey-removed")
+
+
+def pin_problem(pin: str, confirm: str) -> str | None:
+    if not re.fullmatch(r"\d{6,8}", pin or ""):
+        return "Use six to eight digits."
+    if pin != confirm:
+        return "The two don't match."
+    if len(set(pin)) == 1 or pin in "01234567890123456789" or pin in "98765432109876543210":
+        return "Pick one that's harder to guess."
+    return None
+
+
+@site.post("/settings/pin")
+async def command_pin_set(request: Request, pin: str = Form(""), confirm: str = Form(""), remove: str = Form("")):
+    """Set, change or remove the command PIN: six to eight digits, hashed like the password."""
+    if not may_change_confirming(request):
+        return access_answer(request, pin_error="Confirm it's you first.")
+    stored = None
+    if not remove:
+        problem = pin_problem(pin, confirm)
+        if problem:
+            return access_answer(request, pin_error=problem)
+        stored = await asyncio.to_thread(auth.hash_password, pin)
+
+    def save():
+        with db() as conn:
+            if stored:
+                auth.store_set(conn, PIN_KEY, stored)
+            else:
+                auth.store_delete(conn, PIN_KEY)
+
+    await asyncio.to_thread(save)
+    had, AUTH["pin"] = bool(AUTH["pin"]), stored
+    security_alert(request, "The command PIN was removed." if not stored else "The command PIN was changed." if had else "A command PIN was set.")
+    return access_answer(request, "pin" if stored else "pin-off")
 
 
 # ---- The command check: one Lucid command at a time from a page, someone at the car saying what it did.
@@ -7968,6 +8483,7 @@ def commands_context() -> dict:
     return {
         "cmd_cars": cars,
         "cmd_signed": command_signed(),
+        "cmd_lock_offer": not (PASSKEYS or AUTH["pin"]),  # nothing but the password confirms yet: offer a passkey or PIN
         "cmd_proxy": bool(TESLA_PROXY_URL),
         "cmd_scope": scope,
         "cmd_tiers": commands_mod.TIERS,
@@ -8730,6 +9246,8 @@ async def ha_callback(request: Request, code: str = "", state: str = ""):
 async def ha_door(request: Request):
     form = await request.form()
     entity = str(form.get("entity") or "")
+    if garage_open_config()["mode"] == "open" and not may_change_confirming(request):
+        return confirm_first(request, "alerts", "Confirm it's you, then pick the door again.")  # which door opens for a car
     with db() as conn:
         kept, refresh = garagedoor.opened(conn, VAULT)
         if not kept or not entity.startswith("cover."):
@@ -8756,7 +9274,10 @@ async def ha_arrival(request: Request):
     except ValueError:
         aim = int(garageopen.AIM_S)
     place = str(form.get("place") or "") or None
-    moved = place != garage_open_config()["place"]
+    was = garage_open_config()
+    if mode == "open" and (was["mode"] != "open" or (vin or None) != was["vin"] or place != was["place"]) and not may_change_confirming(request):
+        return confirm_first(request, "alerts", "Confirm it's you, then set the garage to open again.")  # it opens a door to the house (F8)
+    moved = place != was["place"]
     state_set(GARAGE_OPEN_KEY, json.dumps({"mode": mode, "vin": vin or None, "place": place, "aim": aim if aim in AIMS else int(garageopen.AIM_S)}))
     _cache.pop("garage_open_cfg", None)
     if moved or (mode != "off" and not APPROACH.model):
@@ -8905,6 +9426,36 @@ async def ha_close(request: Request):
     return RedirectResponse(f"{request.scope.get('root_path', '')}/settings/alerts?saved=Saved#ha", status_code=303)
 
 
+@site.post("/garage/switch")
+async def garage_switch(request: Request):
+    """The garage's main switch on Now: off stops the watching, opening and closing at once; on
+    puts back what Settings › Alerts set. On, when that opens or closes the door, is confirmed
+    first (Face ID, else the PIN or password), as setting it to open is."""
+    form = await request.form()
+    on = str(form.get("on") or "") == "1"
+    if not owner(request):
+        return JSONResponse({"ok": False, "said": commands_mod.OWNERS_ONLY}, status_code=403)
+    for k in ("garage_open_cfg", "garage_close_mode", "garage_on"):
+        _cache.pop(k, None)
+    view = garage_view()
+    if view is None:
+        return JSONResponse({"ok": False, "said": "Set up the garage in Settings › Alerts first."}, status_code=409)
+    if on and not garage_on() and view["raises"] and not may_change_confirming(request):
+        # Now has no PIN field: a passkey confirms it here (Settings › Access adds one)
+        return JSONResponse({"ok": False, "step_up": True, "said": "Confirm with a passkey to switch it on. Add one in Settings › Access."}, status_code=409)
+    state_set(GARAGE_ON_KEY, json.dumps({"on": on}))
+    _cache.pop("garage_on", None)
+    if not on:
+        for t in list(GARAGE_TIMERS.values()):
+            t.cancel()
+        GARAGE_TIMERS.clear()
+        if DRIVEWAY_URL:
+            threading.Thread(target=lambda: httpx.post(f"{DRIVEWAY_URL}/stop", timeout=5), daemon=True).start()  # a watch under way ends now
+    garage_note({"at": datetime.now(timezone.utc), "kind": "switch", "mode": "on" if on else "off", "did": "switched on" if on else "switched off"})
+    html = templates.env.from_string('{% import "_parts.html" as parts %}{{ parts.home_row(pw, gar) }}').render(pw=energy_now(), gar=garage_view(), root=request.scope.get("root_path", ""))
+    return JSONResponse({"ok": True, "html": html.strip()}, headers={"Cache-Control": "no-store"})
+
+
 AIMS = (5, 8, 10, 13, 20)  # the choices for how long before the driveway the door is fully open
 
 
@@ -9024,7 +9575,7 @@ def load_garage_model() -> None:
 
 def garage_model_due(now: datetime) -> bool:
     """Learn when the opener is on and the model is missing or a day old."""
-    if garage_open_config()["mode"] == "off":
+    if garage_open_config()["mode"] == "off" or not garage_live():
         return False
     learned = (APPROACH.model or {}).get("learned")
     try:
@@ -9034,13 +9585,18 @@ def garage_model_due(now: datetime) -> bool:
 
 
 DRIVEWAY_URL = os.environ.get("DRIVEWAY_URL", "").rstrip("/")  # the driveway watcher (stack/driveway); empty: the timer alone
+STOP_WAIT_S = 150.0  # an arrival watch's margin past the predicted time when a learned stop lies between (10-27: 2 min held at one)
+WATCH_MAX_S = 300.0
+STREET_EARLY_S = 20.0  # a car on the street counts from this long before the door's start time: earlier is someone else's
 
 
 def garage_start(vin: str, name: str, now: datetime, how: str) -> None:
     """Start the door (or, watching, note that it would have): only a door that reads closed."""
     mode = garage_open_config()["mode"]
     entry = {"at": now, "kind": "start", "mode": mode, "how": how}
-    if mode != "open":
+    if not garage_on():
+        entry["did"] = "left alone: the garage is switched off"
+    elif mode != "open":
         entry["did"] = "would start the door"
     else:
         door = garagedoor.READER.read()
@@ -9072,11 +9628,12 @@ def garage_watch_camera(vin: str, name: str, go: datetime, seconds: float, post=
     so its frames are kept under its name, to tell the opener's car from others; it opens nothing."""
     post = post or httpx.post
     try:
-        answer = post(f"{DRIVEWAY_URL}/watch", json={"seconds": seconds, "car": name}, timeout=seconds + 45).json()
+        street_after = max(0.0, (go - datetime.now(timezone.utc)).total_seconds() - STREET_EARLY_S)
+        answer = post(f"{DRIVEWAY_URL}/watch", json={"seconds": seconds, "car": name, "street_after": street_after}, timeout=seconds + 45).json()
     except Exception as err:  # noqa: BLE001
         answer = {"seen": False, "why": f"{type(err).__name__}", "frames": 0}
     now = datetime.now(timezone.utc)
-    garage_note({"at": now, "kind": "camera", **({"car": name, "collect": True} if collect else {}), **{k: answer.get(k) for k in ("seen", "why", "frames", "fps", "parked")}})
+    garage_note({"at": now, "kind": "camera", **({"car": name, "collect": True} if collect else {}), **{k: answer.get(k) for k in ("seen", "why", "frames", "fps", "parked", "on")}})
     trip = APPROACH.trips.get(vin)
     if collect:
         if trip and trip.go == go:
@@ -9105,7 +9662,7 @@ def garage_collect(vin: str, name: str, car: dict, now: datetime) -> None:
     starting the door (to train the camera to tell the opener's car from other cars turning in)."""
     if not DRIVEWAY_URL:
         return
-    for kind, info in APPROACH.step(vin, {"lat": car.get("lat"), "lon": car.get("lon"), "mph": car.get("speed_mph")}, now):
+    for kind, info in APPROACH.step(vin, {"lat": car.get("lat"), "lon": car.get("lon"), "mph": car.get("speed_mph"), "driving": car.get("status") == "Driving"}, now):
         if kind == "schedule":
             seconds = (info["go"] - now).total_seconds() + APPROACH.door + APPROACH.aim + 60
             threading.Thread(target=garage_watch_camera, args=(vin, name, info["go"], min(240.0, seconds)), kwargs={"collect": True}, daemon=True).start()
@@ -9116,8 +9673,8 @@ def garage_arrival(car: dict, now: datetime | None = None) -> None:
     the timer that starts the door, and, watching, time the owner's own opening against it."""
     cfg = cached("garage_open_cfg", 30, garage_open_config)
     vin = car.get("vin")
-    if cfg["mode"] == "off" or car.get("live") is False or not vin or not APPROACH.model:
-        return
+    if cfg["mode"] == "off" or car.get("live") is False or reach.stale_drive(car) or not vin or not APPROACH.model or not garage_live():
+        return  # a stale drive's position is the cloud's last one repeated, not the car arriving
     now = now or datetime.now(timezone.utc)
     name = car.get("name") or "The car"
     APPROACH.aim, APPROACH.camera = float(cfg["aim"]), bool(DRIVEWAY_URL)
@@ -9126,7 +9683,7 @@ def garage_arrival(car: dict, now: datetime | None = None) -> None:
         return
     if cfg["mode"] == "open" and not garagedoor.configured():
         return
-    for kind, info in APPROACH.step(vin, {"lat": car.get("lat"), "lon": car.get("lon"), "mph": car.get("speed_mph")}, now):
+    for kind, info in APPROACH.step(vin, {"lat": car.get("lat"), "lon": car.get("lon"), "mph": car.get("speed_mph"), "driving": car.get("status") == "Driving"}, now):
         if kind == "schedule":
             GARAGE_RECENT[vin] = {"go": info["go"]}  # kept past the arrival, for the owner's own opening to be timed against
             old = GARAGE_TIMERS.pop(vin, None)
@@ -9134,8 +9691,9 @@ def garage_arrival(car: dict, now: datetime | None = None) -> None:
                 old.cancel()
             if DRIVEWAY_URL:
                 # from now until well after the car should be in: the camera picks the moment
-                seconds = (info["go"] - now).total_seconds() + APPROACH.door + APPROACH.aim + 60
-                threading.Thread(target=garage_watch_camera, args=(vin, name, info["go"], min(240.0, seconds)), daemon=True).start()
+                # a learned stop on the way (a light, the neighbourhood's entrance) can hold the car a couple of minutes
+                seconds = (info["go"] - now).total_seconds() + APPROACH.door + APPROACH.aim + (STOP_WAIT_S if info.get("stop_m") else 60)
+                threading.Thread(target=garage_watch_camera, args=(vin, name, info["go"], min(WATCH_MAX_S, seconds)), daemon=True).start()
             else:
                 garage_fire_later(vin, name, info["go"])
         elif kind == "cancel":
@@ -9163,6 +9721,7 @@ def garage_arrival(car: dict, now: datetime | None = None) -> None:
 GARAGE_CLOSE_KEY = "garage_close"  # {"mode": off, watch or close}: close the door behind the opener's car as it leaves
 DEPARTURE = garageclose.Departure()
 DEPARTURE_TICK_S = 5
+DEPARTURE_NOW = threading.Event()  # the camera saw the car out: the next tick now, not up to a tick later
 
 
 def garage_close_mode() -> str:
@@ -9171,6 +9730,57 @@ def garage_close_mode() -> str:
     except (ValueError, AttributeError):
         mode = None
     return mode if mode in garageclose.MODES else "off"
+
+
+GARAGE_ON_KEY = "garage_on"  # {"on": bool}: the main switch over the garage's watching, opening and closing; on until turned off
+
+
+def garage_on() -> bool:
+    try:
+        return json.loads(state_get(GARAGE_ON_KEY) or "{}").get("on", True) is not False
+    except (ValueError, AttributeError):
+        return True
+
+
+def garage_live() -> bool:
+    return cached("garage_on", 30, garage_on)
+
+
+DOOR_HELD_S = 60  # Now draws the door from the last read this fresh; older, the row's own refresh reads it
+
+
+def garage_view(read: bool = False, owner: bool = True) -> dict | None:
+    """The garage on Now, beside the Powerwall: the door and the main switch. None when there is no
+    door and nothing set. A page load draws the door from the last read, so it never waits on Home
+    Assistant; the row's refresh (`read`) asks."""
+    try:  # the ticks' own 30 s copies: a page load adds no read
+        arrival, close = cached("garage_open_cfg", 30, garage_open_config)["mode"], cached("garage_close_mode", 30, garage_close_mode)
+        on = garage_live()
+    except Exception as err:  # noqa: BLE001 - no database: Now draws without the garage
+        LOG.warning("garage row: %s", type(err).__name__)
+        return None
+    linked = garagedoor.configured()
+    if not linked and arrival == "off" and close == "off":
+        return None
+    r = garagedoor.READER
+    door = r.read() if read and linked else (r.door if r.clock() - r.at < DOOR_HELD_S else None)
+    since = None
+    if door and door.get("since"):
+        at = door["since"].astimezone(TZ)
+        since = clockfmt.tied(clockfmt.text(at, "%-I:%M %p" if at.date() == datetime.now(TZ).date() else "%b %-d"))
+    does = [w for w, m in (("opens", arrival == "open"), ("closes", close == "close")) if m]
+    watches = arrival == "watch" or close == "watch"
+    return {
+        "on": on,
+        "linked": linked,
+        "state": door["state"] if door else None,
+        "open": bool(door and door["open"]),
+        "since": since,
+        "does": " and ".join(does) if does else ("watches" if watches else "off"),
+        "raises": arrival == "open" or close == "close",
+        # the main switch, for an owner, once Settings › Alerts has the garage watch, open or close
+        "switch": owner and bool(does or watches),
+    }
 
 
 def garage_now() -> datetime:
@@ -9183,9 +9793,11 @@ def garage_departure_tick(now: datetime | None = None) -> None:
     watching for the car going out; seen, the door closes only once the car says it moved (garageclose)."""
     mode = cached("garage_close_mode", 30, garage_close_mode)
     vin = cached("garage_open_cfg", 30, garage_open_config)["vin"]
-    if mode == "off" or not DRIVEWAY_URL or not vin or not garagedoor.configured():
+    if mode == "off" or not DRIVEWAY_URL or not vin or not garagedoor.configured() or not garage_live():
         return
     car = shared_states(None, False).get(vin) or {}
+    if reach.stale_drive(car):
+        car = {}  # out of reach: its stale Driving is not the car pulling out
     door = garagedoor.READER.read()
     now = now or garage_now()
     name = car.get("name") or "The car"
@@ -9220,6 +9832,7 @@ def garage_watch_leaving(vin: str, name: str, seconds: float, post=None) -> None
             garage_note({"at": now, "kind": "camera", "out": True, **{k: answer.get(k) for k in ("seen", "why", "frames", "fps", "parked", "people")}})
             if answer.get("seen") and answer.get("leaving") and DEPARTURE.door != "closed":
                 DEPARTURE.sighted(now, int(answer.get("people") or 0))
+                DEPARTURE_NOW.set()
             seconds = DEPARTURE.wanted(now) if answer.get("why") == "timed out" else 0.0
             if not seconds:
                 return
@@ -9231,7 +9844,9 @@ def garage_close(vin: str, name: str, people: int, now: datetime) -> str:
     """Close the door behind the car: only a door that reads open, and never with someone in the
     driveway (someone on the sidewalk does not stop it; the door's own sensor is the rest)."""
     mode = garage_close_mode()
-    if people:
+    if not garage_on():
+        did = "left alone: the garage is switched off"
+    elif people:
         did = f"left open: {people} {'person' if people == 1 else 'people'} in the driveway"
         if mode == "close":
             recorder.notify(f"{name[:1].upper()}{name[1:]} left; the garage stays open: someone is in the driveway.", "garage_open", vin)
@@ -9255,13 +9870,31 @@ def garage_close(vin: str, name: str, people: int, now: datetime) -> str:
     return did
 
 
+def garage_others_tick(now: datetime | None = None) -> None:
+    """The house's other cars, every few seconds from the readings the site already has (the
+    Tesla stream, a feed): each one coming home is watched for its frames (garage_collect). The
+    opener's car comes through the recorder (garage_arrival)."""
+    cfg = cached("garage_open_cfg", 30, garage_open_config)
+    if cfg["mode"] == "off" or not DRIVEWAY_URL or not APPROACH.model or not garage_live():
+        return
+    now = now or garage_now()
+    for vin, car in shared_states(None, False).items():
+        if vin != cfg["vin"] and not car.get("offline") and car.get("lat") is not None:
+            garage_collect(vin, car.get("name") or "A car", car, now)
+
+
 def garage_departure_loop() -> None:
     while True:
+        DEPARTURE_NOW.clear()  # before the tick: a sighting during it wakes the next one at once
         try:
             garage_departure_tick()
         except Exception as err:  # noqa: BLE001 - one bad read is not the loop's end
             LOG.warning("garage departure: %s", type(err).__name__)
-        time.sleep(DEPARTURE_TICK_S)
+        try:
+            garage_others_tick()
+        except Exception as err:  # noqa: BLE001
+            LOG.warning("garage others: %s", type(err).__name__)
+        DEPARTURE_NOW.wait(DEPARTURE_TICK_S)
 
 
 def load_esri_key() -> None:
@@ -9329,6 +9962,14 @@ async def settings_save(request: Request, section: str):
     form = await request.form()
     was = current_settings()
     values = settingsform.parse(section, form, was, channels=recorder.channels(), kinds=notify_mod.KINDS)
+    if section == "commands":
+        raised = settingsform.raises_power(values, was)
+        if raised and not may_change_confirming(request):
+            return confirm_first(request, "commands", "Confirm it's you, then save again.")
+        if settingsform.access_on(values, was) and not recorder.channels():
+            r = settings_render(request, "commands", confirm_ask="Add an alert channel in Settings › Alerts first: every unlock and opening is told there.")
+            r.status_code = 409
+            return r
     repricing = section == "money" and settingsform.reprices(values, was)
     refused = None
     with db() as conn:
@@ -9418,6 +10059,8 @@ def settings_changed() -> None:
     _cache.pop("home_rates", None)
     _cache.pop("vehicle_energy", None)
     _cache.pop("today", None)  # the drive and charge thresholds decide what counts today
+    for k in [k for k in _cache if k.startswith("live-cards:")]:
+        _cache.pop(k, None)  # drawn HTML holds the strip's hour labels, set by the clock: a stream would send the old ones for ten seconds
     apply_settings(current_settings())
 
 
@@ -9904,7 +10547,7 @@ def charging_page(request: Request, days: int | None = None):
         if cell:
             cell["note"] = saving_note(cell, word)  # why a Saved cell is partial or blank
     summary["saved_ready"] = eff is not None
-    return page(request, "charging.html", car=car, s=summary, days=days, active="charging", rate_plan=cost.current_plan())
+    return page(request, "charging.html", car=car, s=summary, days=days, active="charging", rate_plan=cost.current_plan(), ea=ea_plans(vin))
 
 
 def summarize_sql(vin: str | None, by: str, since: datetime | None, until: datetime | None = None, span: timedelta | None = None) -> list[dict]:
@@ -9924,7 +10567,7 @@ def summarize_sql(vin: str | None, by: str, since: datetime | None, until: datet
             f"""
             SELECT date_trunc('{trunc}', t.start_date AT TIME ZONE %s)::date AS period, COUNT(*) AS drives,
                    COALESCE(SUM(t.destination_odometer - t.start_odometer), 0) AS miles,
-                   COALESCE(SUM(EXTRACT(EPOCH FROM (t.destination_date - t.start_date))) / 3600, 0) AS drive_h,
+                   COALESCE(SUM(CASE WHEN gd.window_only THEN 0 ELSE EXTRACT(EPOCH FROM (t.destination_date - t.start_date)) END) / 3600, 0) AS drive_h,
                    COALESCE(SUM(CASE WHEN NULLIF(f.range_start, -999) IS NOT NULL AND NULLIF(f.range_end, -999) IS NOT NULL AND f.range_start >= f.range_end AND COALESCE(vy.kwh_per_rated_mi, vf.kwh_per_rated_mi) IS NOT NULL
                                      THEN (f.range_start - f.range_end) * COALESCE(vy.kwh_per_rated_mi, vf.kwh_per_rated_mi)
                                      WHEN f.level_start >= f.level_end AND dr.capacity IS NOT NULL THEN dr.capacity * (f.level_start - f.level_end) / 100 END), 0) AS used_kwh,
@@ -9942,6 +10585,7 @@ def summarize_sql(vin: str | None, by: str, since: datetime | None, until: datet
             LEFT JOIN cc_vehicle_year_facts vy ON vy.vin = t.vin AND vy.year = EXTRACT(year FROM t.start_date AT TIME ZONE %s)::int
             LEFT JOIN drives dr ON dr.vin = t.vin
             LEFT JOIN cc_trip_extras x ON x.vin = t.vin AND x.start_date = t.start_date
+            LEFT JOIN cc_gap_drives gd ON gd.trip_id = t.id
             WHERE t.destination_date IS NOT NULL{vw}{where_since}{moved_sql()} GROUP BY 1""",
             [TZ.key, TZ.key, *vargs, *args_since],
         ).fetchall()
@@ -10515,6 +11159,20 @@ def drives_csv(vin: str | None = None):
     )
 
 
+@site.get("/logbook.csv")
+def logbook_csv(vin: str | None = None, from_: str | None = Query(None, alias="from"), to: str | None = None, tag: list[str] = Query([]), addresses: str | None = None, totals: str | None = None):
+    """The mileage logbook: one row per finished drive in the dates, car and tags asked for, oldest first. Street addresses only with `addresses=on`; per-tag totals with `totals=on`."""
+    d0, d1 = parse_day(from_), parse_day(to)
+    start = datetime(d0.year, d0.month, d0.day, tzinfo=TZ) if d0 else None
+    end = (datetime(d1.year, d1.month, d1.day, tzinfo=TZ) + timedelta(days=1)) if d1 else None
+    rows = logbook.select(drives(api_vin(vin), None, start, end), tag)
+    for d in rows:  # unnamed ends read as their cached street and town, from memory
+        for pre, lat, lon in (("start", d["start_position_latitude"], d["start_position_longitude"]), ("dest", d["destination_position_latitude"], d["destination_position_longitude"])):
+            d[f"{pre}_street"], d[f"{pre}_town"] = where_words(lat, lon)
+    text = logbook.build(rows, units_mod.ACTIVE, TZ, addresses=addresses == "on", with_totals=totals == "on")
+    return PlainTextResponse(text, media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="carcommand-logbook.csv"'})
+
+
 @site.get("/charges.csv")
 def charges_csv(vin: str | None = None):
     return _csv(
@@ -10825,10 +11483,13 @@ def api_now(request: Request, vin: str | None = None):
 
 
 @site.get("/energy/row", response_class=HTMLResponse)
-def energy_row():
-    """The Powerwall row as Now draws it, for the page to redraw itself: from the newest reading
-    in memory, empty when there is none fresh."""
-    html = templates.env.from_string('{% import "_parts.html" as parts %}{{ parts.pw_row(pw) }}').render(pw=energy_now())
+def energy_row(request: Request):
+    """The Powerwall and the garage as Now draws them, for the page to redraw itself: the newest
+    Powerwall reading in memory, and the door read now (Home Assistant's answer is kept READ_S);
+    empty when neither has anything to say."""
+    html = templates.env.from_string('{% import "_parts.html" as parts %}{{ parts.home_row(pw, gar) }}').render(
+        pw=energy_now(), gar=garage_view(read=True, owner=owner(request)), root=request.scope.get("root_path", "")
+    )
     return HTMLResponse(html.strip(), headers={"Cache-Control": "no-store"})
 
 
@@ -11296,6 +11957,15 @@ def billed_vins(conn) -> list[str]:
 
 
 billed_worker = billed.BilledWorker(connect=db, access=lambda: tesla_access(), fleet=lambda: tesla_app(), vins=billed_vins, clear=clear_prices)
+
+
+def lucid_read(car: dict) -> tuple[list[dict], str | None, date | None]:
+    """One car's charge records and Electrify America plan off its tree: what lucidrecords.RecordsWorker keeps."""
+    got = lucidfields.read(car, leaf)
+    return lucidfields.records_of(car, leaf), got["ea_plan"], got["ea_plan_ends"]
+
+
+lucid_worker = lucidrecords.RecordsWorker(connect=db, tree=lambda: (_cache.get("garage_tree") or (None, {}))[1], read=lucid_read, clear=clear_prices, today=lambda: datetime.now(TZ).date())
 tesla_refresher = teslapage.Refresher(lambda: tesla_facts() if tesla_app() else None)
 identity_worker = identity.Worker(
     connect=db,
@@ -11304,6 +11974,7 @@ identity_worker = identity.Worker(
     streamed=lambda: dict(tesla_stream_worker.identity),
     after=lambda: _cache.pop("identity", None),
     vins=lambda: [v["vin"] for v in all_vehicles()],
+    schedules=lambda vin, body: keep_schedules(vin, body),
 )
 rates_worker = averages_mod.RatesWorker(connect=db, fetch=averages_mod.http_get, url=RATES_URL, after_change=lambda conn: reopen_average_prices(conn, TZ), missing=averages_mod.missing_regions)
 
@@ -11356,6 +12027,7 @@ def apply_schema(conn) -> None:
         ("state", STATE_DDL),
         ("rate averages", averages_mod.DDL),
         ("tesla bills", billed.DDL),
+        ("lucid records, plan, modes", lucidrecords.DDL),
         ("tesla stream", tesla_live.DDL),
         ("tesla navigation", tesla_nav.DDL),
         ("house energy", energy.DDL),
@@ -11457,6 +12129,17 @@ def energy_have_day(day) -> bool:
     return bool(row) and int(row["n"] or 0) >= energy_cloud.DAY_ROWS
 
 
+def relay_url() -> str:
+    """The home network's address: Settings › Powerwall's, else POWERWALL_RELAY_URL. Kept a minute: the worker asks every pass."""
+    return cached("relay_url", 60, lambda: (energy_config().get("relay") or {}).get("url") or "") or os.environ.get("POWERWALL_RELAY_URL", "").strip()
+
+
+relay_worker = energy_relay.RelayWorker(
+    url=relay_url,
+    live=ENERGY_LIVE,
+    write=lambda rows: energy_write(rows, "relay"),
+)
+mqtt_worker = mqtt_pub.Publisher.from_env(lambda: shared_states(None, False), units=lambda: units_mod.ACTIVE)  # idle unless MQTT_URL is set
 cloud_worker = energy_cloud.CloudWorker(
     fleet=lambda: tesla_app(),
     access=lambda: tesla_access(),
@@ -11467,6 +12150,7 @@ cloud_worker = energy_cloud.CloudWorker(
     write=lambda rows: energy_write(rows, "cloud"),
     have_day=energy_have_day,
     live=ENERGY_LIVE,
+    local=relay_worker.fresh,
 )
 
 
@@ -11530,6 +12214,7 @@ def energy_context() -> dict:
         "cloud": energypage.cloud_view(cfg, scope, cloud_worker.status, energy_cloud.progress(state_get), datetime.now(TZ).date() - timedelta(days=1)),
         "reading": energypage.row(live),
         "reading_age": energypage.ago(live["age_s"]) if live else "",
+        "relay": energypage.relay_view((cfg.get("relay") or {}).get("url") or "", os.environ.get("POWERWALL_RELAY_URL", "").strip(), relay_worker.status, now),
     }
 
 
@@ -11633,6 +12318,27 @@ async def energy_cloud_on(request: Request):
     if why:
         return energy_reply(request, back, 400, anchor="pw", energy_error=why)
     return energy_reply(request, back, saved="cloud", anchor="pw")
+
+
+@site.post("/settings/energy/relay")
+async def energy_relay_set(request: Request):
+    """The home network's address: checked (it must answer as a Powerwall relay does), then kept; blank goes back to .env's."""
+    typed = str((await request.form()).get("url") or "").strip()
+    url = energy_relay.address(typed) if typed else ""
+    if url is None:
+        return settings_render(request, "energy", energy_error="That is not an address. Use one like http://192.168.1.20:8675.")
+    if url:
+        try:
+            agg = await asyncio.to_thread(energy_relay.http_get(url), "/aggregates")
+        except Exception as err:  # noqa: BLE001 - said on the page
+            return settings_render(request, "energy", energy_error=f"{url} did not answer ({type(err).__name__}). Check the relay is running on that address.")
+        if energy_relay.reading_from(agg if isinstance(agg, dict) else {}, {}) is None:
+            return settings_render(request, "energy", energy_error=f"{url} answered, but not with Powerwall readings.")
+    cfg = energy_config()
+    cfg["relay"] = {"url": url}
+    energy_save(cfg)
+    _cache.pop("relay_url", None)
+    return to_site(request, f"/settings/energy?saved={'relay' if url else 'relay-off'}")
 
 
 @site.get("/settings/energy/progress")
@@ -11849,6 +12555,7 @@ async def lifespan(_app: FastAPI):
     health_worker.start()
     rates_worker.start()
     billed_worker.start()
+    lucid_worker.start()
     identity_worker.start()
     tesla_refresher.start()
     start_fleet_meter()
@@ -11863,6 +12570,8 @@ async def lifespan(_app: FastAPI):
     except Exception as err:  # noqa: BLE001 - no table or key yet: the house is simply not read
         LOG.warning("energy: %s", err)
     cloud_worker.start()
+    relay_worker.start()
+    mqtt_worker.start()
 
     async def geocode_loop():
         # The map's cells and finished bodies, kept warm from here on (warm_driveprints)
@@ -11982,6 +12691,8 @@ async def lifespan(_app: FastAPI):
     FLEET_STOP.set()
     await asyncio.to_thread(write_fleet_meter)
     cloud_worker.stop()
+    relay_worker.stop()
+    mqtt_worker.stop()
 
 
 # No docs of its own: the outer app has no routes to describe, and its /docs answered before sign-in.

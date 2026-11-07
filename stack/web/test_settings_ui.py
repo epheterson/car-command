@@ -432,7 +432,7 @@ def test_the_pack_says_where_it_came_from_in_the_same_words_everywhere():
     car = {"vin": "V3", "name": "Charlie", "garage": False}
     block = {"car": {"vin": "V3", "name": "Charlie", "capacity_kwh": 117.1}, "chart": lv, "full": None, "tires": {}, "firsts": {}, "points": 0}
     battery = _render("battery.html", car=car, blocks=[block], packs=packs, u={"dist": "mi", "temp": "°F"})
-    assert "reported by Lucid" in settings and "usable, reported by Lucid" in battery and "assumed" not in battery
+    assert "Reported by Lucid" in settings and "usable, reported by Lucid" in battery and "assumed" not in battery
     unset = _render("battery.html", car=car, blocks=[block], packs={}, u={"dist": "mi", "temp": "°F"})
     assert "117.1<small>kWh</small>" not in unset, "no pack the settings page doesn't know"
     src = (HERE / "app.py").read_text()
@@ -506,10 +506,13 @@ def test_data_checks_are_rows_that_fit_a_phone():
 def test_units_and_look_are_segmented_rows_and_save_unchanged(st):
     html = _render("settings_look.html", st=st, section="look", label="Units and look", zone_groups=zonelist.with_current("Europe/Paris"), tz_key="Europe/Paris", tz_default="America/Chicago")
     assert_plain(html)
-    assert html.count('class="segmented"') == 5 and _main(html).count("<select") == 1 and html.count('class="savebar"') == 1
+    assert html.count('class="segmented"') == 5 and _main(html).count("<select") == 5 and html.count('class="savebar"') == 1
     got = parse("look", _post_of(html), dict(WAS, **st))
-    want = {"currency": "$", "units": "imperial", "week_start": "monday", "clock": "12", "date_order": "mdy", "theme": "system", "timezone": None}
+    want = {"currency": "$", "units": "imperial", "phone_tabs": None, "week_start": "monday", "clock": "12", "date_order": "mdy", "theme": "system", "timezone": None}
     assert got == {**want, **st}, "an unchanged save stores what was there, the currency symbol included"
+    bar = html[html.index("Phone tab bar") :]
+    assert [m for m in re.findall(r'name="phone_tab_(\d)"', bar)] == ["1", "2", "3", "4"] and bar.count('<option value="" ') + bar.count('<option value="">') == 4
+    assert [re.search(r'<option value="(\w+)" selected', chunk).group(1) for chunk in bar.split("<select")[1:]] == ["now", "timeline", "stats", "map"], "the bar as it is now, in order"
 
 
 def test_satellite_waits_for_its_key_and_says_what_it_sends():

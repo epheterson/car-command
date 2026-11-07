@@ -10,6 +10,7 @@ import pytest
 
 import billed
 import facts
+import lucidrecords
 
 pgserver = pytest.importorskip("pgserver")
 psycopg = pytest.importorskip("psycopg")
@@ -19,7 +20,8 @@ TZ = ZoneInfo("America/Chicago")
 SCHEMA = """
 CREATE TABLE charging_sessions (id INTEGER PRIMARY KEY, vin VARCHAR, session_start_date TIMESTAMPTZ, session_end_date TIMESTAMPTZ,
     session_position_latitude DOUBLE PRECISION, session_position_longitude DOUBLE PRECISION, real_charged DOUBLE PRECISION,
-    charging_type VARCHAR, real_cost DOUBLE PRECISION);
+    charging_type VARCHAR, real_cost DOUBLE PRECISION, plug_disconnected_date TIMESTAMPTZ);
+CREATE TABLE trips (id INTEGER PRIMARY KEY, vin VARCHAR, start_date TIMESTAMPTZ);
 CREATE TABLE charging_powers (vin VARCHAR, first_date TIMESTAMPTZ, last_date TIMESTAMPTZ, power DOUBLE PRECISION);
 CREATE TABLE cc_charging_electrics (vin VARCHAR, first_date TIMESTAMPTZ, last_date TIMESTAMPTZ, volts DOUBLE PRECISION, amps DOUBLE PRECISION);
 """
@@ -32,6 +34,7 @@ def conn(tmp_path):
         c.execute(SCHEMA)
         c.execute(facts.DDL[facts.DDL.index("CREATE TABLE IF NOT EXISTS cc_charge_facts") :])
         c.execute(billed.DDL)
+        c.execute(lucidrecords.DDL)
         yield c
     srv.cleanup()
 
@@ -149,3 +152,31 @@ def test_a_session_with_an_exports_meter_is_untouched(conn):
     conn.execute("INSERT INTO charging_powers VALUES ('T1', %s, %s, 30.0)", (start, start + timedelta(hours=1)))
     assert fill(conn, "T1") == 1 and kwh_and_cost(conn, 7) == (40.0, 20.0)
     assert fill(conn, "T1") == 0
+
+
+def test_idle_is_unknown_until_the_car_leaves_and_is_then_priced_without_a_bill(conn):
+    """A rule-priced fast charge whose car is still there has unknown idle; the next drive's start (or the
+    plug coming out) settles it on a later tick, and the cost and the fee columns move together."""
+    start = charge(conn, 20, "L1", kw=60.0)  # 60 kW for the hour: 60 kWh
+    close(conn, 20, start)
+    rules = {"sc": {}, "dc": {"session": 2.0, "idle": 0.5, "grace": 10.0}}
+
+    def run():
+        return facts.fill_charge_facts(conn, "L1", TZ, lambda lat, lon: False, dc_price=0.5, fee_rules=rules)
+
+    def row():
+        return conn.execute("SELECT cost, session_fee, idle_fee, idle_min FROM cc_charge_facts WHERE session_id = 20").fetchone()
+
+    assert run() == 1 and row() == (pytest.approx(32.0), 2.0, None, None), "60 kWh at 0.50 and the session fee; idle unknown, not zero"
+    conn.execute("INSERT INTO trips VALUES (1, 'L1', %s)", (start + timedelta(hours=1, minutes=40),))
+    assert run() == 1, "an ended charge with unknown idle is looked at again"
+    assert row() == (pytest.approx(32.0 + 15.0), 2.0, pytest.approx(15.0), pytest.approx(40.0)), "40 idle minutes less 10 free at 0.50"
+    assert run() == 0, "and then rests"
+
+
+def test_a_plug_coming_out_ends_the_idle_before_any_drive(conn):
+    start = charge(conn, 21, "L1", kw=60.0)
+    close(conn, 21, start)
+    conn.execute("UPDATE charging_sessions SET plug_disconnected_date = %s WHERE id = 21", (start + timedelta(hours=1, minutes=20),))
+    facts.fill_charge_facts(conn, "L1", TZ, lambda lat, lon: False, dc_price=0.5, fee_rules={"dc": {"session": None, "idle": 0.5, "grace": 5.0}})
+    assert conn.execute("SELECT idle_min, idle_fee FROM cc_charge_facts WHERE session_id = 21").fetchone() == (pytest.approx(20.0), pytest.approx(7.5))

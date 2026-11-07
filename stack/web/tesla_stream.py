@@ -42,6 +42,7 @@ ENUM_PREFIXES = (
     "DefrostModeState",
     "ChargePortLatch",
     "CabinOverheatProtectionModeState",
+    "ScheduledChargingMode",
 )
 VALUE_KEYS = {
     "stringValue": "string_value",
@@ -63,6 +64,8 @@ VALUE_KEYS = {
     "defrostModeValue": "defrost_mode_value",
     "chargePortLatchValue": "charge_port_latch_value",
     "cabinOverheatProtectionModeValue": "cabin_overheat_protection_mode_value",
+    "scheduledChargingModeValue": "scheduled_charging_mode_value",
+    "timeValue": "time_value",
 }
 ENUMS = (
     "shiftStateValue",
@@ -76,6 +79,7 @@ ENUMS = (
     "defrostModeValue",
     "chargePortLatchValue",
     "cabinOverheatProtectionModeValue",
+    "scheduledChargingModeValue",
 )
 # The Doors message's six bools (protojson leaves out every false one), by the name that survives case and underscores.
 DOORS = {n.lower(): n for n in ("DriverFront", "DriverRear", "PassengerFront", "PassengerRear", "TrunkFront", "TrunkRear")}
@@ -117,6 +121,11 @@ def value_of(value: dict):
                 if name.startswith(p):
                     return name[len(p) :]
             return name
+        if camel == "timeValue":  # a time of day: minutes after midnight, as the commands take it
+            try:
+                return int(v.get("hour") or 0) * 60 + int(v.get("minute") or 0)
+            except (AttributeError, TypeError, ValueError):
+                return None
         if camel == "longValue":
             return int(v)
         if camel == "stringValue":

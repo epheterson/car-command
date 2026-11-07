@@ -65,7 +65,7 @@
   </div>
   {% for it in done %}{% for f in it.files or [] %}<form id="unfile-{{ f.id }}" method="post" action="{{ root }}/service/files/{{ f.id }}/delete" hidden>{{ hidden_vin() }}</form>{% endfor %}{% endfor %}
 </section>
-{% for b in tire_blocks %}{% if b.tire_history or b.tires %}<section class="group tires" id="tires{{ '-' ~ b.vin if car.garage }}">
+{% for b in tire_blocks %}{% if b.tire_history or b.tires or b.defective %}<section class="group tires" id="tires{{ '-' ~ b.vin if car.garage }}">
   {% if car.garage %}<h3 class="sub-h">{{ chip(b.vin) }}{{ b.name }}</h3>{% endif %}{% include "_tires.html" %}
 </section>{% endif %}{% endfor %}
 <section class="group">

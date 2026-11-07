@@ -208,6 +208,15 @@ def test_with_the_camera_the_door_starts_when_it_sees_the_car_and_never_on_the_g
     assert start["how"] == "camera" and next(e for e in bare.garage_log() if e["kind"] == "camera")["seen"] is True
 
 
+def test_the_camera_counts_the_street_only_near_the_doors_start_and_logs_where_it_saw_the_car(bare, ha, monkeypatch):  # noqa: F811
+    opened, _ = setup_opener(bare, monkeypatch)
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "open", "vin": "V1", "aim": 13}))
+    calls = camera_drive(bare, monkeypatch, {"seen": True, "on": "street", "frames": 40, "fps": 4.8, "parked": 4})
+    ask = calls[0][1]
+    assert 0 <= ask["street_after"] < ask["seconds"] - bare.APPROACH.door - bare.APPROACH.aim - 60 + 1  # before the start time, never after
+    assert opened == [1] and next(e for e in bare.garage_log() if e["kind"] == "camera")["on"] == "street"
+
+
 def test_the_camera_seeing_nothing_or_unable_to_look_opens_nothing(bare, ha, monkeypatch):  # noqa: F811
     opened, _ = setup_opener(bare, monkeypatch)
     bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "open", "vin": "V1", "aim": 13}))
@@ -238,6 +247,35 @@ def test_another_car_coming_home_is_watched_for_its_frames_and_never_opens_the_d
     assert len(calls) == 1 and calls[0][1]["car"] == "Alpha" and not opened and not sent
     log = bare.garage_log()
     assert [e["kind"] for e in log] == ["camera"] and log[0]["collect"] and log[0]["seen"]
+
+
+def test_a_streamed_car_coming_home_is_watched_from_the_departure_loop(bare, ha, monkeypatch):  # noqa: F811
+    """The Teslas never pass the recorder: the loop that already reads every car feeds them in."""
+    from datetime import timedelta
+
+    import test_garageopen as tg
+
+    opened, sent = setup_opener(bare, monkeypatch)
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "open", "vin": "V1", "aim": 13}))
+    calls = []
+    monkeypatch.setattr(bare, "DRIVEWAY_URL", "http://driveway:8090")
+    monkeypatch.setattr(bare, "garage_live", lambda: True)
+    monkeypatch.setattr(bare, "garage_watch_camera", lambda vin, name, go, seconds, collect=False: calls.append((vin, name, collect)))
+    monkeypatch.setattr(bare.threading, "Thread", lambda target, args=(), kwargs=None, daemon=None: type("T", (), {"start": lambda self: target(*args, **(kwargs or {}))})())
+    track, fx = tg.dense(), tg.fixes(tg.dense())
+    t, i = track[0]["t"], 0
+    while t <= track[-1]["t"]:
+        while i + 1 < len(fx) and fx[i + 1]["t"] <= t:
+            i += 1
+        f = fx[i]
+        cars = {
+            "V1": {"vin": "V1", "name": "Alpha", "lat": 0.0, "lon": 0.0, "live": True},
+            "V2": {"vin": "V2", "name": "Bravo", "lat": f["lat"], "lon": f["lon"], "speed_mph": f["mph"], "status": "Driving", "live": False},
+        }
+        monkeypatch.setattr(bare, "shared_states", lambda vin, hide, c=cars: c)
+        bare.garage_others_tick(t)
+        t += timedelta(seconds=5)
+    assert calls == [("V2", "Bravo", True)] and not opened and not sent, "the other car once, kept under its name; the opener's car is the recorder's"
 
 
 def depart(bare, monkeypatch, answer, door_after="open", status=("Sleeping", "Ready"), moves=True):  # noqa: F811
@@ -344,3 +382,100 @@ def test_a_vehicle_out_while_the_car_stays_parked_still_closes_and_says_a_car(ba
     monkeypatch.setattr(bare.recorder, "notify", lambda text, *a, **k: sent.append(text))
     closed, _ = depart(bare, monkeypatch, {"seen": True, "leaving": True, "people": 0}, moves=False, status=("Sleeping", "Sleeping"))
     assert closed and any(t == "Closing the garage behind a car." for t in sent), sent
+
+
+def test_a_sighting_wakes_the_departure_tick_at_once(bare, monkeypatch):  # noqa: F811
+    import garageclose
+
+    monkeypatch.setattr(bare, "DEPARTURE", garageclose.Departure(door="open"))
+    monkeypatch.setattr(bare, "DRIVEWAY_URL", "http://driveway:8090")
+    monkeypatch.setattr(bare, "garage_note", lambda entry: None)
+    bare.DEPARTURE_NOW.clear()
+    answer = {"seen": False, "why": "stopped"}
+    bare.garage_watch_leaving("V1", "Alpha", 60, post=lambda url, json=None, timeout=None: type("A", (), {"json": lambda self: answer})())
+    assert not bare.DEPARTURE_NOW.is_set()  # nothing seen: the tick keeps its pace
+    answer = {"seen": True, "leaving": True, "people": 0}
+    bare.garage_watch_leaving("V1", "Alpha", 60, post=lambda url, json=None, timeout=None: type("A", (), {"json": lambda self: answer})())
+    assert bare.DEPARTURE_NOW.is_set() and bare.DEPARTURE.pending  # the close is decided now, not up to five seconds on
+    bare.DEPARTURE_NOW.clear()
+
+
+def switch(bare, client, on):  # noqa: F811
+    return client.post("/garage/switch", data=form(bare, {"on": "1" if on else "0"}))
+
+
+def test_the_main_switch_off_stops_opening_and_closing_and_on_puts_them_back(bare, ha, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(bare, "_cache", {})
+    opened, _ = setup_opener(bare, monkeypatch)
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "open", "vin": "V1"}))
+    r = switch(bare, client, False)
+    assert r.status_code == 200 and r.json()["ok"] and not bare.garage_on() and bare.garage_log()[0]["did"] == "switched off"
+    assert 'aria-label="Garage"' in r.json()["html"] and "data-garage-on" in r.json()["html"] and " checked" not in r.json()["html"]
+    drive_home(bare, monkeypatch)
+    assert not opened and not any(e["kind"] == "start" for e in bare.garage_log())
+    assert not bare.garage_model_due(bare.garage_now())
+    bare.garage_start("V1", "Alpha", bare.garage_now(), "timer")  # a timer set before it went off
+    assert not opened and bare.garage_log()[0]["did"] == "left alone: the garage is switched off"
+    assert switch(bare, client, True).json()["ok"] and bare.garage_on()
+    drive_home(bare, monkeypatch)
+    assert opened == [1]
+
+
+def test_the_main_switch_off_closes_nothing(bare, ha, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(bare, "_cache", {})
+    setup_opener(bare, monkeypatch)
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "open", "vin": "V1"}))
+    bare.state_set(bare.GARAGE_CLOSE_KEY, json.dumps({"mode": "close"}))
+    switch(bare, client, False)
+    closed, calls = depart(bare, monkeypatch, {"seen": True, "leaving": True, "people": 0})
+    assert not closed and not any(url.endswith("/watch") for url, _ in calls)
+    assert bare.garage_close("V1", "Alpha", 0, bare.garage_now()) == "left alone: the garage is switched off" and not closed
+
+
+def test_switching_on_a_garage_that_opens_is_confirmed_first_and_off_never_is(bare, ha, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(bare, "_cache", {})
+    setup_opener(bare, monkeypatch)
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "open", "vin": "V1"}))
+    monkeypatch.setattr(bare, "may_change_confirming", lambda request: False)
+    assert switch(bare, client, False).json()["ok"] and not bare.garage_on()
+    r = switch(bare, client, True)
+    assert r.status_code == 409 and r.json()["step_up"] and "passkey" in r.json()["said"] and not bare.garage_on()
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "watch", "vin": "V1"}))  # watching only opens nothing: no ask
+    assert switch(bare, client, True).json()["ok"] and bare.garage_on()
+
+
+def test_a_status_token_cannot_switch_the_garage(bare, ha, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(bare, "_cache", {})
+    setup_opener(bare, monkeypatch)
+    monkeypatch.setattr(bare, "owner", lambda request: False)
+    assert switch(bare, client, False).status_code == 403 and bare.garage_on()
+
+
+def test_now_shows_the_door_and_the_switch_beside_the_powerwall(bare, ha, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(bare, "_cache", {})
+    setup_opener(bare, monkeypatch)
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "open", "vin": "V1"}))
+    bare.state_set(bare.GARAGE_CLOSE_KEY, json.dumps({"mode": "close"}))
+    monkeypatch.setattr(bare, "energy_now", lambda: None)
+    row = client.get("/energy/row").text
+    assert row.startswith('<div class="homerow">') and '<b class="ga-state">Closed</b>' in row and "Auto: opens and closes" in row and " checked" in row and "data-raises" in row
+    held = bare.garage_view()  # a page load draws the last read, never asks Home Assistant itself
+    assert held["state"] == "closed" and held["on"]
+    monkeypatch.setattr(garagedoor, "configured", lambda: False)
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "off"}))
+    bare.state_set(bare.GARAGE_CLOSE_KEY, json.dumps({"mode": "off"}))
+    bare._cache.clear()  # Settings' own routes drop these copies when they save
+    assert bare.garage_view() is None and client.get("/energy/row").text == ""
+
+
+def test_the_switch_shows_only_for_an_owner_once_the_garage_does_something(bare, ha, client, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(bare, "_cache", {})
+    setup_opener(bare, monkeypatch)
+    assert bare.garage_view()["switch"] is False, "linked for the left-open alert alone: the door, no switch"
+    row = client.get("/energy/row").text
+    assert 'aria-label="Garage"' in row and "data-garage-on" not in row
+    bare.state_set(bare.GARAGE_OPEN_KEY, json.dumps({"mode": "watch", "vin": "V1"}))
+    bare._cache.clear()
+    assert bare.garage_view()["switch"] is True and bare.garage_view(owner=False)["switch"] is False
+    monkeypatch.setattr(bare, "owner", lambda request: False)
+    assert "data-garage-on" not in client.get("/energy/row").text, "a viewer who is not an owner sees the door, not the switch"

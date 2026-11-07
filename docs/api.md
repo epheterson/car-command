@@ -29,7 +29,7 @@ A code is kept in the database, bound to nothing but its PKCE challenge and its 
 
 **Which redirects are allowed.** Browsers and launchers have schemes that open a web address handed to them, and no blocklist of them is complete, so an unlisted redirect must have exactly one plain shape: a scheme, then optionally `//` and one lowercase label (letters, digits and hyphens, no dot, port or userinfo, and starting with a letter), then a path of segments of letters, digits, `_`, `~` and `-` (no dots). It has no query and no fragment, no percent-escapes and nothing but ASCII. `example-app://connected`, `example-app://auth/done`, `example-app:/callback` and `com.example.app:/callback` pass; the dots of a reverse-DNS scheme are fine. A scheme that is `intent`, contains `http`, `chrome`, `safari`, `firefox`, `edge`, `opera`, `brave`, `browser` or `search`, or is `javascript`, `data`, `file`, `blob` or another web or system scheme is refused whatever the rest looks like. **Any install that knows its apps should set `CC_APP_REDIRECTS`** in `stack/.env` to a comma-separated list of exact redirect addresses. When it is set, only an exact match passes (no prefixes, no added path or query), and a match may have a query or a host, which is how an app that needs more than the plain shape connects. It never admits `http` or `https` or the refused schemes.
 
-**Status tokens.** A status token opens `GET /api/now` and `GET /api/stream` and nothing else (every other path is 403). Its answers have these keys removed, wherever they appear: `lat`, `lon`, `address`, `place`, `place_named`, `heading`, `speed_mph`, `at_home`, `odometer_mi` and `meters` (`place` and `at_home` come back only with the grant below) (two readings of either give the car's speed). `vin` stays. Read tokens, minted in Settings, see everything the endpoints below return.
+**Status tokens.** A status token opens `GET /api/now` and `GET /api/stream` and nothing else (every other path is 403). Its answers have these keys removed, wherever they appear: `lat`, `lon`, `address`, `place`, `place_named`, `heading`, `speed_mph`, `at_home`, `odometer_mi` and `meters` (`place` and `at_home` come back only with the grant below) (two readings of either give the car's speed). In its place a status token gets `odometer_100mi`: the odometer rounded down to the hundred miles (96000 for 96,000.9), or null when unknown, enough for service intervals and too coarse for a speed. `vin` stays. Read tokens, minted in Settings, see everything the endpoints below return.
 
 **Sharing the place.** A status token can also be allowed to see where each car is, coarsely: `place`, the name of a place you gave (never a street address; `null` at a spot the site named itself or on the road) and `at_home`, true or false (`null` when the car's position is unknown). Nothing finer is added: no coordinates, address, heading or speed. It is off by default and per token. Turn it on in Settings › Sign-in and API (the switch on the token, which takes effect at once with no reconnect), or tick the box on the Allow page when connecting; an app that skips the Allow page keeps the choice it was allowed with. An alert goes out when it is turned on. A token cannot turn it on for itself.
 
@@ -98,12 +98,14 @@ curl -X POST -H "Authorization: Bearer $CONTROL" -H "Content-Type: application/j
 | `sentry_on`, `sentry_off` | Tesla | 2 |
 | `sched_charge` | minutes after midnight, 0 to 1439, Tesla | 2 |
 | `sched_charge_off` | Tesla | 2 |
+| `depart`, `depart_offpeak` | minutes after midnight, 0 to 1439, Tesla | 2 |
+| `depart_off` | Tesla | 2 |
 
 Answers: 200 sent; 400 an unknown command or a value out of range; 403 refused (commands off, the car's tier, no way to reach the car, a command the car doesn't take, a token for another car, or a read or status token); 409 a tier 3 command, which needs the password entered again in a browser and is never sent with a token; 429 over the limit (10 a car a minute); 502 the car or Tesla said no. Every answer carries `said`, one sentence fit to show. Every call is in the car's command log, under the token's label.
 
 ## Energy
 
-`GET /api/energy` answers about the house, once Settings › Energy reads one. Read tokens and a signed-in session may call it. A status token may not (403): the house's power over time shows when nobody is home, and its grid state shows outages. A token for one car may not either: the house is not any car's. `GET /api/energy/hours` has the same doors; its hours are UTC, so the fall-back night keeps both 1 a.m.s, each carries `coverage` (1.0 when every five-minute reading is there), and an hour with no readings is left out.
+`GET /api/energy` answers about the house, once Settings › Energy reads one. Read tokens and a signed-in session may call it. A status token may not (403): the house's power over time shows when nobody is home, and its grid state shows outages. A token for one car may not either: the house is not any car's. `GET /api/energy/hours` has the same doors; its hours are UTC, so the fall-back night keeps both 1 a.m.s, each carries `coverage` (1.0 when the readings cover the whole hour, each standing until the next for up to twenty minutes), and an hour with no readings is left out.
 
 ```json
 {"reading": {"solar_w": 4200.0, "home_w": 1800.0, "grid_w": -300.0, "battery_w": -2100.0,
@@ -197,6 +199,7 @@ Errors a model can fix (an unknown car, a bad date, an argument out of range) co
 Signed in, in a browser:
 
 - `/drives.csv` and `/charges.csv`: every drive or charge for the car, or `?vin=all`. Also linked from the Drives and Charges pages.
+- `/logbook.csv`: a mileage logbook, one row per finished drive, oldest first: date, start and end time, car, tag, start and end odometer, distance, and the start and end place names, in the distance unit chosen in Settings. Narrow it with `from` and `to` (`YYYY-MM-DD`, both days included), `vin` (or `all`) and `tag` (repeat it for several). `addresses=on` adds the street and city of each end; `totals=on` adds a distance total per tag after the last row. A place nobody has named reads as its town (city and region), or with `addresses=on` as street and city; it is blank only when the location is unknown. Offered on the Drives and Tags pages under Logbook CSV.
 - `/data.csv?date=YYYY-MM-DD`: every raw reading the car sent that day.
 
 A backup of the whole database is `make backup`, or `carcommand backup` in the one container ([install](install.md#backups)). The database is plain Postgres.

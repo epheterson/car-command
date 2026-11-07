@@ -26,7 +26,7 @@ def test_today_line_names_what_each_car_did():
     assert got["C"]["text"] == "stayed home" and not got["C"]["moved"]
     one = today_line([{"vin": "B", "name": "Bravo", "place": "Work"}], {})
     assert one[0]["text"] == "stayed put", "not at home: it stayed where it is"
-    assert today_line(cars, {"C": {"drives": 0, "miles": 0.0, "kwh": 21.4}})[2]["text"] == "charged 21 kWh"
+    assert today_line(cars, {"C": {"drives": 0, "miles": 0.0, "kwh": 21.4}})[0]["text"] == "charged 21 kWh", "the one that did something comes first"
     assert today_line(cars, {"A": {"drives": 1, "miles": 3.04, "kwh": 0.4}})[0]["text"] == "drove 3 mi", "under a kWh is not a charge worth naming"
 
 
@@ -43,6 +43,12 @@ class Metric:
 
     def distance(self, mi):
         return mi * 1.609344
+
+
+def test_today_line_runs_from_the_busiest_car_to_the_quietest():
+    cars = [{"vin": v, "name": v, "place": "Home"} for v in "ABCDE"]
+    today = {"A": {"drives": 2, "miles": 9.0}, "C": {"drives": 6, "miles": 22.0}, "D": {"kwh": 30.0}, "E": {"kwh": 0.4}}
+    assert [r["vin"] for r in today_line(cars, today, active={"B": "charging"})] == ["C", "A", "D", "B", "E"]
 
 
 def test_today_line_speaks_the_active_units_and_a_charge_counts_as_doing_something():

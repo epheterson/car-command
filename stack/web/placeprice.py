@@ -6,6 +6,8 @@ Stored on the place (cc_places.price, JSONB), NULL when not set:
   {"kind": "average"}                      the regional household average, an estimate
   {"kind": "kwh", "rate": 0.30, "fee": 1}  a flat price per kWh, plus an optional per-session fee
   {"kind": "minute", "rate": 0.25}         a price per minute plugged in, plus the same fee
+Either paid kind may also carry "idle": a price per minute the car stays plugged in after its
+charge finished, and "grace": minutes of that which are free (fees.py measures them).
 
 Nothing is assumed from a name: a place called Work is not free until the owner says so.
 A place named Home with no price is priced on the home plan, because the home plan is
@@ -18,6 +20,7 @@ KINDS = {"": "Not set", "free": "Free", "home": "Home plan", "kwh": "Per kWh", "
 PAID = ("kwh", "minute")
 MAX_RATE = 5.0  # per kWh or per minute; anything above is a typo, as on Settings › Money
 MAX_FEE = 100.0
+MAX_GRACE = 240.0  # minutes
 
 
 class BadPrice(ValueError):
@@ -37,9 +40,10 @@ def _number(text, lo: float, hi: float, what: str) -> float | None:
     return v
 
 
-def clean(kind, rate=None, fee=None) -> dict | None:
+def clean(kind, rate=None, fee=None, idle=None, grace=None) -> dict | None:
     """The stored price for a posted kind, rate and fee; None for not set. A paid kind
-    needs a rate above zero; the fee is optional and only kept when above zero."""
+    needs a rate above zero; the fee, the idle price and its grace are optional and only
+    kept when above zero (a grace only with an idle price)."""
     kind = (kind or "").strip()
     if kind not in KINDS:
         raise BadPrice("Not a kind of price.")
@@ -51,7 +55,9 @@ def clean(kind, rate=None, fee=None) -> dict | None:
     if not r:
         raise BadPrice("A paid place needs its price per kWh or per minute.")
     f = _number(fee, 0.0, MAX_FEE, "The session fee")
-    return {"kind": kind, "rate": r, **({"fee": f} if f else {})}
+    i = _number(idle, 0.0, MAX_RATE, "The idle price")
+    g = _number(grace, 0.0, MAX_GRACE, "The grace")
+    return {"kind": kind, "rate": r, **({"fee": f} if f else {}), **({"idle": i} if i else {}), **({"grace": g} if i and g else {})}
 
 
 def from_form(form) -> tuple[bool, dict | None]:
@@ -62,13 +68,13 @@ def from_form(form) -> tuple[bool, dict | None]:
     kind = form.get("price_kind")
     if kind == "paid":  # the line's Paid… choice; price_per says per kWh or per minute
         kind = form.get("price_per") if form.get("price_per") in PAID else "kwh"
-    return True, clean(kind, form.get("price_rate"), form.get("price_fee"))
+    return True, clean(kind, form.get("price_rate"), form.get("price_fee"), form.get("price_idle"), form.get("price_grace"))
 
 
 def valid(price) -> bool:
     """Whether a stored price has the shape pricing reads; anything else prices nothing."""
     try:
-        return price is None or clean(price.get("kind"), price.get("rate"), price.get("fee")) == price
+        return price is None or clean(price.get("kind"), price.get("rate"), price.get("fee"), price.get("idle"), price.get("grace")) == price
     except (BadPrice, AttributeError):
         return False
 
@@ -81,7 +87,8 @@ def describe(price: dict | None, home: bool = False, currency: str = "$") -> str
     if kind in PAID:
         unit = "kWh" if kind == "kwh" else "min"
         fee = f" + {currency}{price['fee']:.2f} a session" if price.get("fee") else ""
-        return f"{currency}{price['rate']:.2f}/{unit}{fee}"
+        idle = f" + {currency}{price['idle']:.2f}/min idle" + (f" after {price['grace']:g} min" if price.get("grace") else "") if price.get("idle") else ""
+        return f"{currency}{price['rate']:.2f}/{unit}{fee}{idle}"
     return KINDS.get(kind, "Not set")
 
 

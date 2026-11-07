@@ -373,6 +373,7 @@ def test_the_background_run_removes_the_trip_and_records_the_time(monkeypatch):
     monkeypatch.setattr(dr.driveedits, "lock", lambda *a: None)
     monkeypatch.setattr(dr.driveedits, "unapply", lambda *a: None)
     monkeypatch.setattr(dr.driveedits, "reapply", lambda *a: None)
+    monkeypatch.setattr(dr.history, "fill_gaps", lambda *a, **k: [])  # the dead-zone fill has its own tests (test_nosignal_sql)
     monkeypatch.setattr(dr, "load", lambda c, vin, lo, hi: (SIT_STATES, sitting(), [], [sit_trip(), trip(5, P1 - timedelta(days=1), P1 - timedelta(days=1) + timedelta(minutes=9), manual=True)]))
     acts = dr.run(conn, "VIN-ALPHA", P0 - timedelta(days=1), now=PNOW)
     assert [(a["do"], a.get("id")) for a in acts] == [("remove", 131074), ("caron", None)]

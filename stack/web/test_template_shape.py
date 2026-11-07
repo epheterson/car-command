@@ -500,7 +500,7 @@ def test_the_sidebar_brand_tows_the_name_in_on_a_fresh_load():
 
     here = Path(__file__).parent
     base = (here / "templates" / "base.html").read_text()
-    assert '<a class="brand" href="{{ root }}/{{ q }}">{{ ic.brand_mark("tow") }}<span class="nm">Car Command</span></a>' in base
+    assert '<a class="brand" href="{{ root }}/{{ allq }}"{% if multi %} data-now{% endif %}>{{ ic.brand_mark("tow") }}<span class="nm">Car Command</span></a>' in base
     head = base[: base.index("</head>")]
     script = head[head.index("<script>") : head.index("</script>")]
     for part in ("prefers-reduced-motion", "reload", "document.referrer", "location.origin", "classList.add('arrive')"):
@@ -887,7 +887,7 @@ def test_a_phones_header_carries_the_pages_title_and_the_h1_gives_its_row_up():
     here = Path(__file__).parent
     base = (here / "templates" / "base.html").read_text()
     bar = base[base.index('<header class="phonebar">') : base.index("</header>")]
-    assert '<span class="ptitle" id="ptitle">' in bar and '<span class="cn">' in bar
+    assert '<span class="ptitle" id="ptitle" data-page="' in bar and '<span class="cn">' in bar
     assert "document.querySelector(\"main h1\")" in base and "classList.add(\"pt\")" in base
     css = _css()
     phone = css[css.index("@media (max-width: 860px) {\n  .shell") :]
@@ -896,6 +896,9 @@ def test_a_phones_header_carries_the_pages_title_and_the_h1_gives_its_row_up():
     assert ".carsheet { position:relative; flex:0 0 auto; min-width:0; max-width:44%; }" in phone and "text-overflow:ellipsis" in phone
     assert ".shell { grid-template-columns:minmax(0, 1fr); }" in phone, "a long name must not widen the page"
     assert "html.pt main h1" not in css[: css.index("@media (max-width: 860px) {\n  .shell")], "desktop keeps its h1"
+    # a title the bar does not repeat sits alone on its row, the controls wrap beneath it from the left
+    assert ".pbar h1, .pbar-ctx.keep { flex:1 0 100%; }" in phone and ".pbar .sp { display:none; }" in phone
+    assert "t.dataset.page" in base, "an h1 that only repeats the chosen sub-page tab (Drives under Timeline) gives its row up too"
 
 
 def test_the_title_and_the_car_name_share_the_bar_and_the_version_line_is_muted():

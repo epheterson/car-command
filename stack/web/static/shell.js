@@ -122,6 +122,20 @@
   }, true);
 })();
 
+// The Now tab goes back to the Now view last left in this session: the tiles (every car) or a car's
+// own Now (the car the switcher has chosen, which the server already put in the link). On Now itself
+// the server's links stand: a second tap on a car's Now goes to the tiles. Only with more than one car.
+(function () {
+  var KEY = "cc-now", nav = document.querySelector("nav.side"), here = nav && nav.getAttribute("data-now-view"), mode = here;
+  try {
+    if (here) sessionStorage.setItem(KEY, here);
+    else mode = sessionStorage.getItem(KEY);
+  } catch (_) {}
+  if (here || mode !== "all") return;
+  var m = document.querySelector('meta[name="cc-root"]'), root = (m && m.content) || "";
+  document.querySelectorAll("a[data-now]").forEach(function (a) { a.setAttribute("href", root + "/?vin=all"); });
+})();
+
 // The live Now page: a page whose <main> names a stream gets each card swapped in place when
 // what it shows changes. The stream rests while the tab is hidden; reopening it sends every
 // card again, so a page brought back is current at once.
@@ -149,6 +163,7 @@
     }
     // a card someone is using (a marker being moved, a command waiting for its second tap) is
     // left alone; the next update brings it current
+    if (fresh && window.CCDockSync) window.CCDockSync(fresh);  // its arrow set as this browser left it, so an unchanged card stays untouched
     var busy = old.querySelector("button.confirm, button.busy") || (old.contains(document.activeElement) && document.activeElement.matches("input, select"));
     if (fresh && !busy && fresh.outerHTML !== old.outerHTML) old.replaceWith(fresh);
     document.dispatchEvent(new CustomEvent("cc:live", { detail: c }));
@@ -344,28 +359,80 @@
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeAll(null); });
 })();
 
-// The Powerwall row on Now: drawn again every 20 s while the page is in view, from the site's own
-// /energy/row (the same markup as the page, from the newest reading in memory). A row that has
-// gone stale comes back empty and goes; one that was not there is not added.
+// Now's home row (the Powerwall and the garage): drawn again every 20 s while the page is in view,
+// from the site's own /energy/row (the same markup as the page; the door read then). A row with
+// nothing fresh comes back empty and goes; one that was not there is not added. A door not read
+// yet asks at once.
 (function () {
   function root() { var m = document.querySelector('meta[name="cc-root"]'); return (m && m.content) || ""; }
+  function put(html) {
+    var now = document.querySelector(".homerow");
+    if (!now || (now.contains(document.activeElement) && document.activeElement.matches("input"))) return;
+    var holder = document.createElement("div");
+    holder.innerHTML = html.trim();
+    var next = holder.firstElementChild;
+    if (next) now.replaceWith(next); else now.remove();
+  }
   function tick() {
-    var row = document.querySelector(".pwrow");
-    if (!row || document.hidden) return;
+    if (!document.querySelector(".homerow") || document.hidden) return;
     fetch(root() + "/energy/row", { credentials: "same-origin", headers: { Accept: "text/html" } })
       .then(function (r) { return r.ok ? r.text() : null; })
-      .then(function (html) {
-        if (html === null) return;
-        var now = document.querySelector(".pwrow");
-        if (!now) return;
-        var holder = document.createElement("div");
-        holder.innerHTML = html.trim();
-        var next = holder.firstElementChild;
-        if (next) now.replaceWith(next); else now.remove();
-      })
+      .then(function (html) { if (html !== null) put(html); })
       .catch(function () {});
   }
-  if (document.querySelector(".pwrow")) setInterval(tick, 20000);
+  if (!document.querySelector(".homerow")) return;
+  setInterval(tick, 20000);
+  if (document.querySelector("[data-door-pending]")) tick();
+
+  // the garage's main switch: off at once; on, when that opens or closes the door, confirmed first
+  // with Face ID (a passkey for this site), else Settings asks for the PIN or the password
+  var csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content;
+  function post(url, body, form) {
+    return fetch(root() + url, { method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": csrf, "Content-Type": form ? "application/x-www-form-urlencoded" : "application/json" }, body: form ? new URLSearchParams(body).toString() : JSON.stringify(body || {}) })
+      .then(function (r) { return r.json().catch(function () { return { ok: false, said: "The site didn't answer (" + r.status + ")." }; }); });
+  }
+  // Safari drops a passkey sheet asked for after a round trip: the challenge is fetched ahead
+  var pkReady = null;
+  function canPk() { return !!(window.CCPasskey && window.PublicKeyCredential && window.isSecureContext && navigator.credentials); }
+  function pkFetch() {
+    var box = document.querySelector("[data-garage-on][data-raises]");
+    pkReady = null;
+    if (!box || box.checked || !canPk() || document.hidden) return;
+    post("/passkeys/challenge", { purpose: "step" }).then(function (o) { pkReady = o.ok ? o.options : null; }).catch(function () {});
+  }
+  pkFetch();
+  window.addEventListener("load", pkFetch);  // passkeys.js loads after this file; once it has, ask again
+  setInterval(pkFetch, 50000);
+  function confirmed() {
+    var opts = pkReady;
+    pkReady = null;
+    if (!opts) return Promise.reject(new Error("One moment, then switch it on again."));
+    return navigator.credentials.get({ publicKey: CCPasskey.request(opts) })
+      .then(function (cred) { return post("/passkeys/step", { passkey: CCPasskey.answer(cred) }); })
+      .then(function (out) { if (!out.ok) throw new Error(out.said); });
+  }
+  document.addEventListener("change", function (e) {
+    var box = e.target.closest && e.target.closest("[data-garage-on]");
+    if (!box) return;
+    var row = box.closest(".garow"), said = row.querySelector("[data-garage-said]"), on = box.checked;
+    box.disabled = true;
+    said.textContent = "";
+    function send() { return post("/garage/switch", { on: on ? "1" : "0" }, true); }
+    // on, where it opens or closes the door: Face ID first, in the tap itself
+    (on && box.hasAttribute("data-raises") && canPk() ? confirmed().then(send) : send())
+      .then(function (out) {
+        if (!out.ok) throw new Error(out.said || "Not saved.");
+        box.blur();
+        put(out.html);
+        pkFetch();
+      })
+      .catch(function (err) {
+        box.checked = !on;
+        box.disabled = false;
+        said.textContent = canPk() && CCPasskey.quiet(err) ? "" : (err.message || "Not saved.");
+        pkFetch();
+      });
+  });
 })();
 
 // The Powerwall history backfill's bar: redrawn in place every few seconds from the site's own

@@ -21,8 +21,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 import billed
+import lucidfields
+import lucidrecords
 import driveedits
+import fees
 import placeprice
+import recentrange
 from cost import session_cost
 from places import distance_m, place_for
 from regions import region_of
@@ -73,6 +77,12 @@ ALTER TABLE cc_vehicle_facts ADD COLUMN IF NOT EXISTS sentry_samples INTEGER;
 ALTER TABLE cc_vehicle_facts ADD COLUMN IF NOT EXISTS climate_mi_per_h DOUBLE PRECISION;
 ALTER TABLE cc_vehicle_facts ADD COLUMN IF NOT EXISTS climate_samples INTEGER;
 ALTER TABLE cc_vehicle_facts ADD COLUMN IF NOT EXISTS parked_updated_at TIMESTAMPTZ;
+-- Energy a mile over the car's last stretch of driving (about 50 miles of logged drives), the
+-- miles and drives behind it, and when it was worked out. Null: too few miles to say.
+ALTER TABLE cc_vehicle_facts ADD COLUMN IF NOT EXISTS recent_wh_per_mi DOUBLE PRECISION;
+ALTER TABLE cc_vehicle_facts ADD COLUMN IF NOT EXISTS recent_miles DOUBLE PRECISION;
+ALTER TABLE cc_vehicle_facts ADD COLUMN IF NOT EXISTS recent_drives INTEGER;
+ALTER TABLE cc_vehicle_facts ADD COLUMN IF NOT EXISTS recent_updated_at TIMESTAMPTZ;
 -- The same measurement again, per year, so a drive is priced at what a rated mile cost
 -- the car at the time rather than what it costs now. cc_vehicle_facts keeps the all-time
 -- figure, which is still the answer for a car or a year without enough charges of its own.
@@ -118,6 +128,13 @@ ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS full_level DOUBLE PRECISION
 ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS odometer DOUBLE PRECISION;
 -- When the energy and cost were last worked out: a figure taken before the session ended is part of it.
 ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS computed_at TIMESTAMPTZ;
+-- The fees inside cost, kept apart so a charge's page can show them: a fee per session, the
+-- idle fee with the minutes it was for, the congestion fee. NULL: none known (the charge was
+-- priced before they were kept, or its price has none); the charging fee is what is left of cost.
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS session_fee DOUBLE PRECISION;
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS idle_fee DOUBLE PRECISION;
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS idle_min DOUBLE PRECISION;
+ALTER TABLE cc_charge_facts ADD COLUMN IF NOT EXISTS congestion_fee DOUBLE PRECISION;
 -- What a loader knew about a charge that the sessions table has no column for, keyed
 -- like cc_trip_extras so a re-import that renumbers sessions keeps it: the fast-charging
 -- network ('supercharger'), where the source said.
@@ -540,6 +557,50 @@ def fill_vehicle_facts(conn, vin: str) -> float | None:
     return k
 
 
+def recent_drives_sql(drive_filter: str) -> str:
+    """The newest finished drives of a car with their levels, ranges and source kWh; `drive_filter` is
+    a clause on alias t that leaves out the drives the lists leave out."""
+    return (
+        """
+    SELECT t.vin, t.start_date, t.destination_odometer - t.start_odometer AS miles, f.level_start, f.level_end,
+           NULLIF(f.range_start, -999) AS range_start, NULLIF(f.range_end, -999) AS range_end, x.kwh AS summary_kwh
+    FROM trips t
+    LEFT JOIN cc_trip_facts f ON f.trip_id = t.id
+    LEFT JOIN cc_trip_extras x ON x.vin = t.vin AND x.start_date = t.start_date
+    WHERE t.vin = %s AND t.destination_date IS NOT NULL AND t.start_odometer IS NOT NULL AND t.destination_odometer IS NOT NULL"""
+        + drive_filter
+        + """
+    ORDER BY t.start_date DESC LIMIT %s"""
+    )
+
+
+def fill_recent_facts(conn, vin: str, tz=None, drive_filter: str = "") -> dict | None:
+    """The car's energy a mile over its last ~50 logged miles (recentrange), stored beside its other
+    vehicle facts. `drive_filter` is the drives list's own clause on alias t (hidden, merged, under the
+    minimum-drive setting). Worked out from the newest drives only; stores nulls (and the time) when
+    there are too few miles, so the next pass knows it looked."""
+
+    def values(row):
+        return (tuple(row.values()) if isinstance(row, dict) else tuple(row)) if row else ()
+
+    capacity = (values(conn.execute("SELECT capacity FROM drives WHERE vin = %s LIMIT 1", (vin,)).fetchone()) or (None,))[0]
+    all_time = (values(conn.execute("SELECT kwh_per_rated_mi FROM cc_vehicle_facts WHERE vin = %s", (vin,)).fetchone()) or (None,))[0]
+    years = {(vin, y): k for y, k in map(values, conn.execute("SELECT year, kwh_per_rated_mi FROM cc_vehicle_year_facts WHERE vin = %s AND kwh_per_rated_mi IS NOT NULL", (vin,)).fetchall())}
+    drives = []
+    for row in conn.execute(recent_drives_sql(drive_filter or driveedits.ABSORBED), (vin, recentrange.MAX_DRIVES)).fetchall():
+        _v, start, miles, l0, l1, r0, r1, kwh = values(row)
+        r = {"vin": vin, "start_date": start, "level_start": l0, "level_end": l1, "range_start": r0, "range_end": r1, "summary_kwh": kwh}
+        drives.append((miles, recentrange.drive_energy(r, capacity, years, all_time, tz)))
+    found = recentrange.recent_efficiency(drives)
+    conn.execute(
+        """INSERT INTO cc_vehicle_facts (vin, recent_wh_per_mi, recent_miles, recent_drives, recent_updated_at) VALUES (%s, %s, %s, %s, now())
+           ON CONFLICT (vin) DO UPDATE SET recent_wh_per_mi = EXCLUDED.recent_wh_per_mi, recent_miles = EXCLUDED.recent_miles,
+               recent_drives = EXCLUDED.recent_drives, recent_updated_at = now()""",
+        (vin, found and found["wh_per_mi"], found and found["miles"], found and found["drives"]),
+    )
+    return found
+
+
 # --- pricing a charge ------------------------------------------------------------------
 #
 # Each pricer looks at one charge and either prices it, returning a Priced, or passes
@@ -566,6 +627,9 @@ class Charge:
     sc_per_min: float | None = None
     place: dict | None = None  # the named place the charge is at, with its price (placeprice)
     bill: dict | None = None  # what the network billed for it (billed.py), when it says
+    idle_of: object = None  # () -> minutes from the charge finishing to the car leaving (fees.idle_minutes), None when unknown; asked only by a pricer with an idle price
+    fee_rules: dict | None = None  # {"sc": rule, "dc": rule} from Settings (fees.rules)
+    ea: dict | None = None  # the car's Electrify America plan (lucidrecords.plan_for): name, since, ends; None for a car without one
 
 
 @dataclass
@@ -576,6 +640,10 @@ class Priced:
     roles: dict | None = None  # kWh by role (off_peak, part_peak, peak), plan only
     split: dict | None = None  # kWh by the plan's own period keys, plan only
     rate_month: str | None = None  # the month whose average priced it, average only
+    session_fee: float | None = None  # fees inside cost, stored beside it (cc_charge_facts)
+    idle_fee: float | None = None
+    idle_min: float | None = None
+    congestion_fee: float | None = None
 
 
 def price_billed(c: Charge) -> Priced | None:
@@ -584,7 +652,15 @@ def price_billed(c: Charge) -> Priced | None:
     if not c.bill:
         return None
     where = f", {c.bill['site']}" if c.bill.get("site") else ""
-    return Priced(float(c.bill["total"]), "billed", f"Billed by Tesla{where}")
+    # The bill's own split; a bill read before the fees were kept apart has none (None, not 0).
+    return Priced(
+        float(c.bill["total"]),
+        "billed",
+        f"Billed by Tesla{where}",
+        idle_fee=c.bill.get("idle_fee"),
+        idle_min=c.bill.get("idle_min") if c.bill.get("idle_fee") is not None else None,
+        congestion_fee=c.bill.get("congestion_fee"),
+    )
 
 
 def price_hand(c: Charge) -> Priced | None:
@@ -625,7 +701,30 @@ def price_place(c: Charge) -> Priced | None:
         return Priced(0.0, "place", placeprice.label(price, c.place["name"]))
     start, end = c.session["session_start_date"], c.session["session_end_date"]
     minutes = (end - start).total_seconds() / 60 if start and end else 0.0
-    return Priced(placeprice.cost(price, c.kwh, minutes), "place", placeprice.label(price, c.place["name"]))
+    idle_min = c.idle_of() if price.get("idle") and c.idle_of else None
+    idle = fees.idle_fee(idle_min, price.get("idle"), price.get("grace"))
+    label = placeprice.label(price, c.place["name"]) + (f" + {price['idle']:.2f}/min idle" if price.get("idle") else "")
+    return Priced(
+        placeprice.cost(price, c.kwh, minutes) + idle,
+        "place",
+        label,
+        session_fee=price.get("fee"),
+        idle_fee=idle if idle_min is not None else None,
+        idle_min=idle_min,
+    )
+
+
+def price_ea(c: Charge) -> Priced | None:
+    """A charge at Electrify America while the car's plan there is current, and the plan is one that
+    makes charging free (lucidfields.plan_is_free): nothing to pay. Below a bill and a typed price, below
+    a price the owner set on the place; above the fast-charging rate it would otherwise be priced at."""
+    plan = c.ea
+    if not plan or c.kwh <= 0 or c.session.get("network") != "electrify_america" or not lucidfields.plan_is_free(plan.get("name")):
+        return None
+    day = c.session["session_start_date"].astimezone(c.tz).date()
+    if day < plan["since"] or (plan.get("ends") and day > plan["ends"]):
+        return None
+    return Priced(0.0, "place", f"{plan['name']}, free at Electrify America")
 
 
 def price_dc(c: Charge) -> Priced | None:
@@ -641,9 +740,25 @@ def price_dc(c: Charge) -> Priced | None:
         return None
     start, end = c.session["session_start_date"], c.session["session_end_date"]
     minutes = ((end - start).total_seconds() / 60) if (start and end and per_min) else 0.0
-    price = c.kwh * (per_kwh or 0.0) + minutes * (per_min or 0.0)
-    label = " + ".join(x for x in ((f"{per_kwh:.2f}/kWh" if per_kwh else ""), (f"{per_min:.2f}/min" if per_min else "")) if x)
-    return Priced(price, "dc", f"{'Supercharger' if sc else 'DC'} at {label}")
+    rule = (c.fee_rules or {}).get("sc" if sc else "dc") or {}
+    idle_min = c.idle_of() if rule.get("idle") and c.idle_of else None
+    session_fee, idle = rule.get("session"), fees.idle_fee(idle_min, rule.get("idle"), rule.get("grace"))
+    price = c.kwh * (per_kwh or 0.0) + minutes * (per_min or 0.0) + (session_fee or 0.0) + idle
+    parts = (
+        (f"{per_kwh:.2f}/kWh" if per_kwh else ""),
+        (f"{per_min:.2f}/min" if per_min else ""),
+        (f"{session_fee:.2f}/session" if session_fee else ""),
+        (f"{rule['idle']:.2f}/min idle" if rule.get("idle") else ""),
+    )
+    label = " + ".join(x for x in parts if x)
+    return Priced(
+        price,
+        "dc",
+        f"{'Supercharger' if sc else 'DC'} at {label}",
+        session_fee=session_fee,
+        idle_fee=idle if idle_min is not None else None,
+        idle_min=idle_min,
+    )
 
 
 def price_average(c: Charge) -> Priced | None:
@@ -655,7 +770,7 @@ def price_average(c: Charge) -> Priced | None:
     return Priced(c.kwh * got["value"], "average", f"{got['name']} average", rate_month=got["month"]) if got else None
 
 
-PRICERS = (price_hand, price_billed, price_place, price_plan, price_dc, price_average)
+PRICERS = (price_hand, price_billed, price_place, price_ea, price_plan, price_dc, price_average)
 
 
 def charge_facts(
@@ -671,15 +786,24 @@ def charge_facts(
     sc_per_min: float | None = None,
     place_of=None,
     bills=(),
+    fee_rules=None,
+    departure_of=None,
+    ea_plan=None,
 ) -> list[tuple]:
     """(session_id, kwh, cost, plan, at_home, off_peak, part_peak, peak, period_kwh,
-    cost_source, region, rate_month) per session, period_kwh as JSON text. Pure. A charge
+    cost_source, region, rate_month, session_fee, idle_fee, idle_min, congestion_fee) per session, period_kwh as JSON text. Pure. A charge
     nothing prices has no cost and cost_source 'none'; a charge with no region has ''.
 
     The region is found from the session's own position and nothing else. `place_of(lat,
     lon)` is the named place there (with its price), the same lookup that labels the
     charge; None prices no charge by its place. `bills` are the network's bills that
-    could match these sessions (billed.bills_between); each prices at most one.
+    could match these sessions (billed.bills_between); each prices at most one. `fee_rules`
+    (fees.rules) are the session and idle fees of the fast-charging networks; a place's own
+    come with its price. Idle minutes are measured from the last power of at least
+    fees.IDLE_KW to when the car left: the session's plug_disconnected_date, else `departure_of(session)`
+    (the next drive's start); with neither, idle is unknown (None) and no idle fee is charged. Idle
+    is worked out only for a charge priced by a rule with an idle price.
+    `ea_plan` is the car's Electrify America plan (name, since, ends), or None.
 
     `powers` are (first, last, kW) intervals sorted by first_date; they never
     overlap each other (they are runs), so their last_dates are sorted too and
@@ -701,6 +825,11 @@ def charge_facts(
         # be a poll behind the charge's end, so the larger of it and the power estimate stands.
         meter = s.get("real_charged")
         kwh = meter if meter else max(s.get("live_meter") or 0.0, integrated)
+        # With no meter of the car's own, Lucid's record of this charge (lucidrecords.py) says the energy
+        # better than the power profile does, if it is the size the profile says (its unit is not given).
+        record = s.get("record_kwh")
+        if not meter and not s.get("live_meter") and lucidfields.plausible_kwh(record, integrated):
+            kwh = record
         lat, lon = s.get("session_position_latitude"), s.get("session_position_longitude")
         hours = (end - start).total_seconds() / 3600
         profile = mine if integrated > 0 else ([(start, end, kwh / hours)] if hours > 0 and kwh > 0 else [])
@@ -709,15 +838,46 @@ def charge_facts(
         bill = billed.match(s, unused) if unused and s.get("real_cost") is None else None
         if bill is not None:
             unused.remove(bill)
-        c = Charge(s, kwh, bool(is_home(lat, lon)), region_of(lat, lon), profile, tz, dc_price, dc_per_min, averages, sc_price, sc_per_min, place, bill)
+        idle_of = lambda s=s, mine=mine, end=end: fees.idle_minutes(fees.charge_finished(mine, end), s.get("plug_disconnected_date") or (departure_of(s) if departure_of else None))  # noqa: E731
+        if not s.get("network") and s.get("record_network"):
+            s = {**s, "network": s["record_network"]}
+        c = Charge(s, kwh, bool(is_home(lat, lon)), region_of(lat, lon), profile, tz, dc_price, dc_per_min, averages, sc_price, sc_per_min, place, bill, idle_of, fee_rules, ea_plan)
         p = next((p for p in (pricer(c) for pricer in PRICERS) if p), None)
         if p is None:
-            out.append((s["id"], kwh, None, None, c.home, None, None, None, None, "none", c.region or "", None))
+            out.append((s["id"], kwh, None, None, c.home, None, None, None, None, "none", c.region or "", None, None, None, None, None))
             continue
         roles = p.roles or {}
         split = json.dumps(p.split) if p.split is not None else None
-        out.append((s["id"], kwh, p.cost, p.label, c.home, roles.get("off_peak"), roles.get("part_peak"), roles.get("peak"), split, p.source, c.region or "", p.rate_month))
+        out.append(
+            (
+                s["id"],
+                kwh,
+                p.cost,
+                p.label,
+                c.home,
+                roles.get("off_peak"),
+                roles.get("part_peak"),
+                roles.get("peak"),
+                split,
+                p.source,
+                c.region or "",
+                p.rate_month,
+                p.session_fee,
+                p.idle_fee,
+                p.idle_min,
+                p.congestion_fee,
+            )
+        )
     return out
+
+
+# When an upsert replaces the stored price (and the fees inside it) with the new one: there was none,
+# the energy grew and nothing typed in or billed fixed it, or a rule-priced charge whose idle time was
+# unknown now has it (the car has left).
+REPRICE = (
+    "(COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed')) "
+    "OR (cc_charge_facts.idle_min IS NULL AND EXCLUDED.idle_min IS NOT NULL AND cc_charge_facts.cost_source IN ('dc', 'place')))"
+)
 
 
 def fill_charge_facts(
@@ -732,6 +892,7 @@ def fill_charge_facts(
     sc_price: float | None = None,
     sc_per_min: float | None = None,
     place_of=None,
+    fee_rules=None,
 ) -> int:
     """Energy and cost for finished charges that have no facts yet: one query for the
     sessions, one for their power intervals.
@@ -746,9 +907,12 @@ def fill_charge_facts(
     sessions = conn.execute(
         """
         SELECT c.id, c.session_start_date, c.session_end_date, c.session_position_latitude, c.session_position_longitude,
-               c.real_charged, c.charging_type::text AS charging_type, c.real_cost, x.network, m.kwh AS live_meter
+               c.real_charged, c.charging_type::text AS charging_type, c.real_cost, c.plug_disconnected_date, x.network, m.kwh AS live_meter, rec.kwh AS record_kwh, rec.network AS record_network
         FROM charging_sessions c LEFT JOIN cc_charge_facts f ON f.session_id = c.id
         LEFT JOIN cc_charge_extras x ON x.vin = c.vin AND x.start_date = c.session_start_date
+        -- Lucid's own record of the charge (lucidrecords.py), by car and start time
+        LEFT JOIN LATERAL (SELECT l.kwh, l.network FROM cc_lucid_charges l WHERE l.vin = c.vin AND l.started_at BETWEEN c.session_start_date - interval '10 minutes' AND c.session_start_date + interval '10 minutes'
+                           ORDER BY abs(extract(epoch FROM l.started_at - c.session_start_date)) LIMIT 1) rec ON true
         -- the car's own meter for a live charge, where an export has real_charged
         LEFT JOIN cc_charge_meter m ON m.session_id = c.id
         WHERE c.vin = %s AND c.session_start_date IS NOT NULL AND c.session_end_date IS NOT NULL
@@ -787,6 +951,9 @@ def fill_charge_facts(
                -- a home charge with no price that has not been looked at since its region
                -- had an average (looking stores 'none' when there is still nothing); converges
                OR (f.at_home AND f.cost IS NULL AND f.cost_source IS NULL AND f.region = ANY(%s) AND COALESCE(f.kwh, 0) > 0)
+               -- a rule-priced charge whose idle time was unknown (the car had not left), looked at
+               -- again each tick for two days after it ended; no percent signs: POSITION, not LIKE
+               OR (f.idle_min IS NULL AND f.cost_source IN ('dc', 'place') AND POSITION('/min idle' IN f.plan) > 0 AND c.session_end_date > now() - interval '3 days')
                -- a charge whose price was cleared to be worked out again (its place's price
                -- changed, or a bill arrived for it); converges, as looking stores 'none'
                OR (f.cost IS NULL AND f.cost_source IS NULL AND COALESCE(f.kwh, 0) > 0))
@@ -799,7 +966,21 @@ def fill_charge_facts(
         (
             dict(
                 zip(
-                    ("id", "session_start_date", "session_end_date", "session_position_latitude", "session_position_longitude", "real_charged", "charging_type", "real_cost", "network", "live_meter"),
+                    (
+                        "id",
+                        "session_start_date",
+                        "session_end_date",
+                        "session_position_latitude",
+                        "session_position_longitude",
+                        "real_charged",
+                        "charging_type",
+                        "real_cost",
+                        "plug_disconnected_date",
+                        "network",
+                        "live_meter",
+                        "record_kwh",
+                        "record_network",
+                    ),
                     s,
                 )
             )
@@ -814,11 +995,34 @@ def fill_charge_facts(
     el = conn.execute("SELECT first_date, last_date, volts, amps FROM cc_charging_electrics WHERE vin = %s AND last_date >= %s AND first_date <= %s ORDER BY first_date", (vin, lo, hi)).fetchall()
     powers = with_measured_power(powers, [tuple(r.values()) if isinstance(r, dict) else tuple(r) for r in el])
     bills = billed.bills_between(conn, vin, lo, max(s["session_start_date"] for s in sessions))
-    facts = charge_facts(sessions, powers, tz, is_home, dc_price, dc_per_min, averages, sc_price=sc_price, sc_per_min=sc_per_min, place_of=place_of, bills=bills)
+
+    # When the car left, for a charge with an idle price and no recorded unplugging: the start of the next drive.
+    def departure_of(s):
+        row = conn.execute(
+            "SELECT MIN(start_date) AS d FROM trips WHERE vin = %s AND start_date > %s AND start_date <= %s", (vin, s["session_start_date"], s["session_start_date"] + fees.MAX_DEPARTURE_WAIT)
+        ).fetchone()
+        return (row["d"] if isinstance(row, dict) else row[0]) if row else None
+
+    facts = charge_facts(
+        sessions,
+        powers,
+        tz,
+        is_home,
+        dc_price,
+        dc_per_min,
+        averages,
+        sc_price=sc_price,
+        sc_per_min=sc_per_min,
+        place_of=place_of,
+        bills=bills,
+        fee_rules=fee_rules,
+        departure_of=departure_of,
+        ea_plan=lucidrecords.plan_for(conn, vin),
+    )
     with conn.cursor() as cur:
         cur.executemany(
-            """INSERT INTO cc_charge_facts (session_id, kwh, cost, plan, at_home, off_peak_kwh, part_peak_kwh, peak_kwh, period_kwh, cost_source, region, rate_month, computed_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, now())
+            f"""INSERT INTO cc_charge_facts (session_id, kwh, cost, plan, at_home, off_peak_kwh, part_peak_kwh, peak_kwh, period_kwh, cost_source, region, rate_month, session_fee, idle_fee, idle_min, congestion_fee, computed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, now())
                ON CONFLICT (session_id) DO UPDATE SET off_peak_kwh = EXCLUDED.off_peak_kwh, computed_at = now(),
                    part_peak_kwh = EXCLUDED.part_peak_kwh, peak_kwh = EXCLUDED.peak_kwh, period_kwh = EXCLUDED.period_kwh,
                    region = EXCLUDED.region, at_home = EXCLUDED.at_home,
@@ -827,12 +1031,17 @@ def fill_charge_facts(
                    -- been seen, so a bigger one saw more of it. A price typed in or
                    -- billed is a total, and stands whatever the energy.
                    kwh = CASE WHEN COALESCE(cc_charge_facts.kwh, 0) = 0 OR EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 THEN EXCLUDED.kwh ELSE cc_charge_facts.kwh END,
-                   cost = CASE WHEN (COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed'))) THEN EXCLUDED.cost ELSE cc_charge_facts.cost END,
-                   plan = CASE WHEN (COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed'))) THEN EXCLUDED.plan ELSE cc_charge_facts.plan END,
-                   cost_source = CASE WHEN (COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed'))) THEN EXCLUDED.cost_source ELSE cc_charge_facts.cost_source END,
-                   rate_month = CASE WHEN (COALESCE(cc_charge_facts.kwh, 0) = 0 OR cc_charge_facts.cost IS NULL OR (EXCLUDED.kwh > cc_charge_facts.kwh + 0.05 AND COALESCE(cc_charge_facts.cost_source, 'plan') NOT IN ('hand', 'billed'))) THEN EXCLUDED.rate_month ELSE cc_charge_facts.rate_month END
+                   cost = CASE WHEN {REPRICE} THEN EXCLUDED.cost ELSE cc_charge_facts.cost END,
+                   plan = CASE WHEN {REPRICE} THEN EXCLUDED.plan ELSE cc_charge_facts.plan END,
+                   cost_source = CASE WHEN {REPRICE} THEN EXCLUDED.cost_source ELSE cc_charge_facts.cost_source END,
+                   rate_month = CASE WHEN {REPRICE} THEN EXCLUDED.rate_month ELSE cc_charge_facts.rate_month END,
+                   session_fee = CASE WHEN {REPRICE} THEN EXCLUDED.session_fee ELSE cc_charge_facts.session_fee END,
+                   idle_fee = CASE WHEN {REPRICE} THEN EXCLUDED.idle_fee ELSE cc_charge_facts.idle_fee END,
+                   idle_min = CASE WHEN {REPRICE} THEN EXCLUDED.idle_min ELSE cc_charge_facts.idle_min END,
+                   congestion_fee = CASE WHEN {REPRICE} THEN EXCLUDED.congestion_fee ELSE cc_charge_facts.congestion_fee END
                WHERE cc_charge_facts.off_peak_kwh IS NULL OR COALESCE(cc_charge_facts.kwh, 0) = 0 OR EXCLUDED.kwh > cc_charge_facts.kwh + 0.05
-                     OR (cc_charge_facts.cost IS NULL AND (EXCLUDED.cost IS NOT NULL OR cc_charge_facts.cost_source IS NULL))""",
+                     OR (cc_charge_facts.cost IS NULL AND (EXCLUDED.cost IS NOT NULL OR cc_charge_facts.cost_source IS NULL))
+                     OR (cc_charge_facts.idle_min IS NULL AND EXCLUDED.idle_min IS NOT NULL AND cc_charge_facts.cost_source IN ('dc', 'place'))""",
             facts,
         )
     return len(facts)
@@ -873,7 +1082,7 @@ def reopen_average_prices(conn, tz) -> None:
 # What clearing a price forgets: the cost and everything said about it, never the
 # energy, so every page keeps showing the kWh while fill_charge_facts prices it again.
 CLEAR_PRICE = """UPDATE cc_charge_facts SET cost = NULL, plan = NULL, cost_source = NULL, rate_month = NULL,
-       off_peak_kwh = NULL, part_peak_kwh = NULL, peak_kwh = NULL, period_kwh = NULL"""
+       session_fee = NULL, idle_fee = NULL, idle_min = NULL, congestion_fee = NULL, off_peak_kwh = NULL, part_peak_kwh = NULL, peak_kwh = NULL, period_kwh = NULL"""
 
 
 def clear_prices(conn, session_ids: list[int], batch: int = BATCH) -> int:
@@ -1102,6 +1311,7 @@ def ensure_tables(conn) -> None:
     statement and, while it waits, blocks every reader of the table (the whole site)."""
     conn.execute(DDL)
     conn.execute(billed.DDL)
+    conn.execute(lucidrecords.DDL)
     conn.execute(driveedits.DDL)
 
 
@@ -1116,20 +1326,23 @@ def fill_facts(
     sc_price: float | None = None,
     sc_per_min: float | None = None,
     place_of=None,
+    drive_filter: str = "",
+    fee_rules=None,
 ) -> tuple[int, int]:
     drop_orphans(conn)
     trips = fill_trip_facts(conn, vin)
     heal_split_charges(conn, vin)
     fill_charge_regions(conn, vin)
-    charges = fill_charge_facts(conn, vin, tz, is_home, dc_price=dc_price, dc_per_min=dc_per_min, averages=averages, sc_price=sc_price, sc_per_min=sc_per_min, place_of=place_of)
+    charges = fill_charge_facts(conn, vin, tz, is_home, dc_price=dc_price, dc_per_min=dc_per_min, averages=averages, sc_price=sc_price, sc_per_min=sc_per_min, place_of=place_of, fee_rules=fee_rules)
     row = conn.execute(
         """SELECT updated_at > now() - interval '1 day' AS all_time,
                   years_updated_at > now() - interval '1 day' AS years,
-                  parked_updated_at > now() - interval '1 day' AS parked
+                  parked_updated_at > now() - interval '1 day' AS parked,
+                  recent_updated_at > now() - interval '1 day' AS recent
            FROM cc_vehicle_facts WHERE vin = %s""",
         (vin,),
     ).fetchone()
-    fresh_all, fresh_years, fresh_parked = (tuple(row.values()) if isinstance(row, dict) else tuple(row)) if row else (None, None, None)
+    fresh_all, fresh_years, fresh_parked, fresh_recent = (tuple(row.values()) if isinstance(row, dict) else tuple(row)) if row else (None, None, None, None)
     if charges or not fresh_all:
         fill_vehicle_facts(conn, vin)
     # The per-year figures carry their own stamp. They were first written sharing the
@@ -1146,5 +1359,8 @@ def fill_facts(
     # reader of the table (the whole site) would wait on it.
     if not fresh_parked:
         fill_parked_facts(conn, vin)
+    # One indexed read of the newest drives; redone when a drive was added and once a day otherwise.
+    if trips or not fresh_recent:
+        fill_recent_facts(conn, vin, tz, drive_filter)
     conn.commit()
     return trips, charges

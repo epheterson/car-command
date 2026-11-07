@@ -65,6 +65,11 @@ FIELDS = {
     "CabinOverheatProtectionMode": 300,
     "HvacLeftTemperatureRequest": 60,
     "PreconditioningEnabled": 60,
+    # The car's schedule, read-only on Now: sent when someone changes it
+    "ScheduledChargingMode": 300,
+    "ScheduledChargingStartTime": 300,
+    "ScheduledChargingPending": 300,
+    "ScheduledDepartureTime": 300,
     # Charging, beyond power: the port, its latch, the rate, time to full, the current asked for
     "ChargePortDoorOpen": 10,
     "ChargePortLatch": 10,

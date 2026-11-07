@@ -29,7 +29,20 @@ def cars_of(url: str, tm_connect) -> tuple[list[dict], str | None]:
         return [], scrub(f"Could not read that database: {first}", url)[:200]
 
 
-def build(store, to_site, tm_connect, saved_url) -> APIRouter:
+def tessie_cars_of(token: str) -> tuple[list[dict], str | None]:
+    """The cars on a Tessie token, or the reason it cannot be used (never the token itself)."""
+    import tessie_import as ti
+
+    token = (token or "").strip()
+    if not token:
+        return [], "A Tessie token is needed. Make one at dash.tessie.com/settings/api."
+    try:
+        return ti.vehicles(ti.http_fetcher(token, tries=2)), None
+    except ti.TessieError as err:
+        return [], str(err)
+
+
+def build(store, to_site, tm_connect, saved_url, tessie_cars=tessie_cars_of) -> APIRouter:
     r = APIRouter()
 
     def back(request: Request):
@@ -85,6 +98,15 @@ def build(store, to_site, tm_connect, saved_url) -> APIRouter:
         if why:
             store.say("err", why)
             store.typed = None if form.get("saved") and not (form.get("url") or "").strip() else url
+        return back(request)
+
+    @r.post("/settings/import/tessie")
+    async def tessie(request: Request):
+        form = await request.form()
+        cars, why = await asyncio.to_thread(tessie_cars, form.get("token") or "")
+        why = why or await asyncio.to_thread(store.start_tessie, (form.get("token") or "").strip(), cars)
+        if why:
+            store.say("err", why)
         return back(request)
 
     @r.post("/settings/import/resume")

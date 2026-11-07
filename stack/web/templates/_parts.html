@@ -45,10 +45,10 @@
 {# The guard (Sentry, Halo Secure) on: its red dot stands in for the state's own, named in the title. #}
 {# Red only while the guard can watch: a moving car reports it set but idle #}
 {% macro guarded(c) -%}{% if c.get('sentry') is true and not c.get('offline') and state_word(c.get('status'))[1] != 'driving' %} guarding" title="{{ guard_name(c.get('make')) }} on{% endif %}{%- endmacro %}
-{% macro car_card(c, root, colors, u, today, ticks) -%}{% set sw = ('Offline', 'offline') if c.get('offline') else state_word(c.get('status')) %}{% set t = today or {} %}{% set soc = c.get('soc') %}{% set rng = c.get('range_mi') %}
+{% macro car_card(c, root, colors, u, today, ticks) -%}{% set sw = (('Privacy mode' if c.get('privacy_mode') is true else ('No signal' if c.get('status') == 'Driving' else 'Offline')), 'offline') if c.get('offline') else state_word(c.get('status')) %}{% set t = today or {} %}{% set soc = c.get('soc') %}{% set rng = c.get('range_mi') %}
 <a class="cc" href="{{ root }}/?vin={{ c.vin }}" data-live="{{ c.vin }}">
   <span class="cc-hd"><span class="dot c{{ colors.get(c.vin, 0) }}"></span><span class="cc-nm">{{ c.name }}</span><span class="state {{ sw[1] }}{{ guarded(c) }}"><i></i>{{ sw[0] }}</span></span>
-  <span class="cc-where">{% if c.get('route') %}{{ heading(c.route.name) }}{% if c.route.minutes is not none %}, {{ c.route.minutes }} min{% endif %}{% elif sw[1] == 'driving' %}On the road{% elif c.get('place') and c.get('lat') is not none %}{{ place_refs(c.place, [{'name': c.place, 'lat': c.lat, 'lon': c.lon, 'new': false}], true) }}{% elif c.get('place') or c.get('address') or c.get('locality') %}{{ (c.get('place') or c.get('address') or c.get('locality'))|places }}{% else %}{{ 'Unnamed spot' if c.get('lat') is not none else 'Location unknown' }}{% endif %}{% if c.get('offline') %} · last seen {{ c.last_seen|when }}{% elif c.get('updated_age') %} · {{ 'live ' if c.get('live') else '' }}{{ c.updated_age }}{% endif %}</span>
+  <span class="cc-where">{% if c.get('route') %}{{ heading(c.route.name) }}{% if c.route.minutes is not none %}, {{ c.route.minutes }} min{% endif %}{% elif sw[1] == 'driving' %}On the road{% elif c.get('place') and c.get('lat') is not none %}{{ place_refs(c.place, [{'name': c.place, 'lat': c.lat, 'lon': c.lon, 'new': false}], true) }}{% elif c.get('place') or c.get('address') or c.get('locality') %}{{ (c.get('place') or c.get('address') or c.get('locality'))|places }}{% else %}{{ 'Unnamed spot' if c.get('lat') is not none else 'Location unknown' }}{% endif %}{% if c.get('offline') %} · {{ 'since' if c.get('status') == 'Driving' else 'last seen' }} {{ c.last_seen|when }}{% elif c.get('updated_age') %} · {{ 'live ' if c.get('live') else '' }}{{ c.updated_age }}{% endif %}</span>
   <span class="cc-bat"><span class="cc-pct">{% if soc is not none %}{{ soc|num }}<small>%</small>{% else %}—{% endif %}</span><span class="cc-rng">{% if rng is not none %}{{ rng|dist }}<small>{{ u.dist }}</small>{% else %}—{% endif %}</span></span>
   {{ gauge(soc, c.get('charge_target')) }}
   <span class="pills">{% if t.drives %}{{ pill(t.drives ~ (' drive' if t.drives == 1 else ' drives') ~ ' · ' ~ (t.miles|dist) ~ ' ' ~ u.dist, 'drv') }}{% endif %}{% if sw[1] == 'driving' %}{{ pill('driving now', 'drv') }}{% elif not t.drives %}{{ pill('no drives', 'none') }}{% endif %}{% if t.kwh and t.kwh >= 1 %}{{ pill('charged ' ~ (t.kwh|num) ~ ' kWh', 'chg') }}{% endif %}{% if sw[1] == 'charging' %}{{ pill('charging now', 'chg') }}{% elif not (t.kwh and t.kwh >= 1) %}{{ pill('no charge', 'none') }}{% endif %}</span>
@@ -111,12 +111,41 @@
 {%- elif mix.note %}<span class="mixnote">{{ mix.note }}</span>{% endif %}
 {%- endmacro %}
 
-{# The Powerwall on Now: battery level (neutral ink, with a fill bar) and where the energy moves.
-   `pw` is energypage.row's; nothing is drawn without a fresh reading. #}
+{# Now's home row icons, all from Material Design Icons (Apache 2.0, see static/icons/LICENSE), in the label's ink. #}
+{% set MDI = {'powerwall': 'M15 9h1V7.5h4V9h1c.55 0 1 .45 1 1v11c0 .55-.45 1-1 1h-6c-.55 0-1-.45-1-1V10c0-.55.45-1 1-1m1 2v3h4v-3zm-4-5.31l-5 4.5V18h5v2H5v-8H2l10-9l2.78 2.5H14v1.67l-.24.1z', 'garage': 'M19 20h-2v-9H7v9H5V9l7-4l7 4zM8 12h8v2H8zm0 3h8v2H8zm8 3v2H8v-2z', 'garage-open': 'M19 20h-2v-9H7v9H5V9l7-4l7 4zM8 12h8v2H8z'} %}
+{% macro mdi(name) -%}<svg class="hr-ic" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="{{ MDI[name] }}"/></svg>{%- endmacro %}
+
+{# The Powerwall on Now, a tile in the garage tile's rows: its name, the level big (neutral ink: gold is the cars') where the
+   garage has its door, what it is doing where the garage says Closed, its own power under that; the house's flows
+   down the right. `pw` is energypage.row's; nothing is drawn without a fresh reading. #}
 {% macro pw_row(pw) -%}
-{% if pw %}<section class="pwrow" aria-label="Powerwall" title="{{ pw.source_label }}, {{ pw.age_s }} s ago">
-  <span class="pw-nm">Powerwall</span>
-  {% if pw.soc is not none %}<span class="pw-soc"><b>{{ pw.soc|num }}<small>%</small></b><span class="pwbar"><i style="width:{{ '%.0f'|format(pw.fill) }}%"></i></span></span>{% endif %}
-  <span class="pw-parts">{% for p in pw.parts %}<span class="pw-p{{ ' idle' if p.idle }}" title="{{ p.title }}"><span class="pw-l">{{ p.label }}</span> <b>{{ p.arrow }}{{ p.kw }}</b></span>{% endfor %}</span>
+{% if pw %}{% set bat = (pw.parts|selectattr('key', 'equalto', 'battery')|list or [none])[0] -%}
+<section class="pwrow pwt" aria-label="Powerwall" title="{{ pw.source_label|capitalize }}, {{ pw.age_s }} s ago">
+  <div class="pwt-l">
+    <span class="pw-nm">{{ mdi("powerwall") }}Powerwall</span>
+    <span class="pwt-hero">{% if pw.soc is not none %}<span class="pwt-soc"><b>{{ pw.soc|num }}</b><small>%</small></span><span class="pwt-bar"><i style="width:{{ '%.0f'|format(pw.fill) }}%"></i></span>{% else %}<span class="pwt-soc"><b>–</b></span>{% endif %}</span>
+    <b class="pwt-state">{{ 'Charging' if bat and bat.arrow == '↑' else 'Powering home' if bat and bat.arrow == '↓' else 'Idle' }}</b>
+    <span class="pwt-sub">{% if bat and bat.arrow %}{{ bat.kw }}{% else %}&nbsp;{% endif %}</span>
+  </div>
+  <ul class="pwt-flows">{% for p in pw.parts if p.key != 'battery' %}<li class="{{ 'idle' if p.idle }}" title="{{ p.title }}"><span>{{ p.label }}</span><b>{{ p.arrow }}{{ p.kw }}</b></li>{% endfor %}</ul>
 </section>{% endif %}
+{%- endmacro %}
+
+{# The garage on Now: the door as it stands (bold), and the main switch over its watching, opening and
+   closing (static/shell.js posts it; on is confirmed with Face ID when it opens or closes the door).
+   `g` is app.garage_view's; a door not read yet says nothing and the row's refresh reads it. #}
+{% macro garage_row(g) -%}
+{% if g %}<section class="pwrow garow{{ ' off' if not g.on }}{{ ' open' if g.open }}" aria-label="Garage"{% if g.linked and not g.state %} data-door-pending{% endif %}>
+  <span class="pw-nm">Garage</span>
+  {% if g.switch %}<span class="ga-auto" title="{{ ('Auto: ' ~ g.does ~ ' (Settings › Alerts)') if g.on and g.does != 'off' else ('Auto: nothing set in Settings › Alerts' if g.on else 'Auto off: nothing watches, opens or closes the door') }}"><label class="switch"><input type="checkbox" role="switch" aria-label="Garage auto open and close" data-garage-on{% if g.on %} checked{% endif %}{% if g.raises %} data-raises{% endif %}><span aria-hidden="true"></span></label><span class="ga-cap" aria-hidden="true">Auto</span></span>{% endif %}
+  <span class="ga-big" title="The door, from Home Assistant">{{ mdi('garage-open' if g.open else 'garage') }}</span>
+  <b class="ga-state">{{ g.state|capitalize if g.state else 'Door' }}</b>
+  <span class="ga-since">{% if g.since %}since {{ g.since }}{% elif not g.state %}{{ 'reading…' if g.linked else 'not linked' }}{% endif %}</span>
+  <span class="ga-said" data-garage-said role="status" aria-live="polite"></span>
+</section>{% endif %}
+{%- endmacro %}
+
+{# Now's home row: the Powerwall and the garage side by side; /energy/row draws it again. #}
+{% macro home_row(pw, gar) -%}
+{% if pw or gar %}<div class="homerow">{{ pw_row(pw) }}{{ garage_row(gar) }}</div>{% endif %}
 {%- endmacro %}

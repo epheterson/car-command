@@ -1,0 +1,4 @@
+{# Now's Today line, every car's drives and miles since midnight; the live stream draws it again (data-live="today"). -#}
+<div class="today" data-live="today"><span class="lbl">Today</span>
+  {% for l in line or [] %}<span class="car{% if not l.moved %} still{% endif %}"><span class="dot c{{ colors.get(l.vin, 0) }}"></span>{% if l.moved %}<b>{{ l.name }}</b>{% else %}{{ l.name }}{% endif %} {{ l.text }}</span>{% endfor %}
+</div>

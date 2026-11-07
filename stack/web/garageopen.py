@@ -37,6 +37,7 @@ STEP_M = 20  # a learned road keeps a point about this often
 MATCH_M = 35  # a fix this close to a learned road is on it
 STOP_MIN = 5  # a stop near home this long is a place cars stay (playground, neighbour)
 AWAY_M = 30  # with the camera: this much farther from home than the last fix is turning away, not GPS noise
+REWATCH = 3  # with the camera: a watch that saw nothing is asked again this often while the car is still driving inside home's radius
 MODES = ("off", "watch", "open")
 
 
@@ -143,6 +144,7 @@ class Trip:
     go: datetime | None = None  # when the door is to be started
     started: datetime | None = None  # when it was (or, watching, would have been)
     said_no_show: bool = False
+    rewatched: int = 0  # watches asked again inside home's radius on this trip
 
 
 @dataclass
@@ -167,8 +169,17 @@ class Approach:
         if d > ARM_M:
             if trip.go and not trip.started:
                 out.append(("cancel", {"why": "turned away"}))
-            trip.armed, trip.go, trip.started, trip.said_no_show = True, None, None, False
+            trip.armed, trip.go, trip.started, trip.said_no_show, trip.rewatched = True, None, None, False, 0
         elif d < home["radius_m"]:
+            moving = (fix.get("mph") or 0) >= 1 or bool(fix.get("driving"))
+            if self.camera and trip.armed and not trip.go and moving and trip.rewatched < REWATCH:
+                # the camera looked and saw nothing, and the car is still coming (stopped short at a light, a
+                # neighbour's): look again rather than call it missed. Only a sighting starts the door.
+                trip.rewatched += 1
+                trip.go = now
+                if fresh:
+                    trip.last_fix, trip.last_d = (lat, lon), d
+                return [("schedule", {"go": now, "d": round(d), "eta": 0, "again": trip.rewatched})]
             if trip.armed:
                 out.append(("arrived", {}) if trip.go else ("missed", {}))
             trip.armed = False

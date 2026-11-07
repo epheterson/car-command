@@ -4,10 +4,11 @@ came from the sun, the Powerwall and the grid.
 Brand-neutral on purpose. A row is (site, at, solar_w, home_w, grid_w, battery_w, soe_pct,
 source) with the signs of a Powerwall: grid and battery positive when power comes *from* them
 (import, discharge), solar and home never negative. Where the readings come from is the
-source's business (energy_cloud.py); everything here reads rows. The source column is there for
-another source to come: today every row is Tesla's cloud, one sample per five minutes, kept as it
-came and held for the five minutes from its time (`minute_samples`). Five minutes is the
-resolution the whole split is worked at, and the only one there is.
+source's business (energy_relay.py on the house's network, energy_cloud.py from Tesla's cloud);
+everything here reads rows. A relay row is a minute's mean; a cloud day's history is one sample
+per five minutes, its live reading one per five to twenty (the poll slows as Tesla's allowance
+runs low). A row stands for the time until the next one, at most MAX_ROW_S; past that
+is a gap, not a house that used nothing.
 
 The split of a charge is worked out once, after the charge ends, and stored in
 cc_charge_sources beside the charge facts; pages read a join and never integrate anything.
@@ -58,8 +59,9 @@ CREATE TABLE IF NOT EXISTS cc_charge_sources (
 SITE = "home"
 CONFIG_KEY = "energy_config"  # cc_state: JSON, nothing secret in it
 LEGACY_PASSWORD_KEY = "energy_gateway_password"  # a local gateway was once read; its sealed password is deleted at startup
-CLOUD_S = 300  # seconds one row stands for
-LIVE_MAX_AGE_S = 900  # a live reading is five minutes apart, so Now shows one for fifteen
+CLOUD_S = 300  # seconds the newest row stands for (the history's and the live poll's step)
+MAX_ROW_S = 1200  # a row stands until the next, at most this: the live poll's slowest step (fleet_usage's factor 4)
+LIVE_MAX_AGE_S = MAX_ROW_S + CLOUD_S  # Now shows a live reading until the slowest poll is overdue
 WINDOW_DAYS = 7  # how far back the Powerwall's own mix is read
 MIN_COVERAGE = 0.5  # less of a charge covered by readings than this: no split
 SETTLE = timedelta(minutes=5)  # a charge is split this long after it ends, once the last minutes are in
@@ -71,7 +73,8 @@ FIELDS = ("solar_w", "home_w", "grid_w", "battery_w", "soe_pct")
 
 
 def default_config() -> dict:
-    return {"cloud": {"enabled": False, "site_id": "", "name": "", "installed": ""}}
+    # relay: the home network's address (a pypowerwall proxy), set in Settings › Powerwall; POWERWALL_RELAY_URL in .env when blank
+    return {"cloud": {"enabled": False, "site_id": "", "name": "", "installed": ""}, "relay": {"url": ""}}
 
 
 def load_config(get) -> dict:
@@ -158,19 +161,24 @@ def store(conn, rows: list[dict], source: str = "cloud", site: str = SITE) -> in
     return len(rows)
 
 
-# Rows covering [lo, hi), the one before it included (it stands for five minutes).
+# Rows covering [lo, hi), the one before it included (it may stand for up to MAX_ROW_S).
 SERIES_SQL = """
 SELECT e.at, e.solar_w, e.home_w, e.grid_w, e.battery_w, e.soe_pct, e.source
 FROM cc_energy e
 WHERE e.site = %s AND e.at >= %s AND e.at < %s
 ORDER BY e.at"""
 
-# The hours one row stands for, in SQL: five minutes.
-ROW_HOURS = "5.0 / 60"
+# The rows in [lo, hi), each with h, the hours it stands for: until the next row, at most
+# MAX_ROW_S; the newest stands for CLOUD_S. The next row is looked for past hi too, so an
+# hour's last row is as wide at the end of a range as inside one. Parameters: site, lo, hi, hi.
+ROWS_WIDE = f"""(SELECT * FROM (
+    SELECT e.*, LEAST(EXTRACT(EPOCH FROM COALESCE(LEAD(e.at) OVER (ORDER BY e.at), e.at + interval '{CLOUD_S} seconds') - e.at), {MAX_ROW_S}) / 3600.0 AS h
+    FROM cc_energy e WHERE e.site = %s AND e.at >= %s AND e.at < %s::timestamptz + interval '{MAX_ROW_S} seconds') w
+  WHERE w.at < %s)"""
 
 
 def series(conn, lo: datetime, hi: datetime, site: str = SITE) -> list[dict]:
-    return conn.execute(SERIES_SQL, (site, lo - timedelta(seconds=CLOUD_S), hi)).fetchall()
+    return conn.execute(SERIES_SQL, (site, lo - timedelta(seconds=MAX_ROW_S), hi)).fetchall()
 
 
 def _minute(t: datetime) -> datetime:
@@ -178,11 +186,13 @@ def _minute(t: datetime) -> datetime:
 
 
 def minute_samples(rows: list[dict]) -> dict[datetime, dict]:
-    """minute -> the reading that stands for it: a row holds the five minutes from its time, and
-    where two overlap the later one (nearer in time) is the one read."""
+    """minute -> the reading that stands for it: a row holds the minutes from its time until the
+    next row, at most MAX_ROW_S (the newest, CLOUD_S)."""
     out: dict[datetime, dict] = {}
-    for r in sorted(rows, key=lambda r: r["at"]):
-        for i in range(CLOUD_S // 60):
+    ordered = sorted(rows, key=lambda r: r["at"])
+    for r, nxt in zip(ordered, ordered[1:] + [None]):
+        wide = min((nxt["at"] - r["at"]).total_seconds(), MAX_ROW_S) if nxt else CLOUD_S
+        for i in range(max(1, int(wide // 60))):
             out[_minute(r["at"]) + timedelta(minutes=i)] = r
     return out
 
@@ -274,10 +284,9 @@ def reset_sources(get, put, conn) -> bool:
 
 BATTERY_HOURS_SQL = f"""
 SELECT date_trunc('hour', timezone(%s, e.at)) AS hour,
-       SUM(LEAST(GREATEST(-COALESCE(e.battery_w, 0), 0), GREATEST(COALESCE(e.solar_w, 0) - COALESCE(e.home_w, 0), 0)) * {ROW_HOURS}) / 1000 AS from_sun_kwh,
-       SUM(GREATEST(-COALESCE(e.battery_w, 0), 0) * {ROW_HOURS}) / 1000 AS in_kwh
-FROM cc_energy e
-WHERE e.site = %s AND e.at >= %s AND e.at < %s
+       SUM(LEAST(GREATEST(-COALESCE(e.battery_w, 0), 0), GREATEST(COALESCE(e.solar_w, 0) - COALESCE(e.home_w, 0), 0)) * e.h) / 1000 AS from_sun_kwh,
+       SUM(GREATEST(-COALESCE(e.battery_w, 0), 0) * e.h) / 1000 AS in_kwh
+FROM {ROWS_WIDE} e
 GROUP BY 1 ORDER BY 1"""
 
 
@@ -408,7 +417,7 @@ def fill_charge_sources(conn, vin: str, tz, batch: int = BATCH, site: str = SITE
         powers = with_measured_power(powers, [(r["first_date"], r["last_date"], r["volts"], r["amps"]) for r in el])
         split = split_charge(powers, lo, hi, series(conn, lo, hi, site))
         mix = (
-            battery_mix(conn.execute(BATTERY_HOURS_SQL, (tz.key, site, lo - timedelta(days=WINDOW_DAYS), lo)).fetchall())
+            battery_mix(conn.execute(BATTERY_HOURS_SQL, (tz.key, site, lo - timedelta(days=WINDOW_DAYS), lo, lo)).fetchall())
             if split["covered"] >= MIN_COVERAGE
             else {"sun_frac": None, "grid_rate": None, "in_kwh": 0.0}
         )
@@ -441,19 +450,19 @@ KWH_SUMS = """SUM(GREATEST(COALESCE(solar_w, 0), 0) * h) / 1000 AS solar_kwh,
        SUM(GREATEST(-COALESCE(grid_w, 0), 0) * h) / 1000 AS grid_out_kwh,
        SUM(GREATEST(-COALESCE(battery_w, 0), 0) * h) / 1000 AS battery_in_kwh,
        SUM(GREATEST(COALESCE(battery_w, 0), 0) * h) / 1000 AS battery_out_kwh,
-       COUNT(*) AS rows"""
-ROWS_IN = f"(SELECT e.*, {ROW_HOURS} AS h FROM cc_energy e WHERE e.site = %s AND e.at >= %s AND e.at < %s) q"
+       COUNT(*) AS rows,
+       SUM(h) AS hours"""
+ROWS_IN = f"{ROWS_WIDE} q"
 TOTALS_SQL = f"SELECT {KWH_SUMS}\nFROM {ROWS_IN}"
 # By UTC hour: every hour of a day the clocks change is its own, and a whole hour is the same
 # hour in any zone with whole-hour offsets. The reader puts it on its own clock.
 HOURS_SQL = f"SELECT date_trunc('hour', at AT TIME ZONE 'UTC') AS hour_utc, {KWH_SUMS}\nFROM {ROWS_IN}\nGROUP BY 1 ORDER BY 1"
-HOUR_ROWS = 3600 // CLOUD_S  # rows in a whole hour
 
 
 def totals(conn, lo: datetime, hi: datetime, site: str = SITE) -> dict | None:
-    """kWh in [lo, hi) from the stored rows (five minutes a row), or
+    """kWh in [lo, hi) from the stored rows (each standing until the next), or
     None when there are none. What /api/energy calls today's totals."""
-    row = conn.execute(TOTALS_SQL, (site, lo, hi)).fetchone()
+    row = conn.execute(TOTALS_SQL, (site, lo, hi, hi)).fetchone()
     if not row or not row["rows"]:
         return None
     return {k: round(float(row[k] or 0), 3) for k in KWH_KEYS}
@@ -461,12 +470,12 @@ def totals(conn, lo: datetime, hi: datetime, site: str = SITE) -> dict | None:
 
 def hours(conn, lo: datetime, hi: datetime, site: str = SITE) -> list[dict]:
     """kWh per clock hour in [lo, hi), oldest first: the hour's UTC start, its kWh, and how
-    much of it the readings cover (1.0 is all twelve rows). An hour with no rows is left out,
+    much of it the readings cover (1.0 is the whole hour). An hour with no rows is left out,
     so a gap reads as a gap and not as a house that used nothing. What /api/energy/hours
     answers, for a reader that prices the house by the hour (the energy dashboard's bill)."""
     out = []
-    for r in conn.execute(HOURS_SQL, (site, lo, hi)).fetchall():
+    for r in conn.execute(HOURS_SQL, (site, lo, hi, hi)).fetchall():
         hour = r["hour_utc"].replace(tzinfo=timezone.utc)
         # + 0.0: a sum of negated zeros is -0.0, which JSON would print as such
-        out.append({"hour": hour, **{k: round(float(r[k] or 0), 3) + 0.0 for k in KWH_KEYS}, "coverage": round(min(r["rows"] / HOUR_ROWS, 1.0), 3)})
+        out.append({"hour": hour, **{k: round(float(r[k] or 0), 3) + 0.0 for k in KWH_KEYS}, "coverage": round(min(float(r["hours"] or 0), 1.0), 3)})
     return out

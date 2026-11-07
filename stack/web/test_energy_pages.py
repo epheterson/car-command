@@ -42,11 +42,11 @@ def macros(env):  # noqa: F811
 
 def test_the_row_is_drawn_in_neutral_ink_with_a_fill_bar_and_nothing_without_a_reading(env):  # noqa: F811
     html = macros(env).render(pw=energypage.row(READING))
-    assert 'class="pwrow"' in html and "61<small>%</small>" in html and 'class="pwbar"' in html and 'style="width:61%"' in html
-    assert "↑2.1 kW" in html and "Powerwall" in html and "gold" not in html and 'title="Tesla, 4 s ago"' in html
+    assert 'class="pwrow pwt"' in html and "61</b><small>%</small>" in html and 'class="pwt-bar"' in html and 'style="width:61%"' in html
+    assert '<b class="pwt-state">Charging</b>' in html and '<span class="pwt-sub">2.1 kW</span>' in html and "Powerwall" in html and "gold" not in html and 'title="Tesla, 4 s ago"' in html
     assert macros(env).render(pw=None).strip() == ""
     no_level = macros(env).render(pw=energypage.row({**READING, "soe_pct": None}))
-    assert "pw-soc" not in no_level and 'class="pwrow"' in no_level
+    assert "pwt-bar" not in no_level and 'class="pwrow pwt"' in no_level
 
 
 def test_the_row_css_never_reaches_for_gold():
@@ -186,8 +186,8 @@ def test_the_charge_page_shows_the_split_under_the_summary(env):  # noqa: F811
 def test_now_and_the_garage_draw_the_row_only_with_a_reading(env):  # noqa: F811
     ctx = dict(base(), active="now", cars=[], acts=[], act_sig="", today={}, line=[], ticks=[], pw=energypage.row(READING))
     html = env.get_template("garage.html").render(**ctx)
-    assert html.count('class="pwrow"') == 1 and html.index("car-cards") < html.index('class="pwrow"') < html.index('class="legend')
-    assert 'class="pwrow"' not in env.get_template("garage.html").render(**dict(ctx, pw=None))
+    assert html.count('class="pwrow pwt"') == 1 and html.index("car-cards") < html.index('class="pwrow pwt"') < html.index('class="legend')
+    assert 'class="pwrow' not in env.get_template("garage.html").render(**dict(ctx, pw=None))
 
 
 # ---- Stats

@@ -48,8 +48,8 @@ def quickest_hour(trips: list[tuple]) -> dict | None:
     return {"hour": h, "minutes": ok[h], "typical": typical, "n": len(by[h])} if typical > 0 and (typical - ok[h]) / typical >= QUICKER else None
 
 
-def routes(drives: list[dict], rules: list[dict], tz, keep: int = 25) -> list[dict]:
-    """The busiest routes, most driven first. `drives` carry `start_place` and `end_place`
+def routes(drives: list[dict], rules: list[dict], tz, keep: int | None = 25) -> list[dict]:
+    """The busiest routes, most driven first (every one when `keep` is None). `drives` carry `start_place` and `end_place`
     (a place dict or None), start/destination dates, miles and kwh_used."""
     acc: dict[tuple, dict] = {}
     for d in drives:

@@ -193,7 +193,8 @@ def test_the_garage_streams_one_card_per_car(bare, monkeypatch):  # noqa: F811
     monkeypatch.setattr(bare, "drives", lambda vin, n=None, *a: [])
     monkeypatch.setattr(bare, "today_by_car", lambda: {})
     cards = bare.live_cards("all", "")
-    assert set(cards) == {"V1", "V2", "activity"} and 'data-live="V2"' in cards["V2"]["html"] and "Bravo" in cards["V2"]["html"]
+    assert set(cards) == {"V1", "V2", "activity", "today"} and 'data-live="V2"' in cards["V2"]["html"] and "Bravo" in cards["V2"]["html"]
+    assert cards["today"]["html"].startswith('<div class="today" data-live="today">'), "the Today line is drawn again with the cards"
 
 
 def test_the_stream_sends_the_banners_with_the_cards(bare, monkeypatch):  # noqa: F811

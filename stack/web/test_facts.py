@@ -217,7 +217,7 @@ def test_a_home_charge_with_no_plan_is_left_unpriced():
         "charging_type": "AC",
     }
     (row,) = charge_facts([home], [], PT, lambda lat, lon: True, dc_price=0.48)
-    assert row == (1, 12.0, None, None, True, None, None, None, None, "none", "", None)
+    assert row == (1, 12.0, None, None, True, None, None, None, None, "none", "", None, None, None, None, None)
     (row,) = charge_facts([dict(home, charging_type="DC")], [], PT, lambda lat, lon: True, dc_price=0.48)
     assert row[2] is None, "the fast-charging rate is for chargers away from home"
     (row,) = charge_facts([dict(home, real_cost=5.5)], [], PT, lambda lat, lon: True)
@@ -250,7 +250,7 @@ def test_each_cost_says_where_it_came_from_and_keeps_the_exact_split():
     cost.use_plan({"name": "Springfield TOU", "source": "urdb:x", "versions": [{"from": "2020-01-01", "periods": periods, "weekday": grid, "weekend": grid}]})
     s = dict(s, session_end_date=T0 + timedelta(hours=3), real_charged=None)
     (row,) = charge_facts([s], [(T0, T0 + timedelta(hours=3), 10.0)], PT, lambda lat, lon: True)
-    _i, kwh, price, plan, home, off, part, peak, exact, source, _region, _month = row
+    _i, kwh, price, plan, home, off, part, peak, exact, source, _region, _month, *_fees = row
     assert json.loads(exact) == {"a": 0.0, "b": 10.0, "c": 10.0, "d": 10.0} and (off, part, peak) == (0.0, 20.0, 10.0)
     assert round(price, 6) == round(10 * 0.2 + 10 * 0.3 + 10 * 0.4, 6) and plan == "Springfield TOU" and source == "plan"
 

@@ -108,7 +108,20 @@ def truth(value) -> bool | None:
     return None
 
 
-def stream_now(carried: dict | None, now: datetime, fresh: timedelta = timedelta(minutes=10)) -> dict:
+def minute_of_day(v, tz=None) -> int | None:
+    """A schedule's time as minutes after midnight. Newer firmware streams the next start as a Unix time (a Model 3
+    sent 1793865600, midnight local), older a minute of the day; read as minutes, the first said nothing at all."""
+    if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+        return None
+    if v < 1440:
+        return v
+    if v < 1_000_000_000:
+        return None
+    t = datetime.fromtimestamp(v, tz) if tz else datetime.fromtimestamp(v).astimezone()
+    return t.hour * 60 + t.minute
+
+
+def stream_now(carried: dict | None, now: datetime, fresh: timedelta = timedelta(minutes=10), tz=None) -> dict:
     """What the Tesla stream's newest values say about now. Two kinds: what needs a fresh word
     (driving, Sentry, charging, the temperatures; said only when the stream spoke in `fresh`), and
     what the car keeps until it says otherwise (lock, doors, windows, the charge limit, plugged in;
@@ -173,6 +186,15 @@ def stream_now(carried: dict | None, now: datetime, fresh: timedelta = timedelta
             out["charging"] = charge in ("Starting", "Charging")
     if isinstance(c.get("ChargeLimitSoc"), (int, float)):
         out["charge_limit"] = float(c["ChargeLimitSoc"])
+    # the car's schedule, kept until it says otherwise: a sleeping car changes none of it
+    mode = c.get("ScheduledChargingMode")
+    if mode in ("Off", "StartAt", "DepartBy"):
+        out["sched_mode"] = mode
+        for key, name in (("ScheduledChargingStartTime", "sched_charge_min"), ("ScheduledDepartureTime", "sched_depart_min")):
+            if (m := minute_of_day(c.get(key), tz)) is not None:
+                out[name] = m
+        if isinstance(c.get("ScheduledChargingPending"), bool):
+            out["sched_pending"] = c["ScheduledChargingPending"]
     if isinstance(c.get("ChargePortDoorOpen"), bool):
         out["port_open"] = c["ChargePortDoorOpen"]
     if c.get("ChargePortLatch") in ("Engaged", "Disengaged", "Blocking"):

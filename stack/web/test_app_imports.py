@@ -50,6 +50,7 @@ def test_app_imports_and_mounts_every_page(monkeypatch):
         "/stats",
         "/places",
         "/drives.csv",
+        "/logbook.csv",
         "/charges.csv",
         "/health",
         "/api/now",
@@ -259,6 +260,35 @@ def test_detail_templates_render_with_plausible_rows():
         readings=0,
     )
     assert "$19.95" in html and "Billed by Tesla, Springfield, IL" in html and '/dx/charging/invoice/c0ffee%201234"' in html, "a billed charge links its invoice through the site"
+    html = env.get_template("charge.html").render(
+        **base,
+        session=dict(session, cost=19.95, cost_source="billed", rate_plan="Billed by Tesla", cost_parts={}, by_hand=False, idle_fee=1.0, idle_min=2.0, congestion_fee=0.0, session_fee=None),
+        bill=None,
+        stats=cstats,
+        chart=cchart,
+        hidden=False,
+        samples=[],
+        every=1,
+        readings=0,
+    )
+    assert (
+        "Idle fee" in html and "$18.95" in html and "Total" in html and "Session fee" not in html and "Congestion fee" not in html
+    ), "charging, idle and total; a fee that is zero or unknown has no row"
+    assert "$1.00" in html and "2 min from the charge finishing" in html and "Billed by the network" in html
+    html = env.get_template("charge.html").render(
+        **base,
+        session=dict(session, by_hand=False, cost_source="dc", rate_plan="Supercharger at 0.40/kWh + 0.50/min idle", idle_fee=None, session_fee=1.0),
+        stats=cstats,
+        chart=cchart,
+        hidden=False,
+        samples=[],
+        every=1,
+        readings=0,
+    )
+    assert "Idle unknown" in html and ">unknown<" in html, "an idle price with no known departure says so rather than showing $0.00"
+    assert "Idle fee" not in env.get_template("charge.html").render(
+        **base, session=dict(session, by_hand=False), stats=cstats, chart=cchart, hidden=False, samples=[], every=1, readings=0
+    ), "no fees, no block"
     # what it bought until the next charge, and the arrows either side
     nxt = {"kind": "charge", "id": 2, "start": t0 + timedelta(days=2), "end": None, "href": "/charges/2", "gained": 30.0, "where": "Home"}
     paid = {
@@ -375,6 +405,7 @@ def test_detail_templates_render_with_plausible_rows():
     assert "September 2026" in html and "month=2026-08" in html and "month=2026-10" not in html and "Elm Street" in html
     assert html.count('class="row-b') == 1 and 'class="day-h"' in html and 'class="fsheet"' in html and "<table" not in html
     assert "sort=miles" in html and "drives.csv" in html and "show=hidden" in html
+    assert 'action="/cc/logbook.csv"' in html and 'name="addresses"' in html and 'name="totals"' in html and 'name="tag"' in html and "<select name=\"tag\"" not in html
     assert "Show older" not in html
     more = {"left": 6625, "label": "Show older", "href": "?from=2000-01-01&rows=1000"}
     html = env.get_template("drives.html").render(
@@ -864,6 +895,9 @@ def test_detail_templates_render_with_plausible_rows():
         and ">Health</span><span class=\"v warn\">Warning<" in html
         and "No battery readings" in html
     )
+    assert "Range at your recent efficiency" not in html
+    html = env.get_template("battery.html").render(**base, blocks=[dict(bblock, car=dict(bblock["car"], range_mi=210.0, range_recent_mi=182.0, recent_window_mi=52.0))])
+    assert "Range at your recent efficiency" in html and "182<small>mi</small>" in html and "at your last 52 mi · the car says 210" in html
     srows = [{"period": t0.date(), "drives": 3, "miles": 61.2, "drive_h": 1.9, "used_kwh": 21.0, "wh_per_mi": 343.0, "charges": 1, "added_kwh": 30.0, "cost": 12.0, "cost_per_mi": 0.196}]
     html = env.get_template("stats.html").render(
         **garage,
@@ -958,6 +992,7 @@ def test_detail_templates_render_with_plausible_rows():
         routes=[{"c": 1, "pts": [[40.7, -74.0], [40.8, -74.1]]}],
         away=[dict(session, kwh=47.0)],
     )
+    assert 'action="/cc/logbook.csv"' in html and '<select name="tag"><option value="">any</option><option value="Work" selected>' in html
     assert "client visit" in html and "tagged Work" in html and "tag=Airport" in html and 'id="map"' in html and "Charges along the way" in html
     # the rules are one-line rows in the house groups and the tags are pills, as on Drives
     rules = [{"id": 3, "from_name": "Home", "to_name": "Work", "tag": "Work", "both_ways": True}, {"id": 4, "from_name": None, "to_name": "Springfield Airport", "tag": "Airport", "both_ways": False}]
@@ -1174,12 +1209,14 @@ def test_detail_templates_render_with_plausible_rows():
     for name in ("TeslaFi (API)", "TeslaMate", "Lucid", "Tesla Model 3"):
         assert f"<b>{name}</b>" in html or name in html, name
     assert "the connector" not in html and "the TeslaFi feed" not in html
-    assert "81.2 kWh" in html and "set by you" in html and "s figure (75.0 kWh)" in html and "117.1 kWh" in html and "reported by Lucid" in html and ">unknown<" in html
-    for vin, value in (("V1", "81.2"), ("V3", "117.1"), ("V2", "")):
+    assert "81.2 kWh" in html and "Set by you" in html and "s figure (75.0 kWh)" in html and "117.1 kWh" in html and "Reported by Lucid" in html and ">unknown<" in html
+    for vin, value in (("V1", "81.2"), ("V2", "")):
         field = html.index(f'name="capacity_{vin}" id="cap-{vin}" value="{value}"')
-        opened = html.rfind('<details class="set-x pack">', 0, field)
+        opened = html.rfind('<details class="set-x car-pack">', 0, field)
         assert opened > html.rfind('<details class="set-x">', 0, field) and "</form>" not in html[opened:field], "the box opens beneath its Pack row"
-    assert html.count('name="capacity_') == 4 and html.count('<details class="set-x pack">') == 3, "no pack box outside its row"
+    assert html.count('name="capacity_') == 3 and html.count('<details class="set-x car-pack">') == 2, "no pack box outside its row"
+    assert 'name="capacity_V3"' not in html, "a pack the car reports is shown, not edited"
+    assert html.count('<details class="set-x car-edit">') == 3 and html.count(">Nickname<") == 3 and ">Name <" not in html, "the name is the header; its pencil opens the nickname"
     assert 'id="pack-reset-V1"' in html and 'id="pack-reset-V3"' not in html, "a reset only where you set it"
     assert html.count('class="set-row acct') == 3 and "TeslaFi token" in html and "Lucid account" in html and "TeslaMate database" in html
     assert "from a sign-in file" in html and "secrets/lucid-token.json" in html and "kept in the app" in html and "set in .env" in html and "older token setting" not in html
@@ -1223,6 +1260,17 @@ def test_detail_templates_render_with_plausible_rows():
     assert "Bravo" in html and "(history)" not in html and 'href="/cc/timeline?vin=V1"' in html
     assert html.count('class="side-car') == 3, "All cars, Alpha, Bravo in the sidebar"
     assert 'href="/cc/?vin=V2"' in html, "switching car keeps the page: the error page has no here, so it falls back to Now"
+    one = env.get_template("error.html").render(**dict(base, active="now"), status=404, detail="No such drive.")
+    assert 'class="side-sec on" href="/cc/?vin=all"' in one and 'class="brand" href="/cc/?vin=all"' in one, "on one car's Now, Now goes to every car"
+    assert '<a href="/cc/?vin=all" data-now aria-current="page">' in one, "the phone's Now tab too"
+    from pathlib import Path as _P
+
+    js = (_P(__file__).parent / "static" / "shell.js").read_text()
+    part = js[js.index("The Now tab goes back to the Now view last left") :]
+    assert 'sessionStorage.setItem(KEY, here)' in part and 'a[data-now]' in part and '"/?vin=all"' in part, "the tiles remembered for the session"
+    other = env.get_template("error.html").render(**dict(base, active="drives"), status=404, detail="No such drive.")
+    assert 'class="brand" href="/cc/?vin=V1"' in other, "from any other page, Now is this car's"
+    assert 'data-now-view="car"' in one and "data-now-view" not in other, "a car's Now says which view it is, for the Now tab to come back to"
 
 
 def _app(monkeypatch):
@@ -1507,9 +1555,30 @@ def test_the_sidebar_shows_each_cars_battery(monkeypatch):
         status=404,
         detail="x",
     )
+    assert 'id="ptitle" data-page="Overview"' in html, "the bar knows the chosen sub-page, so an h1 that repeats it (Drives under Timeline) can go"
     assert '<span class="side-lv">58%</span>' in html and html.count('class="side-lv"') == 2, "once in the sidebar, once in the phone's car sheet"
     tabbar = html[html.index('class="tabbar"') : html.index('<div class="sheet up">')]
     assert tabbar.count("<svg") == 5, "four sections and More in the bar, each with its icon (the More sheet's rows have their own)"
+    tabs = lambda **kw: html_of(nav_phone_tabs=kw.pop("tabs"), **kw)
+    html_of = lambda **kw: env.get_template("error.html").render(
+        **{
+            **dict(
+                root="", now=datetime(2026, 9, 4, tzinfo=timezone.utc), car={"vin": "V1", "name": "Alpha"}, active="places", vehicles=[], q="", colors={}, names={}, cur="$", status=404, detail="x"
+            ),
+            **kw,
+        }
+    )
+
+    def bar_of(page):
+        return page[page.index('class="tabbar"') : page.index('<div class="sheet up">')]
+
+    own = bar_of(tabs(tabs=("places", "now")))
+    assert own.index(">Places<") < own.index(">Now<") and ">Stats<" not in own and own.count("<svg") == 3, "the owner's tabs, in the owner's order, then More"
+    assert 'aria-current="page"><svg' in own[: own.index(">Now<")] and 'aria-current="page"' not in own[own.index(">Now<") :], "Places is its own tab, so it is the one marked, not More"
+    more = tabs(tabs=("places", "now"))
+    assert ">Stats</a>" in more[more.index('<div class="sheet up">') :], "what the bar leaves out is under More"
+    under_map = bar_of(tabs(tabs=("now", "map")))
+    assert re.search(r'aria-current="page">(?:(?!</a>).)*<span>Map</span>', under_map, re.S) and under_map.count('aria-current="page"') == 1, "Places sits under the Map tab when Places is not a tab"
 
 
 def test_today_is_one_query_for_every_car(monkeypatch):
@@ -1674,7 +1743,15 @@ def test_single_car_now_leads_with_state_and_lists_rows():
     assert "≈$0.46" in est and "≈$5.20" in est and "≈" not in html, "an estimated cost is marked on Now's rows, a real one is not"
     assert html.count('class="row-b') == 2, "recent drives and charges are one-line rows"
     assert 'class="gauge"' in html and "limit 90%" in html and "</i>Charging</span>" in html and '<span class="ft-b">7.2 kW</span>' in html
-    assert "1 drive today · 3 mi" in html and "charged 17 kWh today" in html and "route" in html and "$0.46" in html and "17.4 kWh" in html
+    assert "1 drive today · 3 mi" in html
+    assert "homerow" not in html, "no house row unless the page is given one"
+    assert "at your last" not in html, "no recent-efficiency range for a car with too few logged miles"
+    recent = env.get_template("now.html").render(**dict(ctx, car=dict(car, range_recent_mi=182.0, recent_window_mi=52.0)), today=None)
+    assert "182 mi at your last 52 mi" in recent and "over its last 52 mi of driving" in recent, "beside the car's own estimate, with its window said"
+    pw = {"source_label": "the home network", "age_s": 5, "soc": 48.0, "fill": 48.0, "parts": [{"key": "battery", "label": "Powerwall", "kw": "0.8 kW", "arrow": "↓", "title": "", "idle": False}]}
+    one = env.get_template("now.html").render(**ctx, today=None, pw=pw, gar=None)
+    assert '<div class="homerow"><section class="pwrow pwt"' in one and "Powering home" in one, "a one-car household's Now carries the house's row"
+    assert "charged 17 kWh today" in html and "route" in html and "$0.46" in html and "17.4 kWh" in html
     quiet = env.get_template("now.html").render(**dict(ctx, drives=[], charges=[]), today=None)
     assert "no drives today" in quiet and "No drives yet" in quiet
     # a parked car with drives today: the car close up, and beside it a second map of the day's drives
@@ -1695,11 +1772,13 @@ def test_single_car_now_leads_with_state_and_lists_rows():
     assert ".maps2 { grid-template-columns:1fr; }" in css and ".fts > .ft:last-child:nth-child(odd) { grid-column:1 / -1; }" in css, "a phone stacks the maps; an odd last tile spans its row"
     import re
 
-    # out of reach: the pill says Offline with the last reading's time, the dot is grey, and no "driving now"
+    # out of reach: a driving car reads No signal since the last reading, the dot is grey, and no "driving now"
     gone = dict(car, status="Driving", offline=True, last_seen=t0 - timedelta(minutes=80))
     out = env.get_template("now.html").render(**dict(ctx, car=gone, win="24h"), today={"drives": 1, "miles": 3.1})
-    assert 'class="state offline"' in out and "<i></i>Offline" in out and re.search(r"last seen [^<]*\d{1,2}:\d\d", out)
-    assert "driving now" not in out and "<i></i>Driving" not in out and "<title>Alpha · Offline" in out
+    assert 'class="state offline"' in out and "<i></i>No signal" in out and re.search(r"since [^<]*\d{1,2}:\d\d", out)
+    assert "driving now" not in out and "<i></i>Driving" not in out and "<title>Alpha · No signal" in out
+    parked = env.get_template("now.html").render(**dict(ctx, car=dict(gone, status="Sleeping"), win="24h"), today=None)
+    assert "<i></i>Offline" in parked and "last seen" in parked, "a parked car quiet for hours is just offline"
     assert "last seen" not in html and ">Offline<" not in html, "a reachable car shows neither"
     # the window toggle: the strip and the chart share it; the chosen one is marked
     week = env.get_template("now.html").render(**dict(ctx, win="7d", spark="0,1 600,2"), today=None)
@@ -1708,13 +1787,13 @@ def test_single_car_now_leads_with_state_and_lists_rows():
     assert 'href="/cc/?win=24h" data-keep-scroll data-win-to="24h"' in week, "without the script the link loads the page where the reader was"
     assert 'href="/cc/?vin=V1&win=7d"' in env.get_template("now.html").render(**dict(ctx, win="24h", q="?vin=V1"), today=None), "the toggle keeps the car"
     card = env.get_template("_parts.html").module.car_card(dict(gone, lat=None), "/cc", {}, {"dist": "mi"}, None, [])
-    assert 'class="state offline"' in card and "last seen" in card
+    assert 'class="state offline"' in card and "No signal" in card and "since" in card
     yday = dict(gone, lat=None, last_seen=datetime.now(timezone.utc) - timedelta(days=1))
     assert re.search(
-        r"last seen Yesterday\W+\d{1,2}:\d\d", env.get_template("_parts.html").module.car_card(yday, "/cc", {}, {"dist": "mi"}, None, []).replace("\u202f", " ")
+        r"since Yesterday\W+\d{1,2}:\d\d", env.get_template("_parts.html").module.car_card(yday, "/cc", {}, {"dist": "mi"}, None, []).replace("\u202f", " ")
     ), "a sighting from another day carries the day"
     today = dict(gone, lat=None, last_seen=datetime.now(timezone.utc))
-    assert "last seen Yesterday" not in env.get_template("_parts.html").module.car_card(today, "/cc", {}, {"dist": "mi"}, None, [])
+    assert "since Yesterday" not in env.get_template("_parts.html").module.car_card(today, "/cc", {}, {"dist": "mi"}, None, [])
 
 
 def test_a_battery_chart_sits_on_the_strips_time_axis():
@@ -1798,6 +1877,7 @@ def test_the_garage_now_route_builds_its_page(monkeypatch):
     monkeypatch.setattr(app_module, "today_by_car", lambda: {"V1": {"drives": 2, "miles": 12.0, "kwh": 0.0}})
     seen = {}
     monkeypatch.setattr(app_module, "page", lambda request, name, **ctx: seen.update(name=name, **ctx) or "ok")
+    monkeypatch.setattr(app_module, "owner", lambda request: True)
 
     class Req:
         query_params = {"vin": "all"}
@@ -1813,7 +1893,14 @@ def test_the_window_switch_gets_the_strip_and_battery_line_alone(monkeypatch):
     from datetime import datetime, timedelta, timezone
 
     app_module = _app(monkeypatch)
-    end = datetime.now(timezone.utc)
+    end = datetime(2026, 10, 14, 15, 20, tzinfo=timezone.utc)  # a fixed clock: near local midnight the 24 h axis has no midnight line
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return end
+
+    monkeypatch.setattr(app_module, "datetime", Clock)
     seen = []
     rib = [{"label": "sleeping", "width": 0.5, "start": end - timedelta(hours=84), "end": end - timedelta(hours=42)}, {"label": "caron", "width": 0.5, "start": end - timedelta(hours=42), "end": end}]
     monkeypatch.setattr(app_module, "pick", lambda request: {"vin": "V1", "name": "Alpha", "live": True, "soc": 50.0})
@@ -2242,7 +2329,7 @@ def _env():
     return env
 
 
-def test_the_cards_tiles_say_the_cars_facts_and_carry_its_controls():
+def _hero_ctx():
     import commands as cm
 
     car = {
@@ -2271,62 +2358,176 @@ def test_the_cards_tiles_say_the_cars_facts_and_carry_its_controls():
         "soc": 41.0,
     }
     ctx = dict(root="/cc", q="", u={"dist": "mi", "temp": "°F"}, state_word=lambda s: (s, s.lower()), guard_name=lambda m: "Sentry", place_refs=lambda *a: "", tread_last=None)
+    return cm, car, cmd, ctx
+
+
+def test_the_cards_tiles_say_the_cars_facts_and_the_state_tiles_carry_its_controls():
+    cm, car, cmd, ctx = _hero_ctx()
     hero = _env().get_template("_now_hero.html").render(car=car, cmd=cmd, **ctx)
     assert 'data-cmd-url="/cc/cars/V1/command"' in hero, "the card's own controls send from it"
-    # charging now: its tile says the power and stops it; the climate tile says the cabin and turns it on or off
-    assert '<span class="ft-b">7.2 kW</span>' in hero and 'data-cmd="charge_stop">Stop charging</button>' in hero
-    # the car says climate is off: the tile is the switch, saying Off, and a tap turns it on
-    assert '<span class="ft-b" data-say>Off</span>' in hero and "68° inside · 55° outside" in hero
-    assert '<button type="button" class="ft tap" data-cmd="climate_on" aria-pressed="false" aria-label="Turn on climate">' in hero
-    assert 'data-cmd="climate_off"' not in hero and "Turn on climate</button>" not in hero
-    on = _env().get_template("_now_hero.html").render(car=car, cmd=dict(cmd, climate=True), **ctx)
-    assert 'class="ft tap on" data-cmd="climate_off" aria-pressed="true" aria-label="Turn off climate"' in on
-    unsure = _env().get_template("_now_hero.html").render(car=car, cmd=dict(cmd, climate=None), **ctx)
-    assert '<span class="ft-b" data-say>68°</span>' in unsure and 'data-cmd="climate_on">On</button>' in unsure and 'data-cmd="climate_off">Off</button>' in unsure
-    # a tile without a control opens where its fact is kept
-    assert 'href="/cc/stats?period=all#odometer"' in hero and 'href="/cc/software"' in hero
-    # locked with no unlock allowed: the doors say so and offer nothing; the odometer and software are tiles
-    assert "<span class=\"ft-b\">Locked</span>" in hero and 'data-cmd="unlock"' not in hero and 'data-cmd="lock"' not in hero
-    assert "95,736 mi" in hero and "2026.26.6.5" in hero and "morefacts" not in hero
-    # the battery bar is the limit control
-    assert '<div class="gauge lim-bar">' in hero and 'value="90"' in hero and "Min 50%" not in hero and "Daily · 50–90%" in hero
+    # the state tiles say charging, climate and doors, so those facts are not tiles again; the power and time to full sit in the Charge tab
+    assert '<span class="ft-b">7.2 kW</span>' not in hero and "inside ·" not in hero and "</svg>Doors</span>" not in hero and "</svg>Climate</span>" not in hero
+    assert "Charging · 7.2" not in hero and "+12.4" not in hero
+    assert 'class="ft tap' not in hero and "ft-c" not in hero and "Turn on climate" not in hero
+    # a car with no command for a part keeps its fact tile
+    some = _env().get_template("_now_hero.html").render(car=car, cmd=dict(cmd, allowed={"charge_limit"}), **ctx)
+    assert '<span class="ft-b">7.2 kW</span>' in some and "68° inside · 55° outside" in some and '<span class="ft-b">Locked</span>' in some
+    # a tile with nowhere to go opens where its fact is kept; the odometer and software are tiles
+    assert 'href="/cc/stats?period=all#odometer"' in hero and 'href="/cc/software"' in hero and "95,736 mi" in hero and "2026.26.6.5" in hero
+    # the battery bar is the limit control, and it has no Set: the marker sends when it stops
+    assert '<div class="gauge lim-bar">' in hero and 'value="90"' in hero and 'data-send="charge_limit"' in hero and ">Set<" not in hero and "Daily · 50–90%" in hero
     # commands off: the same facts, no controls, the plain gauge
     plain = _env().get_template("_now_hero.html").render(car=car, cmd=None, **ctx)
-    assert "data-cmd" not in plain and '<div class="gauge"' in plain and '<span class="ft-b">7.2 kW</span>' in plain
-    # a feed car reports no locks: no Doors tile when nothing can be said or done
+    assert "data-cmd" not in plain and "ctl-t" not in plain and '<div class="gauge"' in plain and '<span class="ft-b">7.2 kW</span>' in plain
+    # a feed car reports no locks: no Doors tile when nothing can be said
     feed = _env().get_template("_now_hero.html").render(car=dict(car, live=False, locked=None), cmd=None, **ctx)
     assert "</svg>Doors</span>" not in feed
 
 
-def test_the_dock_holds_the_one_tap_commands_as_icons_then_adjust_and_the_log():
+def _ctl_tiles(car, cmd, **ctx):
+    """The state tiles as [(command or None, word, action)], read from the rendered card."""
+    import re as _re
+
+    html = _env().get_template("_now_hero.html").render(car=car, cmd=cmd, **ctx)
+    out = []
+    for m in _re.finditer(r'<button type="button" class="ctl-t[^"]*"([^>]*)>.*?<span class="ctl-w">([^<]*)</span>(?:<span class="ctl-a" data-say>([^<]*)</span>)?</button>', html, _re.S):
+        key = _re.search(r'data-cmd="([a-z_]+)"', m.group(1))
+        out.append((key.group(1) if key else None, m.group(2), m.group(3) or "", "data-hairy" in m.group(1)))
+    return html, out
+
+
+def test_the_state_tiles_say_what_the_car_is_and_what_a_tap_does():
+    cm, car, cmd, ctx = _hero_ctx()
+    more = [cm.CATALOGUE[k] for k in ("unlock", "trunk", "frunk", "windows_vent", "windows_close")]
+    cmd = dict(cmd, more=more, allowed=cmd["allowed"] | {c.key for c in more})
+    _, tiles = _ctl_tiles(dict(car, status="Parked", locked=True, trunk_open=False, frunk_open=True, windows_open=False, climate_set_f=70.0), cmd, **ctx)
+    # lock, frunk, trunk (one car nose to tail), climate, charging, windows: one tile a part, a state word and the move
+    assert tiles == [
+        ("unlock", "Locked", "Tap to unlock", True),
+        (None, "Frunk", "", False),
+        ("trunk", "Trunk", "Tap to open", True),
+        ("climate_on", "Climate off", "Tap to start", False),
+        ("charge_start", "Plugged in", "Tap to start", False),
+        ("windows_vent", "Windows", "Tap to vent", True),
+    ], tiles
+    # unlocked and running: the move is the other way, and only a tier 3 move asks twice
+    _, tiles = _ctl_tiles(dict(car, locked=False, trunk_open=True, windows_open=True, frunk_open=None), dict(cmd, climate=True), **ctx)
+    assert tiles[0] == ("lock", "Unlocked", "Tap to lock", False) and tiles[3] == ("climate_off", "Climate on", "Tap to stop", False)
+    assert tiles[4] == ("charge_stop", "Charging", "Tap to stop", False) and tiles[2][:3] == ("trunk", "Trunk", "Tap to close") and tiles[2][3] is True
+    assert tiles[1] == ("frunk", "Frunk", "Tap to open", True), "a reading the car has not given reads closed, the rare open case aside"
+    assert tiles[5] == ("windows_close", "Windows", "Tap to close", False), "closing up asks once"
+    _, tiles = _ctl_tiles(dict(car, climate_set_f=70.0), dict(cmd, climate=True), **ctx)
+    assert tiles[3] == ("climate_off", "On · 70°", "Tap to stop", False), "running: the setpoint, as the car last said"
+    # charging with the car's own meter and time left: the tile stays two words, the Charge tab carries the power and time to full
+    html, tiles = _ctl_tiles(dict(car, charge_session_kwh=12.4, charge_minutes_left=80), cmd, **ctx)
+    assert tiles[4] == ("charge_stop", "Charging", "Tap to stop", False) and "+12.4 kWh" not in html
+    assert 'data-name="Stop charging"' in html
+    dock = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}')
+    run = dict(car, charge_session_kwh=12.4, charge_minutes_left=80)
+    assert '<span class="ctl-cap">Charge limit <span class="ctl-note">7.2\xa0kW · full in 1\xa0h 20\xa0min</span></span>' in dock.render(cmd=cmd, car=run, root="")
+    assert '<span class="ctl-note">7.2\xa0kW · full 6:40\xa0AM</span>' in dock.render(
+        cmd=cmd, car=dict(run, charge_full_at=datetime(2026, 10, 25, 13, 40, tzinfo=timezone.utc)), root=""
+    ), "a set time to full reads as the clock"
+    assert "ctl-note" not in dock.render(cmd=cmd, car=dict(car, status="Parked"), root=""), "not charging: the limit alone"
+    # nothing known: the bold line is still a state or the part's name, the move goes under it
+    _, tiles = _ctl_tiles(dict(car, status="Parked", locked=None, plugged=None), dict(cmd, climate=None), **ctx)
+    assert tiles[0][:3] == ("lock", "Doors", "Tap to lock") and tiles[4][:3] == ("charge_start", "Not charging", "Tap to start")
+    assert tiles[3][:3] == ("climate_on", "Climate", "Tap to start")
+    assert _ctl_tiles(dict(car, status="", locked=None, plugged=None), cmd, **ctx)[1][4][1] == "Charge", "no status: no claim it is not charging"
+    # an unplugged car offers no charge; unlock off for this car greys the locked tile
+    _, tiles = _ctl_tiles(dict(car, status="Parked", plugged=False), dict(cmd, more=[], allowed={"charge_start", "lock", "climate_on"}), **ctx)
+    assert tiles[0][:3] == (None, "Locked", "") and tiles[2][:3] == (None, "Charge", ""), "nothing to tap: no line under the state"
+    assert not [t for t in tiles if t[1].startswith(("Trunk", "Frunk", "Windows"))], "a part the car takes no command for has no tile"
+    # a Lucid closes its own trunk and frunk, so both tiles close what is open
+    lucid = [cm.CATALOGUE[k] for k in ("trunk", "trunk_close", "frunk", "frunk_close")]
+    _, tiles = _ctl_tiles(dict(car, make="Lucid", trunk_open=True, frunk_open=False), dict(cmd, more=lucid, allowed={"lock"} | {c.key for c in lucid}), **ctx)
+    assert ("trunk_close", "Trunk", "Tap to close", False) in tiles and ("frunk", "Frunk", "Tap to open", True) in tiles
+    # the second tap is said in the tile itself, in amber; the tile keeps its place in the card's own refresh
+    html, _ = _ctl_tiles(car, cmd, **ctx)
+    assert (
+        'aria-label="Frunk closed. Tap to open"' in html and 'aria-label="Trunk closed. Tap to open"' in html and 'aria-label="Windows closed. Tap to vent"' in html
+    ), "the title is the part, the state rides in the label"
+    open_html, _ = _ctl_tiles(dict(car, windows_open=True), cmd, **ctx)
+    assert 'aria-label="Windows open. Tap to close"' in open_html, "an open window shows the vented icon and says so"
+    assert html[html.index("data-dock-toggle") :].split("</button>", 1)[1].strip() == "</section>", "the arrow is the card's last line, right above the panel it opens"
+    assert 'data-hairy data-confirm="Tap again to unlock"' in html
+
+
+def test_the_dock_is_a_quick_row_then_a_full_width_panel_of_tabs():
     import re as _re
 
     import commands as cm
 
-    cmd = {"reason": None, "allowed": set(), "more": [cm.CATALOGUE[k] for k in ("honk", "flash", "climate_temp", "sched_charge", "unlock", "trunk")]}
-    t = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}')
-    html = t.render(cmd=cmd, car={"vin": "V1"}, root="")
-    acts = _re.findall(r'class="dock-b( guarded)?" data-cmd="([a-z_]+)"', html)
-    assert acts == [("", "flash"), ("", "honk"), (" guarded", "trunk")], acts
-    assert "Everyday" not in html and "role=\"tab\"" not in html, "no tier tabs"
-    rows = _re.findall(r'<div class="cmd-row"><span class="cmd-l">([^<]+)</span>', html)
-    assert rows == ["Charge at", "Cabin"], rows
-    assert "data-step-up hidden" in html and 'data-cmd-log="/cars/V1/commands"' in html and "data-minutes" in html
-    # the trunk said open: the button closes it; an open frunk only shuts by hand; the windows offer the one move that changes them
-    more = cmd["more"] + [cm.CATALOGUE[k] for k in ("frunk", "windows_vent", "windows_close")]
-    opened = t.render(cmd={**cmd, "more": more}, car={"vin": "V1", "trunk_open": True, "frunk_open": True, "windows_open": True}, root="")
-    assert "<span data-say>Close trunk</span>" in opened and "disabled><svg" in opened and "Frunk open" in opened
-    assert 'data-cmd="windows_close"' in opened and 'data-cmd="windows_vent"' not in opened
-    unknown = t.render(cmd={**cmd, "more": more}, car={"vin": "V1"}, root="")
-    assert "<span data-say>Open trunk</span>" in unknown and 'data-cmd="windows_close"' in unknown and 'data-cmd="windows_vent"' in unknown
-    # a Lucid closes its own: an open trunk offers Close, a shut frunk offers Open, nothing greyed out
-    lucid = [cm.CATALOGUE[k] for k in ("trunk", "trunk_close", "frunk", "frunk_close")]
-    both = t.render(cmd={**cmd, "more": lucid}, car={"vin": "V1", "make": "Lucid", "trunk_open": True, "frunk_open": False}, root="")
-    keys = _re.findall(r'data-cmd="([a-z_]+)"', both)
-    assert "trunk_close" in keys and "trunk" not in keys and "frunk" in keys and "frunk_close" not in keys and " disabled" not in both
-    said = t.render(cmd={**cmd, "reason": "This car's connector takes no commands."}, car={"vin": "V1"}, root="")
+    cmd = {
+        "reason": None,
+        "allowed": set(),
+        "more": [cm.CATALOGUE[k] for k in ("honk", "flash", "climate_temp", "sched_charge", "sched_charge_off", "unlock", "remote_start", "seat_heat", "seat_heat_rear_left", "seat_vent")],
+    }
+    t = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root, u) }}')
+
+    class Imperial:
+        metric = False
+
+    html = t.render(cmd=cmd, car={"vin": "V1", "make": "Tesla"}, root="", u=Imperial())
+    # one quick row: the same height, a tier 3 one asks twice, no padlock badge
+    quick = _re.findall(r'<button type="button" class="ctl-q" data-cmd="([a-z_]+)"( data-hairy)?', html)
+    assert quick == [("flash", ""), ("honk", ""), ("remote_start", " data-hairy")], quick
+    assert 'class="guarded"' not in html and "dock-b" not in html and ">Set<" not in html and "Set</button>" not in html
+    # tabs for what the car takes, then the log; Climate is open when it is there
+    tabs = _re.findall(r'<button type="button" class="dock-tab" role="tab"[^>]*aria-selected="(\w+)"[^>]*>([^<]+)</button>', html)
+    assert tabs == [("false", "Charge"), ("true", "Climate"), ("false", "Seats"), ("false", "Log")], tabs
+    assert html.count('role="tabpanel"') == 4 and "<details" not in html
+    # climate: the cabin temperature is a big value with round - and +, shown in °F and sent in °C
+    assert 'data-send="climate_temp"' in html and 'data-conv="f"' in html and 'data-min="60"' in html and ">70°</output>" in html
+    assert html.count('data-dir="') == 2 and 'aria-label="Warmer"' not in html
+    # the cabin temperature sits beside its caption, the inside and outside readings as a muted line
+    warm = t.render(cmd=cmd, car={"vin": "V1", "make": "Tesla", "inside_f": 68.0, "outside_f": 55.0}, root="", u=Imperial())
+    assert '<span class="ctl-cap">Cabin <span class="ctl-note">68° inside · 55° outside</span></span>' in warm
+    # the seat map: five seats, each with the commands it has; only the driver's seat has a vent here
+    seats = _re.findall(r'data-name="([A-Za-z ]+)" data-heat="([a-z_]*)" data-vent="([a-z_]*)"', html)
+    assert seats[0] == ("Driver", "seat_heat", "seat_vent") and seats[2] == ("Rear left", "seat_heat_rear_left", "") and seats[1] == ("Passenger", "", "") and len(seats) == 5
+    assert 'data-mode="vent"' in html and "data-seats-off" in html
+    # the charge-at time field sends on its own; an Off sits beside it
+    assert 'data-send="sched_charge"' in html and "data-minutes" in html and 'data-send="sched_charge_off"' in html
+    # the status line is the panel's foot, the PIN or password step above it
+    stepped = (
+        _env()
+        .from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root, u, step) }}')
+        .render(cmd=cmd, car={"vin": "V1", "make": "Tesla"}, root="", u=Imperial(), step={"pin": False, "password": True})
+    )
+    assert "data-step-up hidden" in stepped and stepped.index("data-step-up") < stepped.index("dock-panel")
+    assert 'data-cmd-log="/cars/V1/commands"' in html and 'role="status"' in html and "data-step-up" not in html, "nothing to type with no PIN or password"
+    # metric: the temperature is °C in half steps
+    metric = type("M", (), {"metric": True})()
+    assert 'data-min="15"' in t.render(cmd=cmd, car={"vin": "V1"}, root="", u=metric) and 'data-conv' not in t.render(cmd=cmd, car={"vin": "V1"}, root="", u=metric)
+    said = t.render(cmd={**cmd, "reason": "This car's connector takes no commands."}, car={"vin": "V1"}, root="", u=Imperial())
     assert "takes no commands" in said and "data-cmd" not in said
-    assert t.render(cmd=None, car={"vin": "V1"}, root="").strip() == ""
+    assert t.render(cmd=None, car={"vin": "V1"}, root="", u=Imperial()).strip() == ""
+
+
+def test_a_lucids_charge_tab_has_a_start_a_finish_and_no_place_picker():
+    import commands as cm
+
+    keys = ("sched_charge", "sched_charge_end", "sched_charge_off")
+    cmd = {"reason": None, "allowed": set(keys), "more": [cm.CATALOGUE[k] for k in keys]}
+    html = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}').render(cmd=cmd, car={"vin": "V1", "make": "Lucid"}, root="")
+    assert 'data-send="sched_charge"' in html and 'data-send="sched_charge_end"' in html and 'data-send="sched_charge_off"' in html
+    assert "Charge done by" in html and "Applies at" not in html and 'data-send="depart"' not in html
+
+
+def test_the_panel_offers_the_chargers_limit_and_amps_without_a_set_button():
+    import commands as cm
+
+    cmd = {"reason": None, "allowed": {"charge_limit"}, "more": [cm.CATALOGUE[k] for k in ("charge_amps", "charge_port_open", "charge_port_close")], "limit": 85.0}
+    html = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}').render(cmd=cmd, car={"vin": "V1", "make": "Tesla", "charge_amps_set": 24.0}, root="")
+    assert 'min="50" max="100" step="5" value="85"' in html and "Daily 90%" in html and "Trip 100%" in html and 'data-chip="90"' in html
+    assert 'data-send="charge_amps"' in html and 'data-max="48"' in html and 'data-value="24"' in html and "of 48 A" in html
+    assert 'aria-label="Charge port"' in html and ">Set<" not in html
+    dock = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}')
+    lucid = dock.render(cmd=cmd, car={"vin": "V1", "make": "Lucid", "charge_amps_set": 80.0}, root="")
+    assert 'data-max="80"' in lucid and "Daily 80%" in lucid and 'data-value="80"' in lucid
+    unsaid = dock.render(cmd=cmd, car={"vin": "V1", "make": "Lucid"}, root="")
+    assert 'data-send="charge_amps"' not in unsaid and "Not reported yet" in unsaid, "never a guessed current one tap from being sent"
 
 
 def test_a_hidden_password_step_stays_hidden():
@@ -2334,13 +2535,58 @@ def test_a_hidden_password_step_stays_hidden():
     assert ".cmd-step[hidden] { display:none; }" in css
 
 
-def test_a_pair_of_on_and_off_is_one_segmented_control():
+def test_on_and_off_are_one_segmented_control_or_a_switch_when_the_car_says():
     import commands as cm
 
-    cmd = {"reason": None, "allowed": set(), "more": [cm.CATALOGUE[k] for k in ("defrost_on", "defrost_off", "sched_charge", "sched_charge_off")]}
-    html = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}').render(cmd=cmd, car={"vin": "V1"}, root="")
-    assert '<span class="cmd-pair" role="group" aria-label="Defrost">' in html
-    assert 'aria-label="Charge at"' not in html or '<span class="cmd-pair" role="group" aria-label="Charge at">' not in html, "a value and Off are not a pair"
+    cmd = {"reason": None, "allowed": set(), "more": [cm.CATALOGUE[k] for k in ("defrost_on", "defrost_off", "wheel_heat_on", "wheel_heat_off", "keep_on", "keeper_off")]}
+    t = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}')
+    unsaid = t.render(cmd=cmd, car={"vin": "V1", "make": "Tesla"}, root="")
+    assert '<span class="ctl-seg" role="group" aria-label="Defrost" data-group="defrost_on">' in unsaid and "ctl-sw" not in unsaid, "a car that has not said gets both options, neither chosen"
+    assert 'aria-pressed="true"' not in unsaid
+    # the heater is on, as the car last said: a switch that turns it off
+    on = t.render(cmd=cmd, car={"vin": "V1", "make": "Tesla", "window_heating": True}, root="")
+    assert 'role="switch" aria-label="Defrost" aria-checked="true" data-send-on="defrost_on" data-send-off="defrost_off"' in on
+    assert 'aria-checked="false"' in t.render(cmd=cmd, car={"vin": "V1", "window_heating": False}, root="")
+    # a Tesla's wheel heater is off or on; a Lucid's has three levels
+    assert "wheel_heat_off" in unsaid and "wheel_heat_on" in unsaid
+    lucid = t.render(cmd={**cmd, "more": [cm.CATALOGUE["wheel_heat"]]}, car={"vin": "V1", "make": "Lucid"}, root="")
+    assert [int(v) for v in __import__("re").findall(r'data-send="wheel_heat" data-value="(\d)"', lucid)] == [0, 1, 2, 3]
+
+
+def test_commands_js_steps_seats_and_waits_for_the_last_tap():
+    """The panel's pure parts (static/commands.js CCCommands), run in node: a seat steps off, 1, 2, 3; the temperature goes out
+    in °C; a second tap says what it confirms; a setting's taps are one command, sent once, after the delay."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    js = (Path(__file__).parent / "static" / "commands.js").read_text() + """
+var fired = [], timers = [], t = 0;
+var q = CCCommands.queue(1500, function (j) { fired.push(j); }, function (fn, ms) { timers.push({ fn: fn, ms: ms, live: true }); return timers.length - 1; }, function (id) { timers[id].live = false; });
+q.push("seat_heat", 1); q.push("seat_heat", 2); q.push("seat_heat", 3); q.push("charge_limit", 90);
+var waiting = q.pending();
+timers.forEach(function (x) { if (x.live) x.fn(); });
+console.log(JSON.stringify({
+  levels: [undefined, "", 0, 1, 2, 3].map(CCCommands.nextLevel),
+  c: [70, 72.5, 60, 82].map(CCCommands.toCelsius),
+  steps: [CCCommands.step(21, 1, 0.5, 15, 28), CCCommands.step(28, 1, 0.5, 15, 28), CCCommands.step(5, -1, 1, 5, 48), CCCommands.step(24, 1, 4, 5, 48)],
+  confirm: [CCCommands.confirmText("Tap to unlock"), CCCommands.confirmText("Tap again")],
+  name: CCCommands.nameOf("Tap to unlock"),
+  again: [CCCommands.againText("Tap again to unlock", "x"), CCCommands.againText("Tap again: Keyless", "Start keyless driving"), CCCommands.againText(null, null)],
+  clear: [
+    CCCommands.seatsToClear([{ heat: "a", vent: "av", hl: 2, vl: 0, front: true }, { heat: "b", vent: "", hl: 0, vl: undefined, front: true }, { heat: "c", vent: "", hl: 1, front: false }]).map(function (j) { return j.key; }),
+    CCCommands.seatsToClear([{ heat: "a", vent: "av", front: true }, { heat: "b", vent: "bv", front: true }, { heat: "c", vent: "", front: false }, { heat: "d", vent: "", front: false }]).map(function (j) { return j.key; }),
+  ],
+  waiting: waiting, fired: fired, left: q.pending(), delays: timers.map(function (x) { return x.ms; }),
+}));
+"""
+    got = __import__("json").loads(subprocess.run(["node", "-e", js], capture_output=True, text=True, check=True).stdout)
+    assert got["levels"] == [1, 1, 1, 2, 3, 0] and got["c"] == [21.1, 22.5, 15.6, 27.8]
+    assert got["steps"] == [21.5, 28, 5, 28] and got["confirm"] == ["Tap again to unlock", "Tap again"] and got["name"] == "Unlock"
+    assert got["again"] == ["Tap again to unlock", "Tap again to start keyless driving", "Tap again to confirm"], "the status line says what the second tap does"
+    assert got["clear"] == [["a", "c"], ["a", "b"]], "all seats off: what was set here; with nothing known, only the two fronts"
+    assert got["waiting"] == 2 and got["fired"] == [3, 90] and got["left"] == 0 and set(got["delays"]) == {1500}, "four taps, two settings, two commands"
 
 
 def test_the_command_log_rows():
@@ -2351,8 +2597,17 @@ def test_the_command_log_rows():
         {"at": datetime(2026, 10, 11, 21, 15, tzinfo=timezone.utc), "label": "Charge limit", "arg": 85.0, "source": "site", "ok": False, "detail": "The car said no."},
     ]
     html = _env().get_template("_command_log.html").render(rows=rows)
-    assert "Stop charging" in html and "Charge limit 85" in html and "sdot bad" in html and "The car said no." in html
+    assert "Stop charging" in html and "Charge limit <span class=\"clog-a\">85</span>" in html and "sdot bad" in html and "The car said no." in html
     assert "No commands yet" in _env().get_template("_command_log.html").render(rows=[])
+    # newest first, five showing, the rest behind one button; a refusal says why
+    import commands as cm
+
+    assert [cm.by_whom(x) for x in ("site", "site (a@b.c)", "hold", "api bot…1a2b", "")] == ["", "a@b.c", "Charging hold", "API token bot", ""]
+    held = _env().get_template("_command_log.html").render(rows=[dict(rows[0], by="Charging hold")])
+    assert "Charging hold" in held and "None" not in held and "site" not in held and "clog-d" not in html.split("Charge limit")[0]
+    assert "Accepted" in html and "Refused" in html and "Show all" not in html and "data-more" not in html
+    many = _env().get_template("_command_log.html").render(rows=[dict(rows[0], command="lock", age=300)] * 8)
+    assert many.count("data-more hidden") == 3 and "Show all 8" in many and "5 min ago" in many and 'class="clog-i"' in many
 
 
 def _scene_path_points(d, steps=40):
@@ -2567,6 +2822,14 @@ def test_a_charts_extra_lines_are_chips_with_no_label_inside_the_group():
     assert 'aria-label="Also show"' in html and ">Also show<" not in html, "the chips name themselves; the group's name is for screen readers"
 
 
+def test_with_the_lock_a_command_the_doors_tile_comes_back_for_a_warning():
+    cmd = {"reason": None, "allowed": {"lock", "unlock"}, "more": []}
+    car = dict(LUCID_040, locked=True)
+    assert "</svg>Doors</span>" not in _tiles(car, cmd), "the state tile says locked"
+    warned = _tiles(dict(car, doors_open=True), cmd)
+    assert "</svg>Doors</span>" in warned and "a door is open" in warned
+
+
 def test_the_doors_tile_says_a_charge_port_left_open_only_once_the_cable_is_out():
     import jinja2
 
@@ -2660,6 +2923,13 @@ def test_the_guard_tile_says_why_it_is_paused_and_when_it_has_no_drive():
     assert '<span class="ft-s">watching</span>' in _tiles(dict(LUCID_040, sentry_usb=None)), "the car's idle drive state says nothing"
 
 
+def test_a_tesla_read_from_its_feed_shows_the_sentry_it_last_reported():
+    """The car's state carries Sentry only from a reading of now, so a car whose newest row is the feed's says it too."""
+    fed = dict(LUCID_040, make="Tesla", status="Idle", live=False, source="feed", sentry=False)
+    assert '<span class="ft-b" data-say>Off</span>' in _tiles(fed)
+    assert "data-say>Off" not in _tiles(dict(fed, sentry=None)), "a car that has not said shows no tile"
+
+
 def test_the_software_tile_names_the_waiting_version():
     html = _tiles(dict(LUCID_040, update_version="3.1.2", update_install_min=30))
     assert '<span title="About 30 min to install">3.1.2 waiting</span>' in html
@@ -2700,16 +2970,6 @@ def test_the_card_lists_what_is_wrong_with_the_cars_safety():
     assert '<p class="odd"><span class="warn">Someone left inside</span> · <span class="warn">Halo Secure paused: USB error</span> · <span class="warn">Key fob battery low</span></p>' in hero
     home = _env().get_template("_now_hero.html").render(car=dict(LUCID_040, sentry_paused="at-home"), cmd=None, root="", q="", u={"dist": "mi"}, today={}, due=[], route=None, ident=None)
     assert 'class="odd"' not in home, "paused at home is the owner's choice, not news"
-
-
-def test_defrost_in_the_dock_says_whether_the_window_heaters_are_on():
-    import commands as cm
-
-    cmd = {"reason": None, "allowed": set(), "more": [cm.CATALOGUE[k] for k in ("defrost_on", "defrost_off")]}
-    t = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}')
-    assert 'Defrost <small class="muted" title="Defrost and the rear window heater, as the car last said">on</small>' in t.render(cmd=cmd, car={"vin": "V1", "window_heating": True}, root="")
-    assert ">off</small>" in t.render(cmd=cmd, car={"vin": "V1", "window_heating": False}, root="")
-    assert '<span class="cmd-l">Defrost</span>' in t.render(cmd=cmd, car={"vin": "V1"}, root=""), "a Tesla's, or a car that has not said"
 
 
 def _page_base(car):
@@ -3039,3 +3299,72 @@ def test_a_route_page_names_both_ends_and_the_drives_filter_says_them_in_words(m
 def test_the_filter_panel_stacks_to_one_column_on_a_phone():
     css = (Path(__file__).parent / "static" / "style.css").read_text()
     assert ".fsheet form.range { grid-template-columns:minmax(0, 1fr); }" in css and "max-width: 600px" in css.split(".fsheet form.range { grid-template-columns")[0].rsplit("@media", 1)[1]
+
+
+def test_a_route_past_the_listed_ones_still_opens_and_a_gone_one_goes_back_to_the_list(monkeypatch):
+    """The list shows the busiest ROUTES_LISTED; a route below them (or listed under another
+    span) keeps its page, and a key no route has (a merged place, another car's route) lands
+    on the list instead of a bare 404."""
+    from datetime import datetime, timedelta, timezone
+
+    app_module = _app(monkeypatch)
+    t0 = datetime(2026, 9, 4, 16, 0, tzinfo=timezone.utc)
+    place = lambda i: {"id": i, "name": f"Place {i}", "auto": False, "latitude": 40.0 + i / 100, "longitude": -74.0, "address": None, "street": None, "user_address": None, "city": "Springfield"}
+    rows = [{"key": f"1-{i}", "a": place(1), "b": place(i), "loop": False, "ids": [i], "n": 40 - i, "last": t0, "first": t0 - timedelta(days=9)} for i in range(2, 2 + app_module.ROUTES_LISTED + 5)]
+    monkeypatch.setattr(app_module, "route_table", lambda vin, days: {"routes": rows, "destinations": [], "drives": 99})
+    monkeypatch.setattr(app_module, "pick", lambda request: {"vin": "V1", "name": "Alpha", "live": True})
+    monkeypatch.setattr(app_module, "geocells", lambda: {})
+    monkeypatch.setattr(app_module, "drives_by_id", lambda ids: [])
+    monkeypatch.setattr(app_module, "_maps_on", lambda: True)
+    seen = {}
+    monkeypatch.setattr(app_module, "page", lambda request, name, **ctx: seen.update(name=name, **ctx) or "ok")
+
+    class Req:
+        query_params = {"vin": "V1"}
+        headers = {}
+        scope = {"root_path": "/cc"}
+
+    assert app_module.places_routes(Req()) == "ok" and len(seen["routes"]) == app_module.ROUTES_LISTED, "the list stays the busiest"
+    last = rows[-1]["key"]
+    assert app_module.place_route(Req(), last) == "ok" and seen["name"] == "route.html" and seen["r"]["key"] == last, "a route below the list opens"
+    gone = app_module.place_route(Req(), "1-999", span="90d")
+    assert gone.status_code == 303 and gone.headers["location"].startswith("/cc/places/routes?span=90d"), "a route that is not there goes to the list"
+
+
+def test_a_shut_trunk_or_frunk_draws_its_lid_down():
+    cm, car, cmd, ctx = _hero_ctx()
+    more = [cm.CATALOGUE[k] for k in ("trunk", "frunk")]
+    cmd = dict(cmd, more=more, allowed=cmd["allowed"] | {c.key for c in more})
+    shut, _ = _ctl_tiles(dict(car, trunk_open=False, frunk_open=False), cmd, **ctx)
+    both, _ = _ctl_tiles(dict(car, trunk_open=True, frunk_open=True), cmd, **ctx)
+    import re as _re
+
+    cars = lambda html: _re.findall(r'<svg class="ctl-ic"[^>]*>(.*?)</svg>', html)
+    shut_icons = [i for i in cars(shut) if "M-1 16.5H" in i]
+    assert len(shut_icons) == 2 and shut_icons[0] != shut_icons[1], "both shut: the logo's car, cropped to the front and to the rear"
+    opened = [i for i in cars(both) if "M-1 16.5H" in i]
+    assert len(opened) == 2 and not set(opened) & set(shut_icons), "open: the same crops with the lid raised"
+
+
+def test_disarming_the_alarm_in_the_panel_is_marked_to_ask_for_you():
+    import commands as cm
+
+    more = [cm.CATALOGUE[k] for k in ("alarm_on", "alarm_off", "alarm_silent", "alarm_silence")]
+    cmd = {"reason": None, "allowed": {k.key for k in more}, "more": more}
+    html = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}').render(cmd=cmd, car={"vin": "V1", "make": "Lucid"}, root="")
+    assert 'data-send="alarm_off" data-tier3 data-name="Alarm: Off"' in html and 'data-send="alarm_silence" data-tier3' in html
+    assert 'data-send="alarm_on" data-tier3' not in html, "arming asks for no one"
+
+
+def test_the_panel_folds_to_its_status_line_until_opened():
+    """The tiles carry most taps, so the one-tap row and the tabs wait behind an arrow that stays
+    at the top, open or folded, and says nothing but its label to a screen reader."""
+    import commands as cm
+
+    cmd = {"reason": None, "allowed": {"flash", "climate_on"}, "more": [cm.CATALOGUE["honk"]]}
+    html = _env().from_string('{% import "_commands.html" as c %}{{ c.dock(cmd, car, root) }}').render(cmd=cmd, car={"vin": "V1", "make": "Tesla"}, root="")
+    fold = html.index('id="dock-fold-V1" data-dock-fold hidden')
+    assert html.index('class="ctl-foot"') < fold < html.index('class="ctl-quick"') < html.index('class="dock-tabs"')
+    assert "data-dock-toggle" not in html, "the arrow ends the card above the dock, not part of the dock"
+    tiles = _env().from_string('{% import "_commands.html" as c %}{{ c.more_arrow(cmd, car) }}').render(cmd=cmd, car={"vin": "V1", "make": "Tesla"}, root="")
+    assert '<button type="button" class="ctl-more" data-dock-toggle aria-expanded="false" aria-controls="dock-fold-V1" aria-label="More controls"' in tiles and ">More controls<" not in tiles

@@ -43,6 +43,20 @@ def settings_without(hidden) -> tuple:
 
 
 PHONE_TABS = ("now", "timeline", "stats", "map")
+MAX_PHONE_TABS = 4  # with More, five slots fit a 390 px bar
+
+
+def phone_tabs(chosen) -> tuple[str, ...]:
+    """The sections the phone tab bar shows before More, in the owner's order: Settings'
+    `phone_tabs` with unknown and repeated keys dropped and the list held to MAX_PHONE_TABS.
+    Nothing usable left (never chosen, or all stale) gives PHONE_TABS."""
+    known = {key for key, *_ in SECTIONS}
+    picked: list[str] = []
+    for key in chosen if isinstance(chosen, (list, tuple)) else ():
+        if key in known and key not in picked:
+            picked.append(key)
+    return tuple(picked[:MAX_PHONE_TABS]) or PHONE_TABS
+
 
 _OWNER = {page[0]: key for key, _label, _path, pages in SECTIONS + (SETTINGS,) for page in pages}
 _RECORD = re.compile(r"^/(drives|charges)/\d+$")

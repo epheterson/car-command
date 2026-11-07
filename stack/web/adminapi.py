@@ -204,7 +204,7 @@ def place_patch(body, valid_icon) -> dict:
         if price is not None and not isinstance(price, dict):
             raise BadRequest('A price is {"kind": ..., "rate"?: ..., "fee"?: ...} or null.')
         try:
-            out["price"] = (True, placeprice.clean((price or {}).get("kind"), (price or {}).get("rate"), (price or {}).get("fee")))
+            out["price"] = (True, placeprice.clean((price or {}).get("kind"), (price or {}).get("rate"), (price or {}).get("fee"), (price or {}).get("idle"), (price or {}).get("grace")))
         except placeprice.BadPrice as err:
             raise BadRequest(str(err)) from None
     if "address" in body:
