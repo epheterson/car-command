@@ -1,13 +1,13 @@
-fastapi==0.143.0
-python-multipart==0.0.32
+fastapi==0.162.0
+python-multipart==0.0.33
 uvicorn[standard]==0.54.0
 jinja2==3.1.6
-psycopg[binary]==3.3.6
+psycopg[binary]==3.3.7
 psycopg-pool==3.3.3
 httpx==0.28.1
 cryptography==50.0.2
 webauthn==3.0.1
 segno==1.6.6
-pyzmq==27.2.0
+pyzmq==27.3.0
 pypdf==6.21.4
 paho-mqtt==2.1.0
