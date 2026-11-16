@@ -1,7 +1,7 @@
 # Local maps: OpenStreetMap regions downloaded as drives need them, turned into Valhalla
 # tiles and a small place index, answering place lookups so no position leaves the box.
 # ghcr.io/valhalla/valhalla:3.9.0, pinned by digest; Dependabot (docker) moves the digest with the tag.
-FROM ghcr.io/valhalla/valhalla:3.9.1@sha256:4fd114eb1d26b8fc2f43bcb3df234c1b63a0bf13c277405e5943d5361dc575de
+FROM ghcr.io/valhalla/valhalla:3.9.2@sha256:1c68a8c0f870a018b3b04dddee4b21ef2f41d24bbda68fa7b48e2bee053d5eef
 USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends osmium-tool python3 ca-certificates \
